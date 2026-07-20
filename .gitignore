@@ -1,0 +1,13 @@
+# Local secrets
+.env
+
+# Node dependencies and build output
+node_modules/
+dist/
+coverage/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
