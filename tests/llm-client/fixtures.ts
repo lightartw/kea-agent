@@ -60,11 +60,9 @@ export const fakeClient: LLMClient = {
   async invoke() {
     return textResponse;
   },
-  async invokeWithTools() {
-    return textResponse;
-  },
-  async *streamInvoke() {
-    yield "ok";
+  async *stream() {
+    yield { type: "text_delta", text: "ok" };
+    yield { type: "response_done", response: textResponse };
   },
 };
 

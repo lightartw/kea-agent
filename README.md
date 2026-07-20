@@ -70,31 +70,33 @@ CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共�
 
 - 导出 OpenAI function-tool schema；
 - 严格校验参数，不做类型转换或默认值注入；
-- 处理工具 timeout、取消、错误结果和输出截断；
+- 处理工具 timeout、错误结果和输出截断；
 - 按模型返回顺序逐个执行同一轮工具调用。
 
 第一版不并行执行工具，也没有全局 Registry、装饰器注册或反射式 schema 生成。
+默认工具集合由 tools 模块中的 `createToolRegistry()` 创建，目前只注册 `BashTool`。
 
 ## 统一 LLM Client
 
-`createLLMClient()` 默认根据唯一存在的 API key 环境变量选择 provider，也支持显式传入 `provider`、`model`、`apiKey` 和 `baseUrl`。公共选项使用 camelCase：`maxTokens`、`timeout`、`temperature`、`topP` 和 `stop`；每次调用的选项覆盖 client 默认值。`timeout` 单位为秒，调用时还可以传入 `AbortSignal`。
+`createLLMClient()` 默认根据唯一存在的 API key 环境变量选择 provider，也支持显式传入 `provider`、`model`、`apiKey` 和 `baseUrl`。该工厂是异步函数，只加载被选中的 adapter。公共选项使用 camelCase：`maxTokens`、`timeout`、`temperature`、`topP` 和 `stop`；每次调用的选项覆盖 client 默认值。`timeout` 单位为秒。
 
 ```ts
 import { createLLMClient } from "./src/index.js";
 
-const client = createLLMClient({ maxTokens: 4_096, timeout: 60 });
+const client = await createLLMClient({ maxTokens: 4_096, timeout: 60 });
 const messages = [{ role: "user" as const, content: "你好" }];
 
 const response = await client.invoke(messages);
 console.log(response.content);
 console.log(response.toolCalls, response.usage, response.latencyMs);
 
-for await (const text of client.streamInvoke(messages)) {
-  process.stdout.write(text);
+for await (const event of client.stream(messages)) {
+  if (event.type === "text_delta") process.stdout.write(event.text);
+  else console.log(event.response.toolCalls);
 }
 ```
 
-工具调用使用 OpenAI function-tool schema 作为 provider-neutral 输入格式，并保持非流式调用：
+工具调用使用 OpenAI function-tool schema 作为 Kea 的统一输入格式。OpenAI 直接使用该格式；Anthropic 和 Gemini 在各自 adapter 内转换。`invoke()` 和 `stream()` 都可接收 schema：
 
 ```ts
 const tools = [
@@ -113,13 +115,22 @@ const tools = [
   },
 ];
 
-const response = await client.invokeWithTools(messages, tools);
+const response = await client.invoke(messages, tools);
 for (const call of response.toolCalls) {
   console.log(call.id, call.name, call.arguments);
 }
+
+for await (const event of client.stream(messages, tools)) {
+  if (event.type === "text_delta") process.stdout.write(event.text);
+  if (event.type === "response_done") console.log(event.response.toolCalls);
+}
 ```
 
-`invoke()` 和 `invokeWithTools()` 返回 `LLMResponse`；没有工具调用时 `toolCalls` 是空数组。`streamInvoke()` 返回 `AsyncIterable<string>`，只产生非空文本片段。当前不支持流式工具调用，也不引入事件模型。
+`invoke()` 返回完整 `LLMResponse`。`stream()` 返回 `AsyncIterable<LLMStreamEvent>`：文本到达时产生 `text_delta`，流完整结束时产生一次 `response_done`。Adapter 在内部拼接工具参数，只有 `response_done` 中才会出现完整 `ToolCall`。
+
+Agent 层的 `runAgentTurn()` 将 provider 事件转为 `text_delta`、`tool_start`、`tool_end` 和 `turn_end`。这些事件只用于展示进度；完整 assistant/tool message 才会写入会话历史。工具调用会在 `response_done` 后按顺序执行。
+
+当前基础版本保留 provider 和工具 timeout，但不暴露调用方取消信号。需要 Ctrl+C 传播、进程树终止等取消语义时再单独设计。
 
 ## 开发与验证
 

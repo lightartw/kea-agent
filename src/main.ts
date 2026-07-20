@@ -4,31 +4,36 @@ import { pathToFileURL } from "node:url";
 
 import { config as loadDotenv } from "dotenv";
 
-import { agentLoop } from "./agent-loop.js";
+import { runAgentTurn, type AgentEvent } from "./agent-turn.js";
 import { createLLMClient } from "./llm-client/factory.js";
-import type { LLMResponse, Message } from "./llm-client/models.js";
-import { BashTool } from "./tools/builtin/bash.js";
-import { ToolRegistry } from "./tools/registry.js";
+import type { Message } from "./llm-client/models.js";
+import { createToolRegistry } from "./tools/factory.js";
 
 const CYAN = "\u001b[36m";
 const RESET = "\u001b[0m";
 
-export function createToolRegistry(cwd = process.cwd()): ToolRegistry {
-  const registry = new ToolRegistry();
-  registry.register(new BashTool({ cwd }));
-  return registry;
+export function renderAgentEvent(
+  event: AgentEvent,
+  write: (text: string) => void,
+  log: (text: string) => void,
+): void {
+  if (event.type === "text_delta") {
+    write(event.text);
+  } else if (event.type === "tool_start") {
+    log(
+      `\u001b[33m$ ${event.call.name}: ${JSON.stringify(event.call.arguments)}\u001b[0m`,
+    );
+  } else if (event.type === "tool_end") {
+    log(event.result.content.slice(0, 200));
+  }
 }
 
 export async function asyncMain(): Promise<void> {
   loadDotenv({ override: true });
-  const client = createLLMClient();
+  const client = await createLLMClient();
   const registry = createToolRegistry(process.cwd());
   const readline = createInterface({ input: process.stdin, output: process.stdout });
-  let activeRun: AbortController | undefined;
-  let interrupted = false;
   readline.on("SIGINT", () => {
-    interrupted = true;
-    activeRun?.abort(new Error("Interrupted"));
     readline.close();
   });
 
@@ -52,17 +57,13 @@ export async function asyncMain(): Promise<void> {
       if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
 
       history.push({ role: "user", content: query });
-      activeRun = new AbortController();
-      let response: LLMResponse;
-      try {
-        response = await agentLoop(history, client, registry, activeRun.signal);
-      } catch (error) {
-        if (interrupted && activeRun.signal.aborted) break;
-        throw error;
-      } finally {
-        activeRun = undefined;
+      for await (const event of runAgentTurn(history, client, registry)) {
+        renderAgentEvent(
+          event,
+          (text) => process.stdout.write(text),
+          (text) => console.log(text),
+        );
       }
-      if (response.content) console.log(response.content);
       console.log();
     }
   } finally {

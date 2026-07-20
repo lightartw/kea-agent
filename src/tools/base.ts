@@ -1,18 +1,6 @@
-import type { Static, TSchema } from "typebox";
+import type { Static, TObject } from "typebox";
 
 import type { ToolSchema } from "../llm-client/models.js";
-
-function deepFreeze<T>(value: T): T {
-  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
-    return value;
-  }
-  for (const child of Object.values(value)) deepFreeze(child);
-  return Object.freeze(value);
-}
-
-function clone<T>(value: T): T {
-  return structuredClone(value);
-}
 
 export interface ToolResult {
   readonly content: string;
@@ -23,17 +11,13 @@ export function toolResult(content: string, isError = false): ToolResult {
   return { content, isError };
 }
 
-export abstract class Tool<TParameters extends TSchema = TSchema> {
-  readonly parameters: TParameters;
-
+export abstract class Tool<TParameters extends TObject = TObject> {
   protected constructor(
     readonly name: string,
     readonly description: string,
-    parameters: TParameters,
+    readonly parameters: TParameters,
     readonly timeout: number | null = null,
-  ) {
-    this.parameters = deepFreeze(clone(parameters));
-  }
+  ) {}
 
   toSchema(): ToolSchema {
     return {
@@ -41,13 +25,13 @@ export abstract class Tool<TParameters extends TSchema = TSchema> {
       function: {
         name: this.name,
         description: this.description,
-        parameters: clone(this.parameters) as unknown as Record<string, unknown>,
+        parameters: this.parameters as Record<string, unknown>,
       },
     };
   }
 
   abstract execute(
     arguments_: Static<TParameters>,
-    signal: AbortSignal,
+    timeoutSignal: AbortSignal,
   ): Promise<string>;
 }

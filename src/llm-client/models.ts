@@ -60,3 +60,7 @@ export interface LLMResponse {
   readonly latencyMs: number;
   readonly finishReason: FinishReason;
 }
+
+export type LLMStreamEvent =
+  | { readonly type: "text_delta"; readonly text: string }
+  | { readonly type: "response_done"; readonly response: LLMResponse };

@@ -2,15 +2,12 @@ import { GoogleGenAI } from "@google/genai";
 
 import {
   mergeOptions,
-  validateMessages,
-  validateTools,
   type AdapterConfig,
-  type LLMCallOptions,
   type LLMClient,
-  type ResolvedLLMCallOptions,
+  type LLMOptions,
+  type ResolvedLLMOptions,
 } from "../client.js";
 import {
-  LLMAuthenticationError,
   LLMError,
   LLMProviderError,
   LLMTimeoutError,
@@ -18,17 +15,17 @@ import {
 import type {
   FinishReason,
   LLMResponse,
+  LLMStreamEvent,
   Message,
   ToolArguments,
   ToolCall,
   ToolSchema,
 } from "../models.js";
 import {
-  combineAbortSignals,
-  closeAsyncIterator,
-  raceWithSignal,
+  TimeoutError,
+  runWithTimeout,
   timeoutMilliseconds,
-} from "../../utils/abort-signals.js";
+} from "../../utils/timeout.js";
 
 interface GeminiClientLike {
   readonly models: {
@@ -101,7 +98,7 @@ function convertMessages(messages: readonly Message[]): ConvertedMessages {
 function buildConfig(
   system: string | undefined,
   tools: readonly ToolSchema[] | undefined,
-  options: ResolvedLLMCallOptions,
+  options: ResolvedLLMOptions,
   signal: AbortSignal,
 ): Record<string, unknown> {
   const config: Record<string, unknown> = {
@@ -203,17 +200,12 @@ function authenticationStatus(error: unknown): number | undefined {
   return undefined;
 }
 
-function translateError(
-  error: unknown,
-  callerSignal: AbortSignal | undefined,
-  timeoutSignal: AbortSignal,
-): unknown {
-  if (callerSignal?.aborted) return callerSignal.reason;
-  if (timeoutSignal.aborted) {
+function translateError(error: unknown, timedOut = false): unknown {
+  if (timedOut || error instanceof TimeoutError) {
     return new LLMTimeoutError("Gemini request timed out", { cause: error });
   }
   if ([401, 403].includes(authenticationStatus(error) ?? 0)) {
-    return new LLMAuthenticationError("Gemini authentication failed", {
+    return new LLMProviderError("Gemini authentication failed", {
       cause: error,
     });
   }
@@ -232,15 +224,8 @@ export class GeminiAdapter implements LLMClient {
 
   invoke(
     messages: readonly Message[],
-    options?: LLMCallOptions,
-  ): Promise<LLMResponse> {
-    return this.invokeInternal(messages, undefined, options);
-  }
-
-  invokeWithTools(
-    messages: readonly Message[],
-    tools: readonly ToolSchema[],
-    options?: LLMCallOptions,
+    tools?: readonly ToolSchema[],
+    options?: LLMOptions,
   ): Promise<LLMResponse> {
     return this.invokeInternal(messages, tools, options);
   }
@@ -248,24 +233,18 @@ export class GeminiAdapter implements LLMClient {
   private async invokeInternal(
     messages: readonly Message[],
     tools: readonly ToolSchema[] | undefined,
-    callOptions: LLMCallOptions | undefined,
+    callOptions: LLMOptions | undefined,
   ): Promise<LLMResponse> {
-    validateMessages(messages);
-    if (tools !== undefined) validateTools(tools);
     const options = mergeOptions(this.config.defaultOptions, callOptions);
     const converted = convertMessages(messages);
-    const timeoutSignal = AbortSignal.timeout(timeoutMilliseconds(options.timeout));
-    const combined = combineAbortSignals([options.signal, timeoutSignal]);
-    const request = {
-      model: this.config.model,
-      contents: converted.contents,
-      config: buildConfig(converted.system, tools, options, combined.signal!),
-    };
     const started = performance.now();
     try {
-      const response = await raceWithSignal(
-        this.client.models.generateContent(request),
-        combined.signal!,
+      const response = await runWithTimeout(options.timeout, (timeoutSignal) =>
+        this.client.models.generateContent({
+          model: this.config.model,
+          contents: converted.contents,
+          config: buildConfig(converted.system, tools, options, timeoutSignal),
+        }),
       );
       return normalize(
         response,
@@ -273,38 +252,31 @@ export class GeminiAdapter implements LLMClient {
         Math.round(performance.now() - started),
       );
     } catch (error) {
-      throw translateError(error, options.signal, timeoutSignal);
-    } finally {
-      combined.cleanup();
+      throw translateError(error);
     }
   }
 
-  async *streamInvoke(
+  async *stream(
     messages: readonly Message[],
-    callOptions?: LLMCallOptions,
-  ): AsyncIterable<string> {
-    validateMessages(messages);
+    tools?: readonly ToolSchema[],
+    callOptions?: LLMOptions,
+  ): AsyncIterable<LLMStreamEvent> {
     const options = mergeOptions(this.config.defaultOptions, callOptions);
     const converted = convertMessages(messages);
     const timeoutSignal = AbortSignal.timeout(timeoutMilliseconds(options.timeout));
-    const lifecycle = new AbortController();
-    const combined = combineAbortSignals([
-      options.signal,
-      timeoutSignal,
-      lifecycle.signal,
-    ]);
     const request = {
       model: this.config.model,
       contents: converted.contents,
-      config: buildConfig(converted.system, undefined, options, combined.signal!),
+      config: buildConfig(converted.system, tools, options, timeoutSignal),
     };
-    let iterator: AsyncIterator<unknown> | undefined;
-    let completed = false;
+    const started = performance.now();
+    let model = this.config.model;
+    let content = "";
+    let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    let finalReason: FinishReason = null;
+    const toolCalls: ToolCall[] = [];
     try {
-      const stream = await raceWithSignal(
-        this.client.models.generateContentStream(request),
-        combined.signal!,
-      );
+      const stream = await this.client.models.generateContentStream(request);
       if (
         typeof stream !== "object" ||
         stream === null ||
@@ -312,34 +284,38 @@ export class GeminiAdapter implements LLMClient {
       ) {
         throw new LLMProviderError("Gemini returned an invalid stream");
       }
-      iterator = (stream as AsyncIterable<unknown>)[Symbol.asyncIterator]();
-      while (true) {
-        const item = await raceWithSignal(iterator.next(), combined.signal!);
-        if (item.done) {
-          completed = true;
-          break;
-        }
-        if (
-          isRecord(item.value) &&
-          typeof item.value.text === "string" &&
-          item.value.text.length > 0
-        ) {
-          yield item.value.text;
+      for await (const chunk of stream as AsyncIterable<unknown>) {
+        const normalized = normalize(
+          chunk,
+          this.config.model,
+          Math.round(performance.now() - started),
+        );
+        model = normalized.model;
+        usage = normalized.usage;
+        finalReason = normalized.finishReason ?? finalReason;
+        toolCalls.push(...normalized.toolCalls);
+        if (normalized.content) {
+          content += normalized.content;
+          yield { type: "text_delta", text: normalized.content };
         }
       }
     } catch (error) {
-      throw translateError(error, options.signal, timeoutSignal);
-    } finally {
-      try {
-        if (!completed) {
-          lifecycle.abort(new Error("Gemini stream closed"));
-          closeAsyncIterator(iterator);
-        }
-      } finally {
-        combined.cleanup();
-      }
+      throw translateError(error, timeoutSignal.aborted);
     }
+
+    yield {
+      type: "response_done",
+      response: {
+        model,
+        content: content || null,
+        toolCalls,
+        usage,
+        latencyMs: Math.round(performance.now() - started),
+        finishReason: toolCalls.length > 0 ? "tool_calls" : finalReason,
+      },
+    };
   }
+
 }
 
 export async function createGeminiAdapter(

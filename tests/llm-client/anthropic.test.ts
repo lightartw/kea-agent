@@ -8,10 +8,10 @@ import {
 
 import { AnthropicAdapter } from "../../src/llm-client/adapters/anthropic.js";
 import {
-  LLMAuthenticationError,
   LLMProviderError,
   LLMTimeoutError,
 } from "../../src/llm-client/errors.js";
+import type { LLMStreamEvent } from "../../src/llm-client/models.js";
 import {
   asyncItems,
   baseConfig,
@@ -43,44 +43,33 @@ const basicResponse = {
   content: [{ type: "text", text: "done" }],
 };
 
-test("Anthropic converts system, tool calls, and tool results", async () => {
-  const fake = new FakeAnthropicClient(basicResponse);
-  const adapter = new AnthropicAdapter(baseConfig, fake);
+async function collect(stream: AsyncIterable<LLMStreamEvent>): Promise<LLMStreamEvent[]> {
+  const events: LLMStreamEvent[] = [];
+  for await (const event of stream) events.push(event);
+  return events;
+}
 
-  const response = await adapter.invokeWithTools(commonHistory, [bashSchema]);
+test("Anthropic converts system messages, schemas, and tool results", async () => {
+  const fake = new FakeAnthropicClient(basicResponse);
+  const response = await new AnthropicAdapter(baseConfig, fake).invoke(
+    commonHistory,
+    [bashSchema],
+  );
 
   assert.equal(fake.lastRequest.system, "system one\n\nsystem two");
-  assert.deepEqual(
-    fake.lastRequest.tools[0].input_schema,
-    bashSchema.function.parameters,
-  );
-  assert.deepEqual(fake.lastRequest.messages, [
-    { role: "user", content: "run pwd" },
-    {
-      role: "assistant",
-      content: [
-        {
-          type: "tool_use",
-          id: "call-1",
-          name: "bash",
-          input: { command: "pwd" },
-        },
-      ],
-    },
-    {
-      role: "user",
-      content: [
-        { type: "tool_result", tool_use_id: "call-1", content: "/tmp" },
-      ],
-    },
-  ]);
-  assert.deepEqual(response, {
-    model: "claude-test",
-    content: "done",
-    toolCalls: [],
-    usage: { inputTokens: 3, outputTokens: 4, totalTokens: 7 },
-    latencyMs: response.latencyMs,
-    finishReason: "stop",
+  assert.deepEqual(fake.lastRequest.tools, [{
+    name: "bash",
+    description: "Run a shell command.",
+    input_schema: bashSchema.function.parameters,
+  }]);
+  assert.deepEqual(fake.lastRequest.messages.at(-1), {
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: "call-1", content: "/tmp" }],
+  });
+  assert.deepEqual(response.usage, {
+    inputTokens: 3,
+    outputTokens: 4,
+    totalTokens: 7,
   });
 });
 
@@ -94,14 +83,11 @@ test("Anthropic normalizes tool calls and maps options", async () => {
       { type: "tool_use", id: "c1", name: "bash", input: { command: "pwd" } },
     ],
   });
-  const adapter = new AnthropicAdapter(baseConfig, fake);
-
-  const response = await adapter.invoke(userMessages, {
-    maxTokens: 17,
-    temperature: 0.2,
-    topP: 0.8,
-    stop: ["END"],
-  });
+  const response = await new AnthropicAdapter(baseConfig, fake).invoke(
+    userMessages,
+    undefined,
+    { maxTokens: 17, temperature: 0.2, topP: 0.8, stop: ["END"] },
+  );
 
   assert.equal(fake.lastRequest.max_tokens, 17);
   assert.equal(fake.lastRequest.temperature, 0.2);
@@ -111,12 +97,6 @@ test("Anthropic normalizes tool calls and maps options", async () => {
     { id: "c1", name: "bash", arguments: { command: "pwd" } },
   ]);
   assert.equal(response.finishReason, "tool_calls");
-});
-
-test("Anthropic maps max-token finish reasons", async () => {
-  const fake = new FakeAnthropicClient({ ...basicResponse, stop_reason: "max_tokens" });
-  const response = await new AnthropicAdapter(baseConfig, fake).invoke(userMessages);
-  assert.equal(response.finishReason, "length");
 });
 
 test("Anthropic rejects non-object provider tool arguments", async () => {
@@ -130,166 +110,88 @@ test("Anthropic rejects non-object provider tool arguments", async () => {
   );
 });
 
-test("Anthropic preserves caller abort reasons", async () => {
-  const controller = new AbortController();
-  const reason = new Error("caller cancelled");
-  controller.abort(reason);
-  const fake = new FakeAnthropicClient(new Promise(() => undefined));
-
-  await assert.rejects(
-    new AnthropicAdapter(baseConfig, fake).invoke(userMessages, {
-      signal: controller.signal,
-    }),
-    (error: unknown) => error === reason,
-  );
-});
-
-test("Anthropic translates authentication and timeout errors", async () => {
+test("Anthropic maps authentication and timeout failures", async () => {
   const authentication = Object.create(AuthenticationError.prototype) as Error;
   const timeout = Object.create(APIConnectionTimeoutError.prototype) as Error;
 
   await assert.rejects(
-    new AnthropicAdapter(baseConfig, new FakeAnthropicClient(authentication)).invoke(
-      userMessages,
-    ),
-    LLMAuthenticationError,
+    new AnthropicAdapter(baseConfig, new FakeAnthropicClient(authentication)).invoke(userMessages),
+    (error: unknown) =>
+      error instanceof LLMProviderError && /authentication/.test(error.message),
   );
   await assert.rejects(
-    new AnthropicAdapter(baseConfig, new FakeAnthropicClient(timeout)).invoke(
-      userMessages,
-    ),
+    new AnthropicAdapter(baseConfig, new FakeAnthropicClient(timeout)).invoke(userMessages),
     LLMTimeoutError,
   );
 });
 
 test("Anthropic enforces the common timeout", async () => {
-  const fake = new FakeAnthropicClient(new Promise(() => undefined));
   const adapter = new AnthropicAdapter(
-    {
-      ...baseConfig,
-      defaultOptions: { timeout: 0.001, maxTokens: 8_000 },
-    },
-    fake,
+    { ...baseConfig, defaultOptions: { timeout: 0.001, maxTokens: 8_000 } },
+    new FakeAnthropicClient(new Promise(() => undefined)),
   );
-
   await assert.rejects(adapter.invoke(userMessages), LLMTimeoutError);
 });
 
-test("Anthropic wraps generic errors with their cause", async () => {
+test("Anthropic wraps generic failures with their cause", async () => {
   const cause = new Error("offline");
   await assert.rejects(
-    new AnthropicAdapter(baseConfig, new FakeAnthropicClient(cause)).invoke(
-      userMessages,
-    ),
-    (error: unknown) =>
-      error instanceof LLMProviderError && error.cause === cause,
+    new AnthropicAdapter(baseConfig, new FakeAnthropicClient(cause)).invoke(userMessages),
+    (error: unknown) => error instanceof LLMProviderError && error.cause === cause,
   );
 });
 
-test("Anthropic streams only non-empty text deltas", async () => {
-  const events = asyncItems([
-    { type: "message_start" },
-    { type: "content_block_delta", delta: { type: "text_delta", text: "a" } },
-    { type: "content_block_delta", delta: { type: "text_delta", text: "" } },
-    { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "{}" } },
-    { type: "content_block_delta", delta: { type: "text_delta", text: "b" } },
+test("Anthropic streams text and completes fragmented tool calls", async () => {
+  const fake = new FakeAnthropicClient(asyncItems([
+    {
+      type: "message_start",
+      message: { model: "claude-test", usage: { input_tokens: 2 } },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: "working" },
+    },
+    {
+      type: "content_block_start",
+      index: 1,
+      content_block: { type: "tool_use", id: "c1", name: "bash", input: {} },
+    },
+    {
+      type: "content_block_delta",
+      index: 1,
+      delta: { type: "input_json_delta", partial_json: '{"command":' },
+    },
+    {
+      type: "content_block_delta",
+      index: 1,
+      delta: { type: "input_json_delta", partial_json: '"pwd"}' },
+    },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use" },
+      usage: { output_tokens: 3 },
+    },
+    { type: "message_stop" },
+  ]));
+
+  const events = await collect(
+    new AnthropicAdapter(baseConfig, fake).stream(userMessages, [bashSchema]),
+  );
+
+  assert.deepEqual(events[0], { type: "text_delta", text: "working" });
+  const done = events[1];
+  assert.equal(done?.type, "response_done");
+  if (done?.type !== "response_done") return;
+  assert.equal(done.response.content, "working");
+  assert.deepEqual(done.response.toolCalls, [
+    { id: "c1", name: "bash", arguments: { command: "pwd" } },
   ]);
-  const fake = new FakeAnthropicClient(events);
-  const chunks: string[] = [];
-
-  for await (const chunk of new AnthropicAdapter(baseConfig, fake).streamInvoke(
-    userMessages,
-  )) {
-    chunks.push(chunk);
-  }
-
-  assert.deepEqual(chunks, ["a", "b"]);
-  assert.equal(fake.lastRequest.stream, true);
-  assert.ok(fake.lastRequestOptions.signal instanceof AbortSignal);
-});
-
-test("Anthropic aborts the provider stream when the consumer exits early", async () => {
-  const fake = new FakeAnthropicClient(
-    asyncItems([
-      { type: "content_block_delta", delta: { type: "text_delta", text: "a" } },
-      { type: "content_block_delta", delta: { type: "text_delta", text: "b" } },
-    ]),
-  );
-
-  for await (const _chunk of new AnthropicAdapter(baseConfig, fake).streamInvoke(
-    userMessages,
-  )) {
-    break;
-  }
-
-  assert.equal(fake.lastRequestOptions.signal.aborted, true);
-});
-
-test("Anthropic stream cleanup cannot replace the provider error", async () => {
-  const providerError = new Error("provider stream failed");
-  const closeError = new Error("stream close failed");
-  const stream = {
-    [Symbol.asyncIterator]() {
-      return {
-        async next(): Promise<IteratorResult<unknown>> {
-          throw providerError;
-        },
-        async return(): Promise<IteratorResult<unknown>> {
-          throw closeError;
-        },
-      };
-    },
-  };
-  const adapter = new AnthropicAdapter(
-    baseConfig,
-    new FakeAnthropicClient(stream),
-  );
-
-  await assert.rejects(
-    async () => {
-      for await (const _chunk of adapter.streamInvoke(userMessages)) {
-        // The fake fails before yielding.
-      }
-    },
-    (error: unknown) =>
-      error instanceof LLMProviderError && error.cause === providerError,
-  );
-});
-
-test("Anthropic stream errors do not wait forever for iterator cleanup", async () => {
-  const providerError = new Error("provider stream failed");
-  const stream = {
-    [Symbol.asyncIterator]() {
-      return {
-        async next(): Promise<IteratorResult<unknown>> {
-          throw providerError;
-        },
-        return(): Promise<IteratorResult<unknown>> {
-          return new Promise(() => undefined);
-        },
-      };
-    },
-  };
-  const adapter = new AnthropicAdapter(
-    baseConfig,
-    new FakeAnthropicClient(stream),
-  );
-  const operation = (async () => {
-    try {
-      for await (const _chunk of adapter.streamInvoke(userMessages)) {
-        // The fake fails before yielding.
-      }
-      return "resolved";
-    } catch (error) {
-      return error;
-    }
-  })();
-
-  const outcome = await Promise.race([
-    operation,
-    new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 50)),
-  ]);
-  assert.notEqual(outcome, "hung");
-  assert.ok(outcome instanceof LLMProviderError);
-  assert.equal(outcome.cause, providerError);
+  assert.deepEqual(done.response.usage, {
+    inputTokens: 2,
+    outputTokens: 3,
+    totalTokens: 5,
+  });
+  assert.equal(done.response.finishReason, "tool_calls");
+  assert.deepEqual(fake.lastRequest.tools[0].input_schema, bashSchema.function.parameters);
 });

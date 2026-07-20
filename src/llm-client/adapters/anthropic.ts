@@ -5,15 +5,12 @@ import Anthropic, {
 
 import {
   mergeOptions,
-  validateMessages,
-  validateTools,
   type AdapterConfig,
-  type LLMCallOptions,
   type LLMClient,
-  type ResolvedLLMCallOptions,
+  type LLMOptions,
+  type ResolvedLLMOptions,
 } from "../client.js";
 import {
-  LLMAuthenticationError,
   LLMError,
   LLMProviderError,
   LLMTimeoutError,
@@ -21,17 +18,17 @@ import {
 import type {
   FinishReason,
   LLMResponse,
+  LLMStreamEvent,
   Message,
   ToolArguments,
   ToolCall,
   ToolSchema,
 } from "../models.js";
 import {
-  combineAbortSignals,
-  closeAsyncIterator,
-  raceWithSignal,
+  TimeoutError,
+  runWithTimeout,
   timeoutMilliseconds,
-} from "../../utils/abort-signals.js";
+} from "../../utils/timeout.js";
 
 interface AnthropicClientLike {
   readonly messages: {
@@ -113,7 +110,7 @@ function convertTools(tools: readonly ToolSchema[]): readonly Record<string, unk
 }
 
 function requestOptions(
-  options: ResolvedLLMCallOptions,
+  options: ResolvedLLMOptions,
 ): Record<string, unknown> {
   const request: Record<string, unknown> = { max_tokens: options.maxTokens };
   if (options.temperature !== undefined) request.temperature = options.temperature;
@@ -184,17 +181,16 @@ function normalize(response: unknown, latencyMs: number): LLMResponse {
   };
 }
 
-function translateError(
-  error: unknown,
-  callerSignal: AbortSignal | undefined,
-  timeoutSignal: AbortSignal,
-): unknown {
-  if (callerSignal?.aborted) return callerSignal.reason;
-  if (timeoutSignal.aborted || error instanceof APIConnectionTimeoutError) {
+function translateError(error: unknown, timedOut = false): unknown {
+  if (
+    timedOut ||
+    error instanceof TimeoutError ||
+    error instanceof APIConnectionTimeoutError
+  ) {
     return new LLMTimeoutError("Anthropic request timed out", { cause: error });
   }
   if (error instanceof AuthenticationError) {
-    return new LLMAuthenticationError("Anthropic authentication failed", {
+    return new LLMProviderError("Anthropic authentication failed", {
       cause: error,
     });
   }
@@ -213,15 +209,8 @@ export class AnthropicAdapter implements LLMClient {
 
   invoke(
     messages: readonly Message[],
-    options?: LLMCallOptions,
-  ): Promise<LLMResponse> {
-    return this.invokeInternal(messages, undefined, options);
-  }
-
-  invokeWithTools(
-    messages: readonly Message[],
-    tools: readonly ToolSchema[],
-    options?: LLMCallOptions,
+    tools?: readonly ToolSchema[],
+    options?: LLMOptions,
   ): Promise<LLMResponse> {
     return this.invokeInternal(messages, tools, options);
   }
@@ -229,10 +218,8 @@ export class AnthropicAdapter implements LLMClient {
   private async invokeInternal(
     messages: readonly Message[],
     tools: readonly ToolSchema[] | undefined,
-    callOptions: LLMCallOptions | undefined,
+    callOptions: LLMOptions | undefined,
   ): Promise<LLMResponse> {
-    validateMessages(messages);
-    if (tools !== undefined) validateTools(tools);
     const options = mergeOptions(this.config.defaultOptions, callOptions);
     const converted = convertMessages(messages);
     const request: Record<string, unknown> = {
@@ -244,30 +231,25 @@ export class AnthropicAdapter implements LLMClient {
     if (tools !== undefined) request.tools = convertTools(tools);
 
     const timeoutMs = timeoutMilliseconds(options.timeout);
-    const timeoutSignal = AbortSignal.timeout(timeoutMs);
-    const combined = combineAbortSignals([options.signal, timeoutSignal]);
     const started = performance.now();
     try {
-      const response = await raceWithSignal(
+      const response = await runWithTimeout(options.timeout, (timeoutSignal) =>
         this.client.messages.create(request, {
           timeout: timeoutMs,
-          signal: combined.signal!,
+          signal: timeoutSignal,
         }),
-        combined.signal!,
       );
       return normalize(response, Math.round(performance.now() - started));
     } catch (error) {
-      throw translateError(error, options.signal, timeoutSignal);
-    } finally {
-      combined.cleanup();
+      throw translateError(error);
     }
   }
 
-  async *streamInvoke(
+  async *stream(
     messages: readonly Message[],
-    callOptions?: LLMCallOptions,
-  ): AsyncIterable<string> {
-    validateMessages(messages);
+    tools?: readonly ToolSchema[],
+    callOptions?: LLMOptions,
+  ): AsyncIterable<LLMStreamEvent> {
     const options = mergeOptions(this.config.defaultOptions, callOptions);
     const converted = convertMessages(messages);
     const request: Record<string, unknown> = {
@@ -277,25 +259,25 @@ export class AnthropicAdapter implements LLMClient {
       ...requestOptions(options),
     };
     if (converted.system !== undefined) request.system = converted.system;
+    if (tools !== undefined) request.tools = convertTools(tools);
 
     const timeoutMs = timeoutMilliseconds(options.timeout);
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
-    const lifecycle = new AbortController();
-    const combined = combineAbortSignals([
-      options.signal,
-      timeoutSignal,
-      lifecycle.signal,
-    ]);
-    let iterator: AsyncIterator<unknown> | undefined;
-    let completed = false;
+    const started = performance.now();
+    let model = this.config.model;
+    let content = "";
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let finalReason: FinishReason = null;
+    const pendingCalls = new Map<
+      number,
+      { id: string; name: string; argumentsText: string }
+    >();
     try {
-      const stream = await raceWithSignal(
-        this.client.messages.create(request, {
+      const stream = await this.client.messages.create(request, {
           timeout: timeoutMs,
-          signal: combined.signal!,
-        }),
-        combined.signal!,
-      );
+          signal: timeoutSignal,
+        });
       if (
         typeof stream !== "object" ||
         stream === null ||
@@ -303,38 +285,90 @@ export class AnthropicAdapter implements LLMClient {
       ) {
         throw new LLMProviderError("Anthropic returned an invalid stream");
       }
-      iterator = (stream as AsyncIterable<unknown>)[Symbol.asyncIterator]();
-      while (true) {
-        const item = await raceWithSignal(iterator.next(), combined.signal!);
-        if (item.done) {
-          completed = true;
-          break;
-        }
-        const event = item.value;
-        if (
-          isRecord(event) &&
-          event.type === "content_block_delta" &&
-          isRecord(event.delta) &&
-          event.delta.type === "text_delta" &&
-          typeof event.delta.text === "string" &&
-          event.delta.text.length > 0
+      for await (const event of stream as AsyncIterable<unknown>) {
+        if (!isRecord(event)) continue;
+        if (event.type === "message_start" && isRecord(event.message)) {
+          if (typeof event.message.model === "string") model = event.message.model;
+          if (isRecord(event.message.usage)) {
+            inputTokens = Number(event.message.usage.input_tokens ?? 0) || 0;
+            outputTokens = Number(event.message.usage.output_tokens ?? 0) || 0;
+          }
+        } else if (
+          event.type === "content_block_start" &&
+          Number.isInteger(event.index) &&
+          isRecord(event.content_block) &&
+          event.content_block.type === "tool_use" &&
+          typeof event.content_block.id === "string" &&
+          typeof event.content_block.name === "string"
         ) {
-          yield event.delta.text;
+          const input = event.content_block.input;
+          const argumentsText =
+            isRecord(input) && Object.keys(input).length > 0
+              ? JSON.stringify(input)
+              : "";
+          pendingCalls.set(Number(event.index), {
+            id: event.content_block.id,
+            name: event.content_block.name,
+            argumentsText,
+          });
+        } else if (
+          event.type === "content_block_delta" &&
+          Number.isInteger(event.index) &&
+          isRecord(event.delta)
+        ) {
+          if (
+            event.delta.type === "text_delta" &&
+            typeof event.delta.text === "string" &&
+            event.delta.text
+          ) {
+            content += event.delta.text;
+            yield { type: "text_delta", text: event.delta.text };
+          } else if (
+            event.delta.type === "input_json_delta" &&
+            typeof event.delta.partial_json === "string"
+          ) {
+            const pending = pendingCalls.get(Number(event.index));
+            if (pending !== undefined) {
+              pending.argumentsText += event.delta.partial_json;
+            }
+          }
+        } else if (event.type === "message_delta") {
+          if (isRecord(event.delta)) {
+            finalReason = finishReason(event.delta.stop_reason) ?? finalReason;
+          }
+          if (isRecord(event.usage)) {
+            outputTokens = Number(event.usage.output_tokens ?? outputTokens) || 0;
+          }
         }
       }
     } catch (error) {
-      throw translateError(error, options.signal, timeoutSignal);
-    } finally {
-      try {
-        if (!completed) {
-          lifecycle.abort(new Error("Anthropic stream closed"));
-          closeAsyncIterator(iterator);
-        }
-      } finally {
-        combined.cleanup();
-      }
+      throw translateError(error, timeoutSignal.aborted);
     }
+
+    const toolCalls = [...pendingCalls.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, call]) => ({
+        id: call.id,
+        name: call.name,
+        arguments: toolArguments(JSON.parse(call.argumentsText || "{}")),
+      }));
+    yield {
+      type: "response_done",
+      response: {
+        model,
+        content: content || null,
+        toolCalls,
+        usage: {
+          inputTokens,
+          outputTokens,
+          totalTokens: inputTokens + outputTokens,
+        },
+        latencyMs: Math.round(performance.now() - started),
+        finishReason: finalReason,
+      },
+    };
   }
+
 }
 
 export async function createAnthropicAdapter(

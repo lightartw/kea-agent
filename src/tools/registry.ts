@@ -1,22 +1,19 @@
+import type { TObject } from "typebox";
 import { Compile, type Validator } from "typebox/compile";
-import type { TSchema } from "typebox";
 
+import type { ToolCall, ToolSchema } from "../llm-client/models.js";
 import {
-  combineAbortSignals,
-  raceWithSignal,
+  TimeoutError,
+  runWithTimeout,
   timeoutMilliseconds,
-} from "../utils/abort-signals.js";
+} from "../utils/timeout.js";
 import { Tool, toolResult, type ToolResult } from "./base.js";
-import {
-  ToolConfigurationError,
-  ToolExecutionError,
-} from "./errors.js";
-import type { ToolSchema } from "../llm-client/models.js";
+import { ToolExecutionError } from "./errors.js";
 
 const ERROR_PREFIX = "Error: ";
 
 interface RegisteredTool {
-  readonly tool: Tool<TSchema>;
+  readonly tool: Tool<TObject>;
   readonly validator: Validator;
 }
 
@@ -25,127 +22,33 @@ export interface ToolRegistryOptions {
   readonly maxResultChars?: number;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function positiveFinite(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0;
-}
-
-function validateTimeoutRange(value: number, label: string): void {
-  try {
-    timeoutMilliseconds(value);
-  } catch (error) {
-    throw new ToolConfigurationError(`${label} exceeds the Node timer range`, {
-      cause: error,
-    });
-  }
-}
-
 export class ToolRegistry {
   readonly defaultTimeout: number;
   readonly maxResultChars: number;
   private readonly tools = new Map<string, RegisteredTool>();
 
   constructor(options: ToolRegistryOptions = {}) {
-    const defaultTimeout = options.defaultTimeout ?? 120;
-    const maxResultChars = options.maxResultChars ?? 50_000;
-    if (!positiveFinite(defaultTimeout)) {
-      throw new ToolConfigurationError(
-        "defaultTimeout must be a positive finite number",
-      );
-    }
-    validateTimeoutRange(defaultTimeout, "defaultTimeout");
-    if (
-      !Number.isInteger(maxResultChars) ||
-      maxResultChars < ERROR_PREFIX.length
-    ) {
-      throw new ToolConfigurationError(
-        `maxResultChars must be an integer of at least ${ERROR_PREFIX.length}`,
-      );
-    }
-    this.defaultTimeout = defaultTimeout;
-    this.maxResultChars = maxResultChars;
-  }
-
-  private validateTool(tool: Tool<TSchema>): Validator {
-    if (!(tool instanceof Tool)) {
-      throw new ToolConfigurationError("tool must be a Tool instance");
-    }
-    if (typeof tool.name !== "string" || !tool.name.trim()) {
-      throw new ToolConfigurationError("tool name must be non-empty");
-    }
-    if (typeof tool.description !== "string" || !tool.description.trim()) {
-      throw new ToolConfigurationError("tool description must be non-empty");
-    }
-    if (tool.timeout !== null && !positiveFinite(tool.timeout)) {
-      throw new ToolConfigurationError(
-        "tool timeout must be a positive finite number",
-      );
-    }
-    if (tool.timeout !== null) validateTimeoutRange(tool.timeout, "tool timeout");
-    if (!isRecord(tool.parameters)) {
-      throw new ToolConfigurationError("tool parameters must be an object");
-    }
-    if (tool.parameters.type !== "object") {
-      throw new ToolConfigurationError("parameter schema root type must be object");
-    }
-    const properties = tool.parameters.properties ?? {};
-    if (!isRecord(properties)) {
-      throw new ToolConfigurationError(
-        "parameter schema properties must be an object",
-      );
-    }
-    const required = tool.parameters.required ?? [];
-    if (
-      !Array.isArray(required) ||
-      !required.every((name: unknown) => typeof name === "string")
-    ) {
-      throw new ToolConfigurationError(
-        "parameter schema required must be an array of strings",
-      );
-    }
-    const undeclared = required
-      .filter((name: string) => !(name in properties))
-      .sort();
-    if (undeclared[0] !== undefined) {
-      throw new ToolConfigurationError(
-        `required property is not declared: ${undeclared[0]}`,
-      );
-    }
-    try {
-      return Compile(tool.parameters);
-    } catch (error) {
-      throw new ToolConfigurationError(
-        `invalid parameter schema for tool '${tool.name}': ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        { cause: error },
-      );
+    this.defaultTimeout = options.defaultTimeout ?? 120;
+    this.maxResultChars = options.maxResultChars ?? 50_000;
+    timeoutMilliseconds(this.defaultTimeout);
+    if (!Number.isInteger(this.maxResultChars) || this.maxResultChars < 1) {
+      throw new Error("maxResultChars must be a positive integer");
     }
   }
 
-  register(tool: Tool<TSchema>): void {
-    const validator = this.validateTool(tool);
+  register(tool: Tool<TObject>): void {
     if (this.tools.has(tool.name)) {
-      throw new ToolConfigurationError(
-        `tool '${tool.name}' is already registered`,
-      );
+      throw new Error(`tool '${tool.name}' is already registered`);
     }
-    this.tools.set(tool.name, { tool, validator });
+    if (tool.timeout !== null) timeoutMilliseconds(tool.timeout);
+    this.tools.set(tool.name, {
+      tool,
+      validator: Compile(tool.parameters),
+    });
   }
 
   unregister(name: string): void {
     this.tools.delete(name);
-  }
-
-  get(name: string): Tool<TSchema> | undefined {
-    return this.tools.get(name)?.tool;
-  }
-
-  names(): string[] {
-    return [...this.tools.keys()];
   }
 
   schemas(): ToolSchema[] {
@@ -157,57 +60,42 @@ export class ToolRegistry {
   }
 
   private error(message: string): ToolResult {
-    const content = message.startsWith(ERROR_PREFIX)
-      ? message
-      : `${ERROR_PREFIX}${message}`;
-    return this.result(content, true);
+    return this.result(
+      message.startsWith(ERROR_PREFIX) ? message : `${ERROR_PREFIX}${message}`,
+      true,
+    );
   }
 
-  async execute(
-    name: string,
-    arguments_: unknown,
-    callerSignal?: AbortSignal,
-  ): Promise<ToolResult> {
-    const registered = this.tools.get(name);
+  async execute(call: ToolCall): Promise<ToolResult> {
+    const registered = this.tools.get(call.name);
     if (registered === undefined) {
-      return this.error(`Unknown tool '${name}'`);
+      return this.error(`Unknown tool '${call.name}'`);
     }
-    if (!isRecord(arguments_)) {
-      return this.error(`arguments must be an object for tool '${name}'`);
-    }
-    if (!registered.validator.Check(arguments_)) {
-      const detail = registered.validator.Errors(arguments_)[0]?.message;
+    if (!registered.validator.Check(call.arguments)) {
+      const detail = registered.validator.Errors(call.arguments)[0]?.message;
       return this.error(
-        `Invalid arguments for tool '${name}': ${detail ?? "validation failed"}`,
+        `Invalid arguments for tool '${call.name}': ${detail ?? "validation failed"}`,
       );
     }
-    if (callerSignal?.aborted) throw callerSignal.reason;
 
     const timeout = registered.tool.timeout ?? this.defaultTimeout;
-    const timeoutSignal = AbortSignal.timeout(timeoutMilliseconds(timeout));
-    const combined = combineAbortSignals([callerSignal, timeoutSignal]);
     try {
-      const content = await raceWithSignal(
-        registered.tool.execute(arguments_, combined.signal!),
-        combined.signal!,
+      const content = await runWithTimeout(timeout, (timeoutSignal) =>
+        registered.tool.execute(call.arguments, timeoutSignal),
       );
-      if (typeof content !== "string") {
-        return this.error(`Tool '${name}' must return a string`);
-      }
       return this.result(content);
     } catch (error) {
-      if (callerSignal?.aborted) throw callerSignal.reason;
-      if (timeoutSignal.aborted) {
-        return this.error(`Tool '${name}' timed out after ${timeout} seconds`);
+      if (error instanceof TimeoutError) {
+        return this.error(
+          `Tool '${call.name}' timed out after ${timeout} seconds`,
+        );
       }
       if (error instanceof ToolExecutionError) return this.error(error.message);
       return this.error(
-        `Tool '${name}' failed: ${
+        `Tool '${call.name}' failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-    } finally {
-      combined.cleanup();
     }
   }
 }

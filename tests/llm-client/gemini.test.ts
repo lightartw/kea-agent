@@ -6,10 +6,10 @@ import {
   GeminiAdapter,
 } from "../../src/llm-client/adapters/gemini.js";
 import {
-  LLMAuthenticationError,
   LLMProviderError,
   LLMTimeoutError,
 } from "../../src/llm-client/errors.js";
+import type { LLMStreamEvent } from "../../src/llm-client/models.js";
 import {
   asyncItems,
   baseConfig,
@@ -52,35 +52,34 @@ const basicResponse = {
   candidates: [{ finishReason: "STOP" }],
 };
 
-test("Gemini converts tool calls and tool results", async () => {
+async function collect(stream: AsyncIterable<LLMStreamEvent>): Promise<LLMStreamEvent[]> {
+  const events: LLMStreamEvent[] = [];
+  for await (const event of stream) events.push(event);
+  return events;
+}
+
+test("Gemini converts schemas, calls, and tool results", async () => {
   const fake = new FakeGeminiClient(basicResponse);
-  const adapter = new GeminiAdapter(baseConfig, fake);
+  const response = await new GeminiAdapter(baseConfig, fake).invoke(
+    commonHistory,
+    [bashSchema],
+  );
 
-  const response = await adapter.invokeWithTools(commonHistory, [bashSchema]);
-
-  assert.deepEqual(fake.lastRequest.config.tools, [
-    {
-      functionDeclarations: [
-        {
-          name: "bash",
-          description: "Run a shell command.",
-          parametersJsonSchema: bashSchema.function.parameters,
-        },
-      ],
-    },
-  ]);
+  assert.deepEqual(fake.lastRequest.config.tools, [{
+    functionDeclarations: [{
+      name: "bash",
+      description: "Run a shell command.",
+      parametersJsonSchema: bashSchema.function.parameters,
+    }],
+  }]);
   assert.equal(fake.lastRequest.config.systemInstruction, "system one\n\nsystem two");
   assert.equal(fake.lastRequest.contents[1].role, "model");
-  assert.equal(
-    fake.lastRequest.contents[2].parts[0].functionResponse.name,
-    "bash",
-  );
+  assert.equal(fake.lastRequest.contents[2].parts[0].functionResponse.name, "bash");
   assert.deepEqual(response.usage, {
     inputTokens: 3,
     outputTokens: 4,
     totalTokens: 7,
   });
-  assert.equal(response.finishReason, "stop");
 });
 
 test("Gemini normalizes calls, fallback IDs, and options", async () => {
@@ -90,36 +89,22 @@ test("Gemini normalizes calls, fallback IDs, and options", async () => {
     functionCalls: [{ name: "bash", args: { command: "pwd" } }],
     candidates: [{ finishReason: "MAX_TOKENS" }],
   });
-  const adapter = new GeminiAdapter(baseConfig, fake);
-
-  const response = await adapter.invoke(userMessages, {
-    maxTokens: 17,
-    temperature: 0.2,
-    topP: 0.8,
-    stop: ["END"],
-  });
+  const response = await new GeminiAdapter(baseConfig, fake).invoke(
+    userMessages,
+    undefined,
+    { maxTokens: 17, temperature: 0.2, topP: 0.8, stop: ["END"] },
+  );
 
   assert.equal(fake.lastRequest.config.maxOutputTokens, 17);
   assert.equal(fake.lastRequest.config.temperature, 0.2);
   assert.equal(fake.lastRequest.config.topP, 0.8);
   assert.deepEqual(fake.lastRequest.config.stopSequences, ["END"]);
-  assert.deepEqual(response.toolCalls, [
-    {
-      id: "gemini-call-0",
-      name: "bash",
-      arguments: { command: "pwd" },
-    },
-  ]);
+  assert.deepEqual(response.toolCalls, [{
+    id: "gemini-call-0",
+    name: "bash",
+    arguments: { command: "pwd" },
+  }]);
   assert.equal(response.finishReason, "tool_calls");
-});
-
-test("Gemini maps max-token finish reasons without calls", async () => {
-  const fake = new FakeGeminiClient({
-    ...basicResponse,
-    candidates: [{ finishReason: "MAX_TOKENS" }],
-  });
-  const response = await new GeminiAdapter(baseConfig, fake).invoke(userMessages);
-  assert.equal(response.finishReason, "length");
 });
 
 test("Gemini rejects non-object provider tool arguments", async () => {
@@ -149,67 +134,77 @@ test("Gemini configures a custom base URL", async () => {
   });
 });
 
-test("Gemini preserves caller abort reasons", async () => {
-  const controller = new AbortController();
-  const reason = new Error("caller cancelled");
-  controller.abort(reason);
-  const fake = new FakeGeminiClient(new Promise(() => undefined));
-  await assert.rejects(
-    new GeminiAdapter(baseConfig, fake).invoke(userMessages, {
-      signal: controller.signal,
-    }),
-    (error: unknown) => error === reason,
-  );
-});
-
-test("Gemini detects 401 and 403 authentication errors", async () => {
+test("Gemini maps authentication failures", async () => {
   for (const status of [401, 403]) {
     const error = Object.assign(new Error("denied"), { status });
     await assert.rejects(
-      new GeminiAdapter(baseConfig, new FakeGeminiClient(error)).invoke(
-        userMessages,
-      ),
-      LLMAuthenticationError,
+      new GeminiAdapter(baseConfig, new FakeGeminiClient(error)).invoke(userMessages),
+      (caught: unknown) =>
+        caught instanceof LLMProviderError && /authentication/.test(caught.message),
     );
   }
 });
 
 test("Gemini enforces the common timeout", async () => {
   const adapter = new GeminiAdapter(
-    {
-      ...baseConfig,
-      defaultOptions: { timeout: 0.001, maxTokens: 8_000 },
-    },
+    { ...baseConfig, defaultOptions: { timeout: 0.001, maxTokens: 8_000 } },
     new FakeGeminiClient(new Promise(() => undefined)),
   );
   await assert.rejects(adapter.invoke(userMessages), LLMTimeoutError);
 });
 
-test("Gemini wraps generic errors with their cause", async () => {
+test("Gemini wraps generic failures with their cause", async () => {
   const cause = new Error("offline");
   await assert.rejects(
-    new GeminiAdapter(baseConfig, new FakeGeminiClient(cause)).invoke(
-      userMessages,
-    ),
-    (error: unknown) =>
-      error instanceof LLMProviderError && error.cause === cause,
+    new GeminiAdapter(baseConfig, new FakeGeminiClient(cause)).invoke(userMessages),
+    (error: unknown) => error instanceof LLMProviderError && error.cause === cause,
   );
 });
 
-test("Gemini streams non-empty text and aborts on early exit", async () => {
+test("Gemini streams text and returns complete tool calls", async () => {
   const fake = new FakeGeminiClient(
     basicResponse,
-    asyncItems([{ text: "a" }, { text: "" }, { functionCalls: [] }, { text: "b" }]),
+    asyncItems([
+      { modelVersion: "gemini-test", text: "working " },
+      {
+        text: "now",
+        functionCalls: [{ name: "bash", args: { command: "pwd" } }],
+        usageMetadata: {
+          promptTokenCount: 2,
+          candidatesTokenCount: 3,
+          totalTokenCount: 5,
+        },
+        candidates: [{ finishReason: "STOP" }],
+      },
+    ]),
   );
-  const chunks: string[] = [];
 
-  for await (const chunk of new GeminiAdapter(baseConfig, fake).streamInvoke(
-    userMessages,
-  )) {
-    chunks.push(chunk);
-    if (chunks.length === 1) break;
-  }
+  const events = await collect(
+    new GeminiAdapter(baseConfig, fake).stream(userMessages, [bashSchema]),
+  );
 
-  assert.deepEqual(chunks, ["a"]);
-  assert.equal(fake.lastRequest.config.abortSignal.aborted, true);
+  assert.deepEqual(events.slice(0, 2), [
+    { type: "text_delta", text: "working " },
+    { type: "text_delta", text: "now" },
+  ]);
+  const done = events[2];
+  assert.equal(done?.type, "response_done");
+  if (done?.type !== "response_done") return;
+  assert.equal(done.response.content, "working now");
+  assert.deepEqual(done.response.toolCalls, [{
+    id: "gemini-call-0",
+    name: "bash",
+    arguments: { command: "pwd" },
+  }]);
+  assert.deepEqual(done.response.usage, {
+    inputTokens: 2,
+    outputTokens: 3,
+    totalTokens: 5,
+  });
+  assert.equal(done.response.finishReason, "tool_calls");
+  assert.deepEqual(fake.lastRequest.config.tools[0].functionDeclarations[0], {
+    name: "bash",
+    description: "Run a shell command.",
+    parametersJsonSchema: bashSchema.function.parameters,
+  });
 });

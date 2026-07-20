@@ -1,21 +1,14 @@
 import {
   mergeOptions,
   type AdapterConfig,
-  type LLMCallOptions,
   type LLMClient,
   type LLMOptions,
-  type ResolvedLLMOptions,
 } from "./client.js";
 import {
   LLMConfigurationError,
   LLMProviderError,
 } from "./errors.js";
-import type {
-  LLMResponse,
-  Message,
-  ProviderName,
-  ToolSchema,
-} from "./models.js";
+import type { ProviderName } from "./models.js";
 
 const PROVIDERS = {
   anthropic: { apiKey: "ANTHROPIC_API_KEY", baseUrl: "ANTHROPIC_BASE_URL" },
@@ -31,17 +24,6 @@ export interface CreateLLMClientOptions extends LLMOptions {
 }
 
 export type LLMEnvironment = Readonly<Record<string, string | undefined>>;
-export type AdapterLoader = (config: AdapterConfig) => Promise<LLMClient>;
-export type AdapterLoaders = Readonly<Record<ProviderName, AdapterLoader>>;
-
-const DEFAULT_LOADERS: AdapterLoaders = {
-  anthropic: async (config) =>
-    (await import("./adapters/anthropic.js")).createAnthropicAdapter(config),
-  openai: async (config) =>
-    (await import("./adapters/openai.js")).createOpenAIAdapter(config),
-  gemini: async (config) =>
-    (await import("./adapters/gemini.js")).createGeminiAdapter(config),
-};
 
 function detectProvider(environment: LLMEnvironment): ProviderName {
   const detected = (Object.entries(PROVIDERS) as [
@@ -84,63 +66,11 @@ function selectProvider(
   return selected as ProviderName;
 }
 
-class LazyLLMClient implements LLMClient {
-  private clientPromise: Promise<LLMClient> | undefined;
-
-  constructor(
-    private readonly provider: ProviderName,
-    private readonly config: AdapterConfig,
-    private readonly loader: AdapterLoader,
-  ) {}
-
-  private getClient(): Promise<LLMClient> {
-    this.clientPromise ??= this.loader(this.config).catch((error: unknown) => {
-      throw new LLMProviderError(
-        `Failed to load ${this.provider} adapter: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        { cause: error },
-      );
-    });
-    return this.clientPromise;
-  }
-
-  async invoke(
-    messages: readonly Message[],
-    options?: LLMCallOptions,
-  ): Promise<LLMResponse> {
-    return (await this.getClient()).invoke(messages, options);
-  }
-
-  async invokeWithTools(
-    messages: readonly Message[],
-    tools: readonly ToolSchema[],
-    options?: LLMCallOptions,
-  ): Promise<LLMResponse> {
-    return (await this.getClient()).invokeWithTools(messages, tools, options);
-  }
-
-  async *streamInvoke(
-    messages: readonly Message[],
-    options?: LLMCallOptions,
-  ): AsyncIterable<string> {
-    const client = await this.getClient();
-    yield* client.streamInvoke(messages, options);
-  }
-}
-
-export function createLLMClient(
-  options: CreateLLMClientOptions = {},
-  environment: LLMEnvironment = process.env,
-  loaders: AdapterLoaders = DEFAULT_LOADERS,
-): LLMClient {
-  const {
-    provider,
-    model,
-    apiKey,
-    baseUrl,
-    ...commonOptions
-  } = options;
+function resolveConfig(
+  options: CreateLLMClientOptions,
+  environment: LLMEnvironment,
+): { readonly provider: ProviderName; readonly config: AdapterConfig } {
+  const { provider, model, apiKey, baseUrl, ...commonOptions } = options;
   const selected = selectProvider(provider, environment);
   const variables = PROVIDERS[selected];
   const resolvedModel = model || environment.MODEL_ID;
@@ -159,15 +89,37 @@ export function createLLMClient(
     );
   }
 
-  const defaultOptions: ResolvedLLMOptions = mergeOptions(commonOptions);
-  return new LazyLLMClient(
-    selected,
-    {
+  return {
+    provider: selected,
+    config: {
       model: resolvedModel,
       apiKey: resolvedApiKey,
       baseUrl: resolvedBaseUrl,
-      defaultOptions,
+      defaultOptions: mergeOptions(commonOptions),
     },
-    loaders[selected],
-  );
+  };
+}
+
+export async function createLLMClient(
+  options: CreateLLMClientOptions = {},
+  environment: LLMEnvironment = process.env,
+): Promise<LLMClient> {
+  const { provider, config } = resolveConfig(options, environment);
+  try {
+    switch (provider) {
+      case "anthropic":
+        return (await import("./adapters/anthropic.js")).createAnthropicAdapter(config);
+      case "openai":
+        return (await import("./adapters/openai.js")).createOpenAIAdapter(config);
+      case "gemini":
+        return (await import("./adapters/gemini.js")).createGeminiAdapter(config);
+    }
+  } catch (error) {
+    throw new LLMProviderError(
+      `Failed to create ${provider} adapter: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { cause: error },
+    );
+  }
 }

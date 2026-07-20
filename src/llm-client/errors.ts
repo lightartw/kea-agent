@@ -10,10 +10,6 @@ export class LLMTimeoutError extends LLMError {
   override name = "LLMTimeoutError";
 }
 
-export class LLMAuthenticationError extends LLMError {
-  override name = "LLMAuthenticationError";
-}
-
 export class LLMProviderError extends LLMError {
   override name = "LLMProviderError";
 }

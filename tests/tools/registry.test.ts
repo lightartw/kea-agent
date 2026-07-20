@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { Type, type Static, type TSchema } from "typebox";
+import { Type, type Static } from "typebox";
 
 import { Tool } from "../../src/tools/base.js";
-import {
-  ToolConfigurationError,
-  ToolExecutionError,
-} from "../../src/tools/errors.js";
+import { ToolExecutionError } from "../../src/tools/errors.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 
 const echoParameters = Type.Object(
@@ -19,128 +16,74 @@ class EchoTool extends Tool<typeof echoParameters> {
   constructor(name = "echo", timeout: number | null = null) {
     super(name, "Echo a value.", echoParameters, timeout);
   }
-  async execute(
-    arguments_: Static<typeof echoParameters>,
-  ): Promise<string> {
+
+  async execute(arguments_: Static<typeof echoParameters>): Promise<string> {
     return arguments_.value;
   }
 }
 
-class RawTool extends Tool<TSchema> {
-  constructor(
-    name: string,
-    description: string,
-    parameters: TSchema,
-    timeout: number | null = null,
-  ) {
-    super(name, description, parameters, timeout);
-  }
-  async execute(): Promise<string> {
-    return "ok";
-  }
-}
-
-test("Registry preserves registration order and returns cloned schemas", () => {
+test("Registry exports schemas in registration order and unregisters", () => {
   const registry = new ToolRegistry();
   registry.register(new EchoTool("first"));
   registry.register(new EchoTool("second"));
 
-  assert.deepEqual(registry.names(), ["first", "second"]);
-  assert.equal(registry.get("first")?.name, "first");
-  const schemas = registry.schemas();
   assert.deepEqual(
-    schemas.map((schema) => schema.function.name),
+    registry.schemas().map((schema) => schema.function.name),
     ["first", "second"],
   );
-  (schemas[0]!.function.parameters as any).changed = true;
-  assert.equal((registry.schemas()[0]!.function.parameters as any).changed, undefined);
   registry.unregister("first");
-  assert.deepEqual(registry.names(), ["second"]);
+  assert.deepEqual(
+    registry.schemas().map((schema) => schema.function.name),
+    ["second"],
+  );
 });
 
-test("Registry rejects duplicates and malformed tool metadata", () => {
+test("Registry rejects duplicate names", () => {
   const registry = new ToolRegistry();
   registry.register(new EchoTool());
   assert.throws(() => registry.register(new EchoTool()), /already registered/);
-  assert.throws(
-    () => new ToolRegistry().register({} as never),
-    /Tool instance/,
-  );
-  assert.throws(
-    () => new ToolRegistry().register(new RawTool("", "description", echoParameters)),
-    ToolConfigurationError,
-  );
-  assert.throws(
-    () => new ToolRegistry().register(new RawTool("bad", "", echoParameters)),
-    ToolConfigurationError,
-  );
-  assert.throws(
-    () =>
-      new ToolRegistry().register(
-        new RawTool("bad", "bad schema", Type.String()),
-      ),
-    /root type must be object/,
-  );
-  assert.throws(
-    () =>
-      new ToolRegistry().register(
-        new RawTool(
-          "bad",
-          "bad required",
-          {
-            type: "object",
-            properties: {},
-            required: ["missing"],
-          } as TSchema,
-        ),
-      ),
-    /required property is not declared: missing/,
-  );
 });
 
-test("Registry validates timeout and result limit configuration", () => {
-  for (const defaultTimeout of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-    assert.throws(
-      () => new ToolRegistry({ defaultTimeout }),
-      ToolConfigurationError,
-    );
-  }
-  assert.throws(
-    () => new ToolRegistry({ maxResultChars: 6 }),
-    /at least 7/,
-  );
-  assert.throws(
-    () => new ToolRegistry().register(new EchoTool("bad", Number.NaN)),
-    /positive finite number/,
-  );
-  assert.throws(
-    () => new ToolRegistry({ defaultTimeout: 2_147_483.648 }),
-    /Node timer range/,
-  );
-  assert.doesNotThrow(() => new ToolRegistry({ defaultTimeout: 1.2345 }));
-});
-
-test("Registry returns errors for unknown tools and non-object arguments", async () => {
+test("Registry executes one ToolCall", async () => {
   const registry = new ToolRegistry();
   registry.register(new EchoTool());
-  assert.deepEqual(await registry.execute("missing", {}), {
-    content: "Error: Unknown tool 'missing'",
-    isError: true,
+
+  assert.deepEqual(
+    await registry.execute({
+      id: "call-1",
+      name: "echo",
+      arguments: { value: "ok" },
+    }),
+    { content: "ok", isError: false },
+  );
+});
+
+test("Registry returns errors for unknown tools", async () => {
+  assert.deepEqual(
+    await new ToolRegistry().execute({
+      id: "missing-1",
+      name: "missing",
+      arguments: {},
+    }),
+    { content: "Error: Unknown tool 'missing'", isError: true },
+  );
+});
+
+test("Registry validates model arguments without coercion", async () => {
+  const registry = new ToolRegistry();
+  registry.register(new EchoTool());
+
+  const result = await registry.execute({
+    id: "call-1",
+    name: "echo",
+    arguments: { value: 7 },
   });
-  const result = await registry.execute("echo", []);
-  assert.equal(result.isError, true);
-  assert.match(result.content, /^Error: arguments must be an object/);
-});
 
-test("Registry validates without coercion", async () => {
-  const registry = new ToolRegistry();
-  registry.register(new EchoTool());
-  const result = await registry.execute("echo", { value: 7 });
   assert.equal(result.isError, true);
   assert.match(result.content, /^Error: Invalid arguments/);
 });
 
-test("Registry passes the original argument object and values", async () => {
+test("Registry passes the original argument object", async () => {
   const parameters = Type.Object(
     { value: Type.Number() },
     { additionalProperties: false },
@@ -158,14 +101,15 @@ test("Registry passes the original argument object and values", async () => {
   const registry = new ToolRegistry();
   registry.register(new CaptureTool());
   const input = { value: 7 };
-  const result = await registry.execute("capture", input);
 
+  assert.deepEqual(
+    await registry.execute({ id: "call-1", name: "capture", arguments: input }),
+    { content: "7", isError: false },
+  );
   assert.equal(received, input);
-  assert.equal(typeof input.value, "number");
-  assert.deepEqual(result, { content: "7", isError: false });
 });
 
-test("Registry times out tools even when they ignore cancellation", async () => {
+test("Registry times out tools that do not settle", async () => {
   class HangingTool extends EchoTool {
     constructor() {
       super("hang", 0.001);
@@ -176,31 +120,15 @@ test("Registry times out tools even when they ignore cancellation", async () => 
   }
   const registry = new ToolRegistry();
   registry.register(new HangingTool());
-  const result = await registry.execute("hang", { value: "x" });
+
+  const result = await registry.execute({
+    id: "call-1",
+    name: "hang",
+    arguments: { value: "x" },
+  });
 
   assert.equal(result.isError, true);
   assert.match(result.content, /^Error: Tool 'hang' timed out/);
-});
-
-test("Registry lets caller cancellation escape unchanged", async () => {
-  let executions = 0;
-  class HangingTool extends EchoTool {
-    override async execute(): Promise<string> {
-      executions += 1;
-      return new Promise(() => undefined);
-    }
-  }
-  const registry = new ToolRegistry();
-  registry.register(new HangingTool());
-  const controller = new AbortController();
-  const reason = new Error("caller cancelled");
-  controller.abort(reason);
-
-  await assert.rejects(
-    registry.execute("echo", { value: "x" }, controller.signal),
-    (error: unknown) => error === reason,
-  );
-  assert.equal(executions, 0);
 });
 
 test("Registry converts expected and unexpected tool failures", async () => {
@@ -224,40 +152,32 @@ test("Registry converts expected and unexpected tool failures", async () => {
   registry.register(new ExpectedTool());
   registry.register(new BrokenTool());
 
-  assert.deepEqual(await registry.execute("expected", { value: "x" }), {
-    content: "Error: refused",
-    isError: true,
-  });
-  assert.deepEqual(await registry.execute("broken", { value: "x" }), {
-    content: "Error: Tool 'broken' failed: boom",
-    isError: true,
-  });
-});
-
-test("Registry rejects non-string returns", async () => {
-  class BadReturnTool extends EchoTool {
-    override async execute(): Promise<string> {
-      return 7 as never;
-    }
-  }
-  const registry = new ToolRegistry();
-  registry.register(new BadReturnTool());
-  const result = await registry.execute("echo", { value: "x" });
-  assert.deepEqual(result, {
-    content: "Error: Tool 'echo' must return a string",
-    isError: true,
-  });
+  assert.deepEqual(
+    await registry.execute({ id: "c1", name: "expected", arguments: { value: "x" } }),
+    { content: "Error: refused", isError: true },
+  );
+  assert.deepEqual(
+    await registry.execute({ id: "c2", name: "broken", arguments: { value: "x" } }),
+    { content: "Error: Tool 'broken' failed: boom", isError: true },
+  );
 });
 
 test("Registry truncates successful and error results", async () => {
   const success = new ToolRegistry({ maxResultChars: 8 });
   success.register(new EchoTool());
-  assert.deepEqual(await success.execute("echo", { value: "abcdefghij" }), {
-    content: "abcdefgh",
-    isError: false,
-  });
+  assert.deepEqual(
+    await success.execute({
+      id: "c1",
+      name: "echo",
+      arguments: { value: "abcdefghij" },
+    }),
+    { content: "abcdefgh", isError: false },
+  );
 
-  const errors = new ToolRegistry({ maxResultChars: 7 });
-  const result = await errors.execute("missing", {});
-  assert.deepEqual(result, { content: "Error: ", isError: true });
+  const error = await new ToolRegistry({ maxResultChars: 3 }).execute({
+    id: "c2",
+    name: "missing",
+    arguments: {},
+  });
+  assert.deepEqual(error, { content: "Err", isError: true });
 });

@@ -43,10 +43,7 @@ export class BashTool extends Tool<typeof bashParameters> {
     arguments_: Static<typeof bashParameters>,
     signal: AbortSignal,
   ): Promise<string> {
-    const command: unknown = arguments_?.command;
-    if (typeof command !== "string") {
-      throw new ToolExecutionError("bash requires a string command");
-    }
+    const { command } = arguments_;
     if (DANGEROUS_COMMAND_FRAGMENTS.some((fragment) => command.includes(fragment))) {
       throw new ToolExecutionError("Dangerous command blocked");
     }

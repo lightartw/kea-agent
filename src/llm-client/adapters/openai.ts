@@ -5,15 +5,12 @@ import OpenAI, {
 
 import {
   mergeOptions,
-  validateMessages,
-  validateTools,
   type AdapterConfig,
-  type LLMCallOptions,
   type LLMClient,
-  type ResolvedLLMCallOptions,
+  type LLMOptions,
+  type ResolvedLLMOptions,
 } from "../client.js";
 import {
-  LLMAuthenticationError,
   LLMError,
   LLMProviderError,
   LLMTimeoutError,
@@ -21,17 +18,17 @@ import {
 import type {
   FinishReason,
   LLMResponse,
+  LLMStreamEvent,
   Message,
   ToolArguments,
   ToolCall,
   ToolSchema,
 } from "../models.js";
 import {
-  combineAbortSignals,
-  closeAsyncIterator,
-  raceWithSignal,
+  TimeoutError,
+  runWithTimeout,
   timeoutMilliseconds,
-} from "../../utils/abort-signals.js";
+} from "../../utils/timeout.js";
 
 interface OpenAIClientLike {
   readonly chat: {
@@ -78,7 +75,7 @@ function convertMessages(
 }
 
 function requestOptions(
-  options: ResolvedLLMCallOptions,
+  options: ResolvedLLMOptions,
 ): Record<string, unknown> {
   const request: Record<string, unknown> = { max_tokens: options.maxTokens };
   if (options.temperature !== undefined) request.temperature = options.temperature;
@@ -160,17 +157,16 @@ function normalize(response: unknown, latencyMs: number): LLMResponse {
   };
 }
 
-function translateError(
-  error: unknown,
-  callerSignal: AbortSignal | undefined,
-  timeoutSignal: AbortSignal,
-): unknown {
-  if (callerSignal?.aborted) return callerSignal.reason;
-  if (timeoutSignal.aborted || error instanceof APIConnectionTimeoutError) {
+function translateError(error: unknown, timedOut = false): unknown {
+  if (
+    timedOut ||
+    error instanceof TimeoutError ||
+    error instanceof APIConnectionTimeoutError
+  ) {
     return new LLMTimeoutError("OpenAI request timed out", { cause: error });
   }
   if (error instanceof AuthenticationError) {
-    return new LLMAuthenticationError("OpenAI authentication failed", {
+    return new LLMProviderError("OpenAI authentication failed", {
       cause: error,
     });
   }
@@ -189,15 +185,8 @@ export class OpenAIAdapter implements LLMClient {
 
   invoke(
     messages: readonly Message[],
-    options?: LLMCallOptions,
-  ): Promise<LLMResponse> {
-    return this.invokeInternal(messages, undefined, options);
-  }
-
-  invokeWithTools(
-    messages: readonly Message[],
-    tools: readonly ToolSchema[],
-    options?: LLMCallOptions,
+    tools?: readonly ToolSchema[],
+    options?: LLMOptions,
   ): Promise<LLMResponse> {
     return this.invokeInternal(messages, tools, options);
   }
@@ -205,10 +194,8 @@ export class OpenAIAdapter implements LLMClient {
   private async invokeInternal(
     messages: readonly Message[],
     tools: readonly ToolSchema[] | undefined,
-    callOptions: LLMCallOptions | undefined,
+    callOptions: LLMOptions | undefined,
   ): Promise<LLMResponse> {
-    validateMessages(messages);
-    if (tools !== undefined) validateTools(tools);
     const options = mergeOptions(this.config.defaultOptions, callOptions);
     const request: Record<string, unknown> = {
       model: this.config.model,
@@ -218,30 +205,25 @@ export class OpenAIAdapter implements LLMClient {
     if (tools !== undefined) request.tools = tools;
 
     const timeoutMs = timeoutMilliseconds(options.timeout);
-    const timeoutSignal = AbortSignal.timeout(timeoutMs);
-    const combined = combineAbortSignals([options.signal, timeoutSignal]);
     const started = performance.now();
     try {
-      const response = await raceWithSignal(
+      const response = await runWithTimeout(options.timeout, (timeoutSignal) =>
         this.client.chat.completions.create(request, {
           timeout: timeoutMs,
-          signal: combined.signal!,
+          signal: timeoutSignal,
         }),
-        combined.signal!,
       );
       return normalize(response, Math.round(performance.now() - started));
     } catch (error) {
-      throw translateError(error, options.signal, timeoutSignal);
-    } finally {
-      combined.cleanup();
+      throw translateError(error);
     }
   }
 
-  async *streamInvoke(
+  async *stream(
     messages: readonly Message[],
-    callOptions?: LLMCallOptions,
-  ): AsyncIterable<string> {
-    validateMessages(messages);
+    tools?: readonly ToolSchema[],
+    callOptions?: LLMOptions,
+  ): AsyncIterable<LLMStreamEvent> {
     const options = mergeOptions(this.config.defaultOptions, callOptions);
     const request: Record<string, unknown> = {
       model: this.config.model,
@@ -249,25 +231,24 @@ export class OpenAIAdapter implements LLMClient {
       stream: true,
       ...requestOptions(options),
     };
+    if (tools !== undefined) request.tools = tools;
 
     const timeoutMs = timeoutMilliseconds(options.timeout);
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
-    const lifecycle = new AbortController();
-    const combined = combineAbortSignals([
-      options.signal,
-      timeoutSignal,
-      lifecycle.signal,
-    ]);
-    let iterator: AsyncIterator<unknown> | undefined;
-    let completed = false;
+    const started = performance.now();
+    let model = this.config.model;
+    let content = "";
+    let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    let finalReason: FinishReason = null;
+    const pendingCalls = new Map<
+      number,
+      { id: string; name: string; argumentsText: string }
+    >();
     try {
-      const stream = await raceWithSignal(
-        this.client.chat.completions.create(request, {
+      const stream = await this.client.chat.completions.create(request, {
           timeout: timeoutMs,
-          signal: combined.signal!,
-        }),
-        combined.signal!,
-      );
+          signal: timeoutSignal,
+        });
       if (
         typeof stream !== "object" ||
         stream === null ||
@@ -275,39 +256,75 @@ export class OpenAIAdapter implements LLMClient {
       ) {
         throw new LLMProviderError("OpenAI returned an invalid stream");
       }
-      iterator = (stream as AsyncIterable<unknown>)[Symbol.asyncIterator]();
-      while (true) {
-        const item = await raceWithSignal(iterator.next(), combined.signal!);
-        if (item.done) {
-          completed = true;
-          break;
-        }
-        const chunk = item.value;
+      for await (const chunk of stream as AsyncIterable<unknown>) {
         if (!isRecord(chunk) || !Array.isArray(chunk.choices)) continue;
+        if (typeof chunk.model === "string") model = chunk.model;
+        if (isRecord(chunk.usage)) {
+          const inputTokens = Number(chunk.usage.prompt_tokens ?? 0) || 0;
+          const outputTokens = Number(chunk.usage.completion_tokens ?? 0) || 0;
+          usage = {
+            inputTokens,
+            outputTokens,
+            totalTokens:
+              Number(chunk.usage.total_tokens ?? inputTokens + outputTokens) || 0,
+          };
+        }
         for (const choice of chunk.choices) {
-          if (
-            isRecord(choice) &&
-            isRecord(choice.delta) &&
-            typeof choice.delta.content === "string" &&
-            choice.delta.content.length > 0
-          ) {
-            yield choice.delta.content;
+          if (!isRecord(choice) || !isRecord(choice.delta)) continue;
+          finalReason = finishReason(choice.finish_reason) ?? finalReason;
+          if (typeof choice.delta.content === "string" && choice.delta.content) {
+            content += choice.delta.content;
+            yield { type: "text_delta", text: choice.delta.content };
+          }
+          if (Array.isArray(choice.delta.tool_calls)) {
+            for (const [position, rawCall] of choice.delta.tool_calls.entries()) {
+              if (!isRecord(rawCall)) continue;
+              const index = Number.isInteger(rawCall.index)
+                ? Number(rawCall.index)
+                : position;
+              const pending = pendingCalls.get(index) ?? {
+                id: "",
+                name: "",
+                argumentsText: "",
+              };
+              if (typeof rawCall.id === "string") pending.id = rawCall.id;
+              if (isRecord(rawCall.function)) {
+                if (typeof rawCall.function.name === "string") {
+                  pending.name = rawCall.function.name;
+                }
+                if (typeof rawCall.function.arguments === "string") {
+                  pending.argumentsText += rawCall.function.arguments;
+                }
+              }
+              pendingCalls.set(index, pending);
+            }
           }
         }
       }
     } catch (error) {
-      throw translateError(error, options.signal, timeoutSignal);
-    } finally {
-      try {
-        if (!completed) {
-          lifecycle.abort(new Error("OpenAI stream closed"));
-          closeAsyncIterator(iterator);
-        }
-      } finally {
-        combined.cleanup();
-      }
+      throw translateError(error, timeoutSignal.aborted);
     }
+
+    const toolCalls = [...pendingCalls.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, call]) => ({
+        id: call.id,
+        name: call.name,
+        arguments: parseToolArguments(call.argumentsText),
+      }));
+    yield {
+      type: "response_done",
+      response: {
+        model,
+        content: content || null,
+        toolCalls,
+        usage,
+        latencyMs: Math.round(performance.now() - started),
+        finishReason: finalReason,
+      },
+    };
   }
+
 }
 
 export async function createOpenAIAdapter(

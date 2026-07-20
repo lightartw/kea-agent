@@ -76,13 +76,6 @@ test("BashTool uses its configured working directory", async () => {
   }
 });
 
-test("BashTool defends against non-string untyped calls", async () => {
-  await assert.rejects(
-    new BashTool().execute({ command: 7 } as never, signal()),
-    /bash requires a string command/,
-  );
-});
-
 test("BashTool wraps spawn failures", async () => {
   const missing = join(tmpdir(), `kea-agent-missing-${Date.now()}`);
   await assert.rejects(
