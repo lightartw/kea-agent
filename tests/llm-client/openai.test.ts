@@ -143,6 +143,38 @@ test("OpenAI enforces the common timeout", async () => {
   await assert.rejects(adapter.invoke(userMessages), LLMTimeoutError);
 });
 
+test("OpenAI enforces timeout for the full stream", async () => {
+  const fake = {
+    chat: {
+      completions: {
+        async create(
+          _request: Record<string, unknown>,
+          options: { readonly timeout: number; readonly signal: AbortSignal },
+        ): Promise<unknown> {
+          return {
+            async *[Symbol.asyncIterator](): AsyncGenerator<unknown> {
+              if (options.signal.aborted) throw options.signal.reason;
+              await new Promise<void>((_resolve, reject) => {
+                options.signal.addEventListener(
+                  "abort",
+                  () => reject(options.signal.reason),
+                  { once: true },
+                );
+              });
+            },
+          };
+        },
+      },
+    },
+  };
+  const adapter = new OpenAIAdapter(
+    { ...baseConfig, defaultOptions: { timeout: 0.001, maxTokens: 8_000 } },
+    fake,
+  );
+
+  await assert.rejects(collect(adapter.stream(userMessages)), LLMTimeoutError);
+});
+
 test("OpenAI wraps generic failures with their cause", async () => {
   const cause = new Error("offline");
   await assert.rejects(
@@ -202,4 +234,25 @@ test("OpenAI streams text and completes fragmented tool calls", async () => {
   });
   assert.equal(done.response.finishReason, "tool_calls");
   assert.deepEqual(fake.lastRequest.tools, [bashSchema]);
+  assert.deepEqual(fake.lastRequest.stream_options, { include_usage: true });
+});
+
+test("OpenAI normalizes malformed streamed tool arguments", async () => {
+  const fake = new FakeOpenAIClient(asyncItems([{
+    choices: [{
+      delta: {
+        tool_calls: [{
+          index: 0,
+          id: "c1",
+          function: { name: "bash", arguments: "{" },
+        }],
+      },
+      finish_reason: "tool_calls",
+    }],
+  }]));
+
+  await assert.rejects(
+    collect(new OpenAIAdapter(baseConfig, fake).stream(userMessages, [bashSchema])),
+    LLMProviderError,
+  );
 });

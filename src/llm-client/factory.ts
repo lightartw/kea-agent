@@ -4,10 +4,7 @@ import {
   type LLMClient,
   type LLMOptions,
 } from "./client.js";
-import {
-  LLMConfigurationError,
-  LLMProviderError,
-} from "./errors.js";
+import { LLMConfigurationError } from "./errors.js";
 import type { ProviderName } from "./models.js";
 
 const PROVIDERS = {
@@ -105,21 +102,12 @@ export async function createLLMClient(
   environment: LLMEnvironment = process.env,
 ): Promise<LLMClient> {
   const { provider, config } = resolveConfig(options, environment);
-  try {
-    switch (provider) {
-      case "anthropic":
-        return (await import("./adapters/anthropic.js")).createAnthropicAdapter(config);
-      case "openai":
-        return (await import("./adapters/openai.js")).createOpenAIAdapter(config);
-      case "gemini":
-        return (await import("./adapters/gemini.js")).createGeminiAdapter(config);
-    }
-  } catch (error) {
-    throw new LLMProviderError(
-      `Failed to create ${provider} adapter: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      { cause: error },
-    );
+  switch (provider) {
+    case "anthropic":
+      return (await import("./adapters/anthropic.js")).createAnthropicAdapter(config);
+    case "openai":
+      return (await import("./adapters/openai.js")).createOpenAIAdapter(config);
+    case "gemini":
+      return (await import("./adapters/gemini.js")).createGeminiAdapter(config);
   }
 }

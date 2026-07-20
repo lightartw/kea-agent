@@ -146,6 +146,7 @@ function normalize(
   response: unknown,
   configuredModel: string,
   latencyMs: number,
+  fallbackCallIndex = 0,
 ): LLMResponse {
   if (!isRecord(response)) {
     throw new LLMProviderError("Gemini returned an invalid response");
@@ -162,7 +163,7 @@ function normalize(
       id:
         typeof rawCall.id === "string" && rawCall.id.length > 0
           ? rawCall.id
-          : `gemini-call-${index}`,
+          : `gemini-call-${fallbackCallIndex + index}`,
       name: rawCall.name,
       arguments: toolArguments(rawCall.args ?? {}),
     };
@@ -289,9 +290,14 @@ export class GeminiAdapter implements LLMClient {
           chunk,
           this.config.model,
           Math.round(performance.now() - started),
+          toolCalls.length,
         );
-        model = normalized.model;
-        usage = normalized.usage;
+        if (isRecord(chunk)) {
+          if (typeof chunk.modelVersion === "string" && chunk.modelVersion) {
+            model = chunk.modelVersion;
+          }
+          if (isRecord(chunk.usageMetadata)) usage = normalized.usage;
+        }
         finalReason = normalized.finishReason ?? finalReason;
         toolCalls.push(...normalized.toolCalls);
         if (normalized.content) {
@@ -315,7 +321,6 @@ export class GeminiAdapter implements LLMClient {
       },
     };
   }
-
 }
 
 export async function createGeminiAdapter(

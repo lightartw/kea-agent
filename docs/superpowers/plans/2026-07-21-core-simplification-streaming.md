@@ -477,7 +477,7 @@ export async function createLLMClient(
 }
 ```
 
-Wrap dynamic import/construction failures once as `LLMProviderError` with the selected provider name.
+Let dynamic import or adapter-construction failures reject the asynchronous factory directly. Avoid restoring loader injection or a wrapper whose only purpose is decorating startup failures.
 
 - [ ] **Step 4: Run factory/import tests and typecheck**
 

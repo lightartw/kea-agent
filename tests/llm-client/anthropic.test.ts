@@ -133,6 +133,36 @@ test("Anthropic enforces the common timeout", async () => {
   await assert.rejects(adapter.invoke(userMessages), LLMTimeoutError);
 });
 
+test("Anthropic enforces timeout for the full stream", async () => {
+  const fake = {
+    messages: {
+      async create(
+        _request: Record<string, unknown>,
+        options: { readonly timeout: number; readonly signal: AbortSignal },
+      ): Promise<unknown> {
+        return {
+          async *[Symbol.asyncIterator](): AsyncGenerator<unknown> {
+            if (options.signal.aborted) throw options.signal.reason;
+            await new Promise<void>((_resolve, reject) => {
+              options.signal.addEventListener(
+                "abort",
+                () => reject(options.signal.reason),
+                { once: true },
+              );
+            });
+          },
+        };
+      },
+    },
+  };
+  const adapter = new AnthropicAdapter(
+    { ...baseConfig, defaultOptions: { timeout: 0.001, maxTokens: 8_000 } },
+    fake,
+  );
+
+  await assert.rejects(collect(adapter.stream(userMessages)), LLMTimeoutError);
+});
+
 test("Anthropic wraps generic failures with their cause", async () => {
   const cause = new Error("offline");
   await assert.rejects(
@@ -194,4 +224,29 @@ test("Anthropic streams text and completes fragmented tool calls", async () => {
   });
   assert.equal(done.response.finishReason, "tool_calls");
   assert.deepEqual(fake.lastRequest.tools[0].input_schema, bashSchema.function.parameters);
+});
+
+test("Anthropic normalizes malformed streamed tool arguments", async () => {
+  const fake = new FakeAnthropicClient(asyncItems([
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "c1", name: "bash", input: {} },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "input_json_delta", partial_json: "{" },
+    },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use" },
+      usage: { output_tokens: 1 },
+    },
+  ]));
+
+  await assert.rejects(
+    collect(new AnthropicAdapter(baseConfig, fake).stream(userMessages, [bashSchema])),
+    LLMProviderError,
+  );
 });

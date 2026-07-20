@@ -140,6 +140,17 @@ function toolArguments(value: unknown): ToolArguments {
   return { ...value };
 }
 
+function parseToolArguments(value: string): ToolArguments {
+  try {
+    return toolArguments(JSON.parse(value || "{}"));
+  } catch (error) {
+    if (error instanceof LLMProviderError) throw error;
+    throw new LLMProviderError("Anthropic tool arguments contain invalid JSON", {
+      cause: error,
+    });
+  }
+}
+
 function normalize(response: unknown, latencyMs: number): LLMResponse {
   if (!isRecord(response) || !Array.isArray(response.content)) {
     throw new LLMProviderError("Anthropic returned an invalid response");
@@ -275,9 +286,9 @@ export class AnthropicAdapter implements LLMClient {
     >();
     try {
       const stream = await this.client.messages.create(request, {
-          timeout: timeoutMs,
-          signal: timeoutSignal,
-        });
+        timeout: timeoutMs,
+        signal: timeoutSignal,
+      });
       if (
         typeof stream !== "object" ||
         stream === null ||
@@ -350,7 +361,7 @@ export class AnthropicAdapter implements LLMClient {
       .map(([, call]) => ({
         id: call.id,
         name: call.name,
-        arguments: toolArguments(JSON.parse(call.argumentsText || "{}")),
+        arguments: parseToolArguments(call.argumentsText),
       }));
     yield {
       type: "response_done",
@@ -368,7 +379,6 @@ export class AnthropicAdapter implements LLMClient {
       },
     };
   }
-
 }
 
 export async function createAnthropicAdapter(

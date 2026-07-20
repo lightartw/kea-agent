@@ -102,7 +102,14 @@ function parseToolArguments(value: unknown): ToolArguments {
   if (typeof value !== "string") {
     throw new LLMProviderError("OpenAI tool arguments must be JSON text");
   }
-  const parsed: unknown = JSON.parse(value || "{}");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value || "{}");
+  } catch (error) {
+    throw new LLMProviderError("OpenAI tool arguments contain invalid JSON", {
+      cause: error,
+    });
+  }
   if (!isRecord(parsed)) {
     throw new LLMProviderError("OpenAI tool arguments must be an object");
   }
@@ -229,6 +236,7 @@ export class OpenAIAdapter implements LLMClient {
       model: this.config.model,
       messages: convertMessages(messages),
       stream: true,
+      stream_options: { include_usage: true },
       ...requestOptions(options),
     };
     if (tools !== undefined) request.tools = tools;
@@ -246,9 +254,9 @@ export class OpenAIAdapter implements LLMClient {
     >();
     try {
       const stream = await this.client.chat.completions.create(request, {
-          timeout: timeoutMs,
-          signal: timeoutSignal,
-        });
+        timeout: timeoutMs,
+        signal: timeoutSignal,
+      });
       if (
         typeof stream !== "object" ||
         stream === null ||
@@ -324,7 +332,6 @@ export class OpenAIAdapter implements LLMClient {
       },
     };
   }
-
 }
 
 export async function createOpenAIAdapter(
