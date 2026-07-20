@@ -123,29 +123,36 @@ The system prompt stays represented as a system message for now. A future Agent
 context may move it to a separate `systemPrompt` field without changing the
 decision to use discriminated message types.
 
-## Provider-neutral Tool Definition
+## Unified Tool Schema
 
-The public LLM tool input stops using an OpenAI wrapper as its neutral form.
-Instead it uses the provider-independent data shared by all three providers:
+`Tool` is Kea's single executable tool abstraction. It owns the tool name,
+description, TypeBox parameter schema, timeout, and execution implementation.
+There is no second `ToolDefinition` model.
+
+`Tool.toSchema()` serializes the model-visible portion of a Tool to the existing
+OpenAI function-tool shape:
 
 ```ts
-export interface ToolDefinition {
-  readonly name: string;
-  readonly description: string;
-  readonly parameters: Record<string, unknown>;
+export interface ToolSchema {
+  readonly type: "function";
+  readonly function: {
+    readonly name: string;
+    readonly description: string;
+    readonly parameters: Record<string, unknown>;
+  };
 }
 ```
 
-`ToolDefinition` belongs to the LLM module because it describes what is sent to
-the model. Executable `Tool` belongs to the tools module and supplies the same
-name, description, and parameters plus its `execute()` implementation.
+This `ToolSchema` is Kea's one common exchange format between the tools and LLM
+modules. It is a serialized view of `Tool`, not a separate domain abstraction.
+The Registry returns `ToolSchema[]`; LLM calls accept `ToolSchema[]`.
 
-Each Adapter owns the final provider shape:
+Each Adapter owns conversion from that schema to its provider shape:
 
 ```text
-ToolDefinition
+OpenAI ToolSchema
 ├── Anthropic: { name, description, input_schema }
-├── OpenAI:    { type: "function", function: ... }
+├── OpenAI:    passed through unchanged
 └── Gemini:    { functionDeclarations: ... }
 ```
 
@@ -160,13 +167,13 @@ The existing three-operation Interface becomes two operations:
 export interface LLMClient {
   invoke(
     messages: readonly Message[],
-    tools?: readonly ToolDefinition[],
+    tools?: readonly ToolSchema[],
     options?: LLMOptions,
   ): Promise<LLMResponse>;
 
   stream(
     messages: readonly Message[],
-    tools?: readonly ToolDefinition[],
+    tools?: readonly ToolSchema[],
     options?: LLMOptions,
   ): AsyncIterable<LLMStreamEvent>;
 }
@@ -227,7 +234,7 @@ override environment configuration. `.env` loading remains solely in the CLI.
 Each Adapter independently implements `invoke()` and `stream()` and owns:
 
 1. message translation;
-2. tool definition translation;
+2. tool schema translation;
 3. request option translation;
 4. provider response normalization;
 5. streaming text and tool-call accumulation;
@@ -238,7 +245,7 @@ Provider responses remain runtime-checked because SDK responses and compatible
 endpoints are external data. Tool arguments must normalize to an object before
 they enter the common `ToolCall` contract.
 
-Caller-owned messages, tool definitions, and option object keys are not
+Caller-owned messages, tool schemas, and option object keys are not
 revalidated comprehensively at every call. TypeScript owns those contracts in
 the current internal-application posture.
 
@@ -271,7 +278,7 @@ event, giving natural ordering and backpressure without subscriptions.
 
 For each model step, `runAgentTurn()`:
 
-1. calls `client.stream(messages, registry.definitions())`;
+1. calls `client.stream(messages, registry.schemas())`;
 2. forwards every LLM `text_delta` as an Agent `text_delta`;
 3. waits for `response_done` before modifying history or executing tools;
 4. appends exactly one normalized assistant message;
@@ -358,7 +365,7 @@ The Registry Interface is:
 ```ts
 register(tool: Tool<TObject>): void;
 unregister(name: string): void;
-definitions(): ToolDefinition[];
+schemas(): ToolSchema[];
 execute(call: ToolCall): Promise<ToolResult>;
 ```
 
@@ -475,7 +482,7 @@ Removed as premature:
 - duplicate tool-argument object checks in Agent and Bash layers;
 - schema deep clone/freeze behavior;
 - exhaustive developer-misuse checks during registration;
-- exhaustive caller message and tool-definition validation;
+- exhaustive caller message and tool-schema validation;
 - runtime unknown-option rejection for typed option objects;
 - unused Registry management methods other than `unregister()`;
 - lazy proxy and injectable loader infrastructure;
@@ -501,14 +508,14 @@ Tests continue to use fake SDK clients and never contact a live provider or read
 
 Retained or added coverage includes:
 
-1. each Adapter's message and tool definition translation;
+1. each Adapter's message and tool schema translation;
 2. `invoke()` text and tool-call normalization;
 3. `stream()` text delta order and final `response_done` response;
 4. streamed tool-call accumulation for Anthropic, OpenAI, and Gemini;
 5. provider timeout and provider error normalization;
 6. provider selection and asynchronous selected-Adapter creation;
 7. Registry registration order, duplicate rejection, unregistration, and
-   definition export;
+   schema export;
 8. model-produced argument validation without coercion;
 9. unknown tools, tool timeout, execution errors, and truncation;
 10. Bash success, empty output, non-zero exit, cwd, dangerous fragments, and
@@ -546,7 +553,7 @@ The refactor is complete when:
 
 - `createLLMClient()` asynchronously returns the selected real Adapter;
 - `LLMClient` exposes only `invoke()` and `stream()`;
-- both operations work with and without tool definitions;
+- both operations work with and without tool schemas;
 - all three Adapters stream text and produce complete final tool calls;
 - `runAgentTurn()` emits ordered Agent events and mutates history only with
   complete messages;
