@@ -31,7 +31,7 @@ export class CliFrontend {
     }
   }
 
-  /** Keep accepting user turns while AgentSession owns conversation state. */
+  /** Keep accepting user turns while AgentHarness owns conversation state. */
   async run(harness: AgentHarness): Promise<void> {
     console.log("s01: Agent Loop");
     console.log("输入问题，回车发送。输入 q 退出。\n");

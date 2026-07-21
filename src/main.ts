@@ -56,7 +56,6 @@ export async function asyncMain(): Promise<void> {
       sessionStore,
       client,
       toolRegistry,
-      hooks,
       formatSystemPrompt(CODING_SYSTEM_PROMPT),
     );
 
