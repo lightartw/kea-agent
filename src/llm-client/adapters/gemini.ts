@@ -11,7 +11,7 @@ import type {
   Message,
 } from "../types.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
-import type { ToolCall, ToolSchema } from "../../tools/types.js";
+import type { ToolCall, ToolSchema } from "../types.js";
 
 // Gemini names assistant messages `model` and puts system text in config.
 function messagesForGemini(messages: readonly Message[]) {

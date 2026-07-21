@@ -11,7 +11,7 @@ import type {
   Message,
 } from "../types.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
-import type { ToolCall, ToolSchema } from "../../tools/types.js";
+import type { ToolCall, ToolSchema } from "../types.js";
 
 // OpenAI differs from our history only around tool calls: its arguments are JSON text.
 function messagesForOpenAI(messages: readonly Message[]): Record<string, unknown>[] {

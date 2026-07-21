@@ -1,4 +1,19 @@
-import type { ToolCall, ToolSchema } from "../tools/types.js";
+/** The OpenAI-style definition sent to every LLM provider. */
+export interface ToolSchema {
+  readonly type: "function";
+  readonly function: {
+    readonly name: string;
+    readonly description: string;
+    readonly parameters: Record<string, unknown>;
+  };
+}
+
+/** A model request for the registry to run one tool. */
+export interface ToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+}
 
 export type FinishReason = "stop" | "length" | "tool_calls" | null;
 

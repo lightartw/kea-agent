@@ -11,7 +11,7 @@ import type {
   Message,
 } from "../types.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
-import type { ToolCall, ToolSchema } from "../../tools/types.js";
+import type { ToolCall, ToolSchema } from "../types.js";
 
 // Anthropic requires system text separately and groups tool results as user content blocks.
 function messagesForAnthropic(messages: readonly Message[]) {
