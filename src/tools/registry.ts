@@ -1,8 +1,5 @@
-import { Compile, type Validator } from "typebox/compile";
-
 import { runWithTimeout, timeoutMilliseconds } from "../utils/timeout.js";
-import { Tool } from "./base.js";
-import type { ToolCall, ToolResult, ToolSchema } from "./types.js";
+import { Tool, type ToolCall, type ToolResult, type ToolSchema } from "./types.js";
 
 const ERROR_PREFIX = "Error: ";
 
@@ -37,11 +34,10 @@ export class ToolRegistry {
     if (tool === undefined) {
       return this.error(`Unknown tool '${call.name}'`);
     }
-    const validator: Validator = Compile(tool.parameters);
-    if (!validator.Check(call.arguments)) {
-      const detail = validator.Errors(call.arguments)[0]?.message;
+    const validationError = tool.validate(call.arguments);
+    if (validationError !== undefined) {
       return this.error(
-        `Invalid arguments for tool '${call.name}': ${detail ?? "validation failed"}`,
+        `Invalid arguments for tool '${call.name}': ${validationError}`,
       );
     }
 

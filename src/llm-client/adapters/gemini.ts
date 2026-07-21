@@ -1,12 +1,15 @@
 import { GoogleGenAI } from "@google/genai";
 
-import { mergeOptions, type LLMClient, type LLMConfig, type LLMOptions } from "../client.js";
+import { mergeOptions } from "../client.js";
 import type {
   FinishReason,
+  LLMClient,
+  LLMConfig,
+  LLMOptions,
   LLMResponse,
   LLMStreamEvent,
   Message,
-} from "../models.js";
+} from "../types.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
 import type { ToolCall, ToolSchema } from "../../tools/types.js";
 

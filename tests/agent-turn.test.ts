@@ -7,13 +7,13 @@ import {
   runAgentTurn,
   type AgentEvent,
 } from "../src/agent-turn.js";
-import type { LLMClient } from "../src/llm-client/client.js";
 import type {
+  LLMClient,
   LLMResponse,
   LLMStreamEvent,
   Message,
-} from "../src/llm-client/models.js";
-import { Tool } from "../src/tools/base.js";
+} from "../src/llm-client/types.js";
+import { Tool } from "../src/tools/types.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });

@@ -1,42 +1,8 @@
-import type {
-  LLMResponse,
-  LLMStreamEvent,
-  Message,
-} from "./models.js";
 import { timeoutMilliseconds } from "../utils/timeout.js";
-import type { ToolSchema } from "../tools/types.js";
+import type { LLMOptions } from "./types.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const DEFAULT_MAX_TOKENS = 8_000;
-
-export interface LLMOptions {
-  readonly timeout: number;
-  readonly maxTokens: number;
-  readonly temperature?: number;
-  readonly topP?: number;
-  readonly stop?: readonly string[];
-}
-
-export interface LLMConfig {
-  readonly model: string;
-  readonly apiKey: string;
-  readonly baseUrl: string | null;
-  readonly options: LLMOptions;
-}
-
-export interface LLMClient {
-  invoke(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    options?: Partial<LLMOptions>,
-  ): Promise<LLMResponse>;
-
-  stream(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    options?: Partial<LLMOptions>,
-  ): AsyncIterable<LLMStreamEvent>;
-}
 
 export function mergeOptions(
   clientOptions: Partial<LLMOptions>,

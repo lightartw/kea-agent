@@ -1,9 +1,7 @@
 import {
   mergeOptions,
-  type LLMClient,
-  type LLMConfig,
-  type LLMOptions,
 } from "./client.js";
+import type { LLMClient, LLMConfig, LLMOptions } from "./types.js";
 
 type ProviderName = "anthropic" | "openai" | "gemini";
 

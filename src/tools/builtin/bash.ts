@@ -3,7 +3,15 @@ import { resolve } from "node:path";
 
 import { Type, type Static } from "typebox";
 
-import { Tool } from "../base.js";
+import { Tool } from "../types.js";
+
+const DANGEROUS_COMMAND_FRAGMENTS = [
+  "rm -rf /",
+  "sudo",
+  "shutdown",
+  "reboot",
+  "> /dev/",
+] as const;
 
 const bashParameters = Type.Object(
   {
@@ -25,6 +33,9 @@ export class BashTool extends Tool<typeof bashParameters> {
     signal: AbortSignal,
   ): Promise<string> {
     const { command } = arguments_;
+    if (DANGEROUS_COMMAND_FRAGMENTS.some((fragment) => command.includes(fragment))) {
+      throw new Error("Dangerous command blocked");
+    }
     if (signal.aborted) throw signal.reason;
 
     return new Promise<string>((resolvePromise, rejectPromise) => {

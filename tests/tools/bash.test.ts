@@ -29,3 +29,10 @@ test("BashTool reports command failures", async () => {
   const command = process.platform === "win32" ? "exit /b 7" : "exit 7";
   await assert.rejects(new BashTool().execute({ command }, signal()), /code 7/);
 });
+
+test("BashTool blocks dangerous commands", async () => {
+  await assert.rejects(
+    new BashTool().execute({ command: "shutdown now" }, signal()),
+    /Dangerous command blocked/,
+  );
+});

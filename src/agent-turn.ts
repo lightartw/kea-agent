@@ -1,8 +1,8 @@
-import type { LLMClient } from "./llm-client/client.js";
 import type {
+  LLMClient,
   LLMResponse,
   Message,
-} from "./llm-client/models.js";
+} from "./llm-client/types.js";
 import type { ToolCall, ToolResult } from "./tools/types.js";
 import type { ToolRegistry } from "./tools/registry.js";
 

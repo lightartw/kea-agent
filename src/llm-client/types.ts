@@ -1,15 +1,7 @@
-import type { ToolCall } from "../tools/types.js";
+import type { ToolCall, ToolSchema } from "../tools/types.js";
 
 export type FinishReason = "stop" | "length" | "tool_calls" | null;
 
-/**
- * The agent's one history format. Adapters translate it at their boundary so
- * provider-specific message types never spread into the rest of the project.
- *
- * The optional tool fields are meaningful only for `assistant` and `tool`
- * roles. Keeping one shape makes the history easy to read and extend while
- * the agent controls the values it appends.
- */
 export interface Message {
   readonly role: "system" | "user" | "assistant" | "tool";
   readonly content: string | null;
@@ -36,3 +28,32 @@ export interface LLMResponse {
 export type LLMStreamEvent =
   | { readonly type: "text_delta"; readonly text: string }
   | { readonly type: "response_done"; readonly response: LLMResponse };
+
+export interface LLMOptions {
+  readonly timeout: number;
+  readonly maxTokens: number;
+  readonly temperature?: number;
+  readonly topP?: number;
+  readonly stop?: readonly string[];
+}
+
+export interface LLMConfig {
+  readonly model: string;
+  readonly apiKey: string;
+  readonly baseUrl: string | null;
+  readonly options: LLMOptions;
+}
+
+export interface LLMClient {
+  invoke(
+    messages: readonly Message[],
+    tools?: readonly ToolSchema[],
+    options?: Partial<LLMOptions>,
+  ): Promise<LLMResponse>;
+
+  stream(
+    messages: readonly Message[],
+    tools?: readonly ToolSchema[],
+    options?: Partial<LLMOptions>,
+  ): AsyncIterable<LLMStreamEvent>;
+}

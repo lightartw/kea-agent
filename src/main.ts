@@ -6,7 +6,7 @@ import { config as loadDotenv } from "dotenv";
 
 import { runAgentTurn, type AgentEvent } from "./agent-turn.js";
 import { createLLMClient } from "./llm-client/factory.js";
-import type { Message } from "./llm-client/models.js";
+import type { Message } from "./llm-client/types.js";
 import { createToolRegistry } from "./tools/factory.js";
 
 const CYAN = "\u001b[36m";
