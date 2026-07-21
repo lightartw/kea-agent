@@ -91,11 +91,17 @@ export async function createLLMClient(
     options: mergeOptions(optionOverrides),
   };
   switch (selected) {
-    case "anthropic":
-      return (await import("./adapters/anthropic.js")).createAnthropicAdapter(config);
-    case "openai":
-      return (await import("./adapters/openai.js")).createOpenAIAdapter(config);
-    case "gemini":
-      return (await import("./adapters/gemini.js")).createGeminiAdapter(config);
+    case "anthropic": {
+      const { AnthropicAdapter } = await import("./adapters/anthropic.js");
+      return new AnthropicAdapter(config);
+    }
+    case "openai": {
+      const { OpenAIAdapter } = await import("./adapters/openai.js");
+      return new OpenAIAdapter(config);
+    }
+    case "gemini": {
+      const { GeminiAdapter } = await import("./adapters/gemini.js");
+      return new GeminiAdapter(config);
+    }
   }
 }

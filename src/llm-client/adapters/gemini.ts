@@ -93,33 +93,44 @@ function responseForGemini(response: any, configuredModel: string, latencyMs: nu
   };
 }
 
-/** Create the Gemini implementation of the small LLMClient interface. */
-export function createGeminiAdapter(config: LLMConfig): LLMClient {
-  const sdk = new GoogleGenAI({
-    apiKey: config.apiKey,
-    ...(config.baseUrl === null ? {} : { httpOptions: { baseUrl: config.baseUrl } }),
-  });
+/** Gemini implementation of the common LLMClient interface. */
+export class GeminiAdapter implements LLMClient {
+  private readonly sdk: GoogleGenAI;
 
-  return {
-    async invoke(messages, tools, overrides) {
-      const options = mergeOptions(config.options, overrides);
+  constructor(private readonly config: LLMConfig) {
+    this.sdk = new GoogleGenAI({
+      apiKey: config.apiKey,
+      ...(config.baseUrl === null ? {} : { httpOptions: { baseUrl: config.baseUrl } }),
+    });
+  }
+
+  async invoke(
+    messages: readonly Message[],
+    tools?: readonly ToolSchema[],
+    overrides?: Partial<LLMOptions>,
+  ): Promise<LLMResponse> {
+      const options = mergeOptions(this.config.options, overrides);
       const converted = messagesForGemini(messages);
       const started = performance.now();
       const response = await runWithTimeout(options.timeout, (signal) =>
-        sdk.models.generateContent({
-          model: config.model,
+        this.sdk.models.generateContent({
+          model: this.config.model,
           contents: converted.contents as any,
           config: configForGemini(converted.system, tools, options, signal) as any,
         }),
       );
-      return responseForGemini(response, config.model, Math.round(performance.now() - started));
-    },
+      return responseForGemini(response, this.config.model, Math.round(performance.now() - started));
+  }
 
-    async *stream(messages, tools, overrides): AsyncIterable<LLMStreamEvent> {
-      const options = mergeOptions(config.options, overrides);
+  async *stream(
+    messages: readonly Message[],
+    tools?: readonly ToolSchema[],
+    overrides?: Partial<LLMOptions>,
+  ): AsyncIterable<LLMStreamEvent> {
+      const options = mergeOptions(this.config.options, overrides);
       const converted = messagesForGemini(messages);
-      const stream = await sdk.models.generateContentStream({
-        model: config.model,
+      const stream = await this.sdk.models.generateContentStream({
+        model: this.config.model,
         contents: converted.contents as any,
         config: configForGemini(
           converted.system,
@@ -130,13 +141,13 @@ export function createGeminiAdapter(config: LLMConfig): LLMClient {
       });
 
       const started = performance.now();
-      let model = config.model;
+      let model = this.config.model;
       let content = "";
       let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
       let reason: FinishReason = null;
       const toolCalls: ToolCall[] = [];
       for await (const chunk of stream as any) {
-        const response = responseForGemini(chunk, config.model, 0, toolCalls.length);
+        const response = responseForGemini(chunk, this.config.model, 0, toolCalls.length);
         model = response.model || model;
         if (chunk.usageMetadata) usage = response.usage;
         reason = response.finishReason ?? reason;
@@ -157,6 +168,5 @@ export function createGeminiAdapter(config: LLMConfig): LLMClient {
           finishReason: toolCalls.length ? "tool_calls" : reason,
         },
       };
-    },
-  };
+  }
 }

@@ -74,22 +74,29 @@ function responseForOpenAI(response: any, latencyMs: number): LLMResponse {
   };
 }
 
-/** Create the OpenAI implementation of the small LLMClient interface. */
-export function createOpenAIAdapter(config: LLMConfig): LLMClient {
-  const sdk = new OpenAI({
-    apiKey: config.apiKey,
-    ...(config.baseUrl === null ? {} : { baseURL: config.baseUrl }),
-  });
+/** OpenAI implementation of the common LLMClient interface. */
+export class OpenAIAdapter implements LLMClient {
+  private readonly sdk: OpenAI;
 
-  return {
-    async invoke(messages, tools, overrides) {
-      const options = mergeOptions(config.options, overrides);
+  constructor(private readonly config: LLMConfig) {
+    this.sdk = new OpenAI({
+      apiKey: config.apiKey,
+      ...(config.baseUrl === null ? {} : { baseURL: config.baseUrl }),
+    });
+  }
+
+  async invoke(
+    messages: readonly Message[],
+    tools?: readonly ToolSchema[],
+    overrides?: Partial<LLMOptions>,
+  ): Promise<LLMResponse> {
+      const options = mergeOptions(this.config.options, overrides);
       const timeout = timeoutMilliseconds(options.timeout);
       const started = performance.now();
       const response = await runWithTimeout(options.timeout, (signal) =>
-        sdk.chat.completions.create(
+        this.sdk.chat.completions.create(
           {
-            model: config.model,
+            model: this.config.model,
             messages: messagesForOpenAI(messages) as any,
             ...(tools === undefined ? {} : { tools: tools as any }),
             ...optionsForOpenAI(options),
@@ -98,14 +105,18 @@ export function createOpenAIAdapter(config: LLMConfig): LLMClient {
         ),
       );
       return responseForOpenAI(response, Math.round(performance.now() - started));
-    },
+  }
 
-    async *stream(messages, tools, overrides): AsyncIterable<LLMStreamEvent> {
-      const options = mergeOptions(config.options, overrides);
+  async *stream(
+    messages: readonly Message[],
+    tools?: readonly ToolSchema[],
+    overrides?: Partial<LLMOptions>,
+  ): AsyncIterable<LLMStreamEvent> {
+      const options = mergeOptions(this.config.options, overrides);
       const signal = AbortSignal.timeout(timeoutMilliseconds(options.timeout));
-      const stream = await sdk.chat.completions.create(
+      const stream = await this.sdk.chat.completions.create(
         {
-          model: config.model,
+          model: this.config.model,
           messages: messagesForOpenAI(messages) as any,
           ...(tools === undefined ? {} : { tools: tools as any }),
           stream: true,
@@ -116,7 +127,7 @@ export function createOpenAIAdapter(config: LLMConfig): LLMClient {
       );
 
       const started = performance.now();
-      let model = config.model;
+      let model = this.config.model;
       let content = "";
       let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
       let reason: FinishReason = null;
@@ -155,6 +166,5 @@ export function createOpenAIAdapter(config: LLMConfig): LLMClient {
           finishReason: reason,
         },
       };
-    },
-  };
+  }
 }

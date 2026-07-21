@@ -83,19 +83,26 @@ function responseForAnthropic(response: any, latencyMs: number): LLMResponse {
   };
 }
 
-/** Create the Anthropic implementation of the small LLMClient interface. */
-export function createAnthropicAdapter(config: LLMConfig): LLMClient {
-  const sdk = new Anthropic({ apiKey: config.apiKey, ...(config.baseUrl === null ? {} : { baseURL: config.baseUrl }) });
+/** Anthropic implementation of the common LLMClient interface. */
+export class AnthropicAdapter implements LLMClient {
+  private readonly sdk: Anthropic;
 
-  return {
-    async invoke(messages, tools, overrides) {
-      const options = mergeOptions(config.options, overrides);
+  constructor(private readonly config: LLMConfig) {
+    this.sdk = new Anthropic({ apiKey: config.apiKey, ...(config.baseUrl === null ? {} : { baseURL: config.baseUrl }) });
+  }
+
+  async invoke(
+    messages: readonly Message[],
+    tools?: readonly ToolSchema[],
+    overrides?: Partial<LLMOptions>,
+  ): Promise<LLMResponse> {
+      const options = mergeOptions(this.config.options, overrides);
       const converted = messagesForAnthropic(messages);
       const started = performance.now();
       const response = await runWithTimeout(options.timeout, (signal) =>
-        sdk.messages.create(
+        this.sdk.messages.create(
           {
-            model: config.model,
+            model: this.config.model,
             messages: converted.messages as any,
             ...(converted.system === undefined ? {} : { system: converted.system }),
             ...(tools === undefined ? {} : { tools: toolsForAnthropic(tools) as any }),
@@ -105,15 +112,19 @@ export function createAnthropicAdapter(config: LLMConfig): LLMClient {
         ),
       );
       return responseForAnthropic(response, Math.round(performance.now() - started));
-    },
+  }
 
-    async *stream(messages, tools, overrides): AsyncIterable<LLMStreamEvent> {
-      const options = mergeOptions(config.options, overrides);
+  async *stream(
+    messages: readonly Message[],
+    tools?: readonly ToolSchema[],
+    overrides?: Partial<LLMOptions>,
+  ): AsyncIterable<LLMStreamEvent> {
+      const options = mergeOptions(this.config.options, overrides);
       const converted = messagesForAnthropic(messages);
       const signal = AbortSignal.timeout(timeoutMilliseconds(options.timeout));
-      const stream = await sdk.messages.create(
+      const stream = await this.sdk.messages.create(
         {
-          model: config.model,
+          model: this.config.model,
           messages: converted.messages as any,
           ...(converted.system === undefined ? {} : { system: converted.system }),
           ...(tools === undefined ? {} : { tools: toolsForAnthropic(tools) as any }),
@@ -124,7 +135,7 @@ export function createAnthropicAdapter(config: LLMConfig): LLMClient {
       );
 
       const started = performance.now();
-      let model = config.model;
+      let model = this.config.model;
       let content = "";
       let inputTokens = 0;
       let outputTokens = 0;
@@ -164,6 +175,5 @@ export function createAnthropicAdapter(config: LLMConfig): LLMClient {
           finishReason: reason,
         },
       };
-    },
-  };
+  }
 }
