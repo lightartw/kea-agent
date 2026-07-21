@@ -1,19 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { PermissionHook } from "../../src/hooks/builtin/permission.js";
-import { createHookRegistry } from "../../src/hooks/factory.js";
-import type { PermissionRequest } from "../../src/hooks/types.js";
+import {
+  PermissionHook,
+  type PermissionRequest,
+} from "../../src/hooks/builtin/permission.js";
+import { HookRegistry } from "../../src/hooks/registry.js";
 
 async function execute(
   name: string,
   arguments_: Record<string, unknown>,
   requestPermission: (request: PermissionRequest) => Promise<boolean>,
 ) {
-  return new PermissionHook().execute(
-    { type: "pre_tool_use", call: { id: "call-1", name, arguments: arguments_ } },
-    { requestPermission },
-  );
+  return new PermissionHook(requestPermission).execute({
+    id: "call-1",
+    name,
+    arguments: arguments_,
+  });
 }
 
 test("PermissionHook allows read-only tools without prompting", async () => {
@@ -65,10 +68,14 @@ test("PermissionHook hard-denies forbidden Bash commands without prompting", asy
   assert.match(result?.reason ?? "", /forbidden fragment/);
 });
 
-test("the built-in hook registry denies approval requests without an interaction", async () => {
-  const result = await createHookRegistry().trigger({
-    type: "pre_tool_use",
-    call: { id: "call-1", name: "bash", arguments: { command: "pwd" } },
+test("PermissionHook registers through the common hook interface", async () => {
+  const registry = new HookRegistry();
+  registry.register(new PermissionHook(async () => false));
+
+  const result = await registry.triggerPreToolUse({
+    id: "call-1",
+    name: "bash",
+    arguments: { command: "pwd" },
   });
 
   assert.deepEqual(result, {

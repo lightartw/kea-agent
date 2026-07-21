@@ -5,7 +5,8 @@ import { config as loadDotenv } from "dotenv";
 
 import { AgentSession } from "./agent-session.js";
 import { CliFrontend } from "./cli.js";
-import { createHookRegistry } from "./hooks/factory.js";
+import { PermissionHook } from "./hooks/builtin/permission.js";
+import { HookRegistry } from "./hooks/registry.js";
 import { createLLMClient } from "./llm-client/factory.js";
 import { createToolRegistry } from "./tools/factory.js";
 
@@ -20,7 +21,12 @@ export async function asyncMain(): Promise<void> {
     // Assemble one runtime explicitly: provider, cross-cutting hooks, tools,
     // session state, then the current CLI presentation adapter.
     const client = await createLLMClient();
-    const hooks = createHookRegistry((request) => cli.requestPermission(request));
+    const hooks = new HookRegistry();
+    // Permission is an ordinary hook. The composition root supplies the current
+    // presentation adapter, while the registry remains unaware of its needs.
+    hooks.register(
+      new PermissionHook((request) => cli.requestPermission(request)),
+    );
     const registry = createToolRegistry(process.cwd(), hooks);
     const session = new AgentSession(client, registry, [
       {

@@ -5,12 +5,10 @@ import { Type, type Static } from "typebox";
 
 import { HookRegistry } from "../../src/hooks/registry.js";
 import {
-  Hook,
-  type HookContext,
   type HookResult,
-  type PreToolUseEvent,
+  type PreToolUseHook,
 } from "../../src/hooks/types.js";
-import { Tool } from "../../src/tools/types.js";
+import { Tool, type ToolCall } from "../../src/tools/types.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 
 const parameters = Type.Object({ value: Type.String() });
@@ -63,14 +61,10 @@ test("Registry applies its global timeout", async () => {
 test("Registry validates before hooks and never executes a blocked call", async () => {
   let hookCalls = 0;
   let executions = 0;
-  class BlockingHook extends Hook<PreToolUseEvent> {
-    constructor() {
-      super("block", "pre_tool_use");
-    }
-    async execute(
-      _event: PreToolUseEvent,
-      _context: HookContext,
-    ): Promise<HookResult> {
+  class BlockingHook implements PreToolUseHook {
+    readonly name = "block";
+
+    async execute(_call: ToolCall): Promise<HookResult> {
       hookCalls += 1;
       return { block: true, reason: "blocked by test" };
     }
@@ -81,7 +75,7 @@ test("Registry validates before hooks and never executes a blocked call", async 
       return arguments_.value;
     }
   }
-  const hooks = new HookRegistry({ requestPermission: async () => false });
+  const hooks = new HookRegistry();
   hooks.register(new BlockingHook());
   const registry = new ToolRegistry(120, hooks);
   registry.register(new ObservedTool());
@@ -100,10 +94,9 @@ test("Registry validates before hooks and never executes a blocked call", async 
 
 test("Registry fails closed when a pre-tool hook throws", async () => {
   let executions = 0;
-  class BrokenHook extends Hook<PreToolUseEvent> {
-    constructor() {
-      super("broken", "pre_tool_use");
-    }
+  class BrokenHook implements PreToolUseHook {
+    readonly name = "broken";
+
     async execute(): Promise<HookResult> {
       throw new Error("boom");
     }
@@ -114,7 +107,7 @@ test("Registry fails closed when a pre-tool hook throws", async () => {
       return arguments_.value;
     }
   }
-  const hooks = new HookRegistry({ requestPermission: async () => false });
+  const hooks = new HookRegistry();
   hooks.register(new BrokenHook());
   const registry = new ToolRegistry(120, hooks);
   registry.register(new ObservedTool());

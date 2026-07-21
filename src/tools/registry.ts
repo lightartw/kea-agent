@@ -55,7 +55,7 @@ export class ToolRegistry {
     // runWithTimeout(), so no tool process or file operation has started yet.
     if (this.hooks !== undefined) {
       try {
-        const result = await this.hooks.trigger({ type: "pre_tool_use", call });
+        const result = await this.hooks.triggerPreToolUse(call);
         if (result?.block === true) return this.error(result.reason);
       } catch (error) {
         return this.error(error instanceof Error ? error.message : String(error));

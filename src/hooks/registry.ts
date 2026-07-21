@@ -1,48 +1,27 @@
-import {
-  Hook,
-  type HookContext,
-  type HookEvent,
-  type HookResult,
-} from "./types.js";
+import type { ToolCall } from "../tools/types.js";
+import type { HookResult, PreToolUseHook } from "./types.js";
 
-/** Stores hooks by lifecycle event and runs each event's hooks in registration order. */
+/** Runs pre-tool hooks in registration order and stops at the first block. */
 export class HookRegistry {
-  private readonly hooks = new Map<HookEvent["type"], Hook[]>();
-  private readonly names = new Set<string>();
-
-  constructor(private readonly context: HookContext) {}
+  private readonly hooks = new Map<string, PreToolUseHook>();
 
   /** Hook names are unique so configuration and error messages stay unambiguous. */
-  register(hook: Hook): void {
-    if (this.names.has(hook.name)) {
+  register(hook: PreToolUseHook): void {
+    if (this.hooks.has(hook.name)) {
       throw new Error(`hook '${hook.name}' is already registered`);
     }
-    this.names.add(hook.name);
-    const hooks = this.hooks.get(hook.eventType) ?? [];
-    hooks.push(hook);
-    this.hooks.set(hook.eventType, hooks);
-  }
-
-  unregister(name: string): void {
-    this.names.delete(name);
-    for (const [eventType, hooks] of this.hooks) {
-      const remaining = hooks.filter((hook) => hook.name !== name);
-      if (remaining.length === 0) this.hooks.delete(eventType);
-      else this.hooks.set(eventType, remaining);
-    }
+    this.hooks.set(hook.name, hook);
   }
 
   /**
-   * Run one lifecycle event until every hook passes or one blocks it.
+   * Run one validated call through every registered pre-tool hook.
    * Hook failures are rethrown with the hook name; the tool layer treats them
    * as a failed-closed result and never executes the requested operation.
    */
-  async trigger<TEvent extends HookEvent>(event: TEvent): Promise<HookResult> {
-    const hooks = this.hooks.get(event.type) ?? [];
-    for (const hook of hooks) {
+  async triggerPreToolUse(call: ToolCall): Promise<HookResult> {
+    for (const hook of this.hooks.values()) {
       try {
-        // The event-type map guarantees hooks in this bucket accept TEvent.
-        const result = await (hook as Hook<TEvent>).execute(event, this.context);
+        const result = await hook.execute(call);
         if (result?.block === true) return result;
       } catch (error) {
         throw new Error(`hook '${hook.name}' failed`, { cause: error });

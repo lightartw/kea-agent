@@ -2,7 +2,7 @@ import { createInterface, type Interface } from "node:readline/promises";
 
 import type { AgentEvent } from "./agent-turn.js";
 import type { AgentSession } from "./agent-session.js";
-import type { PermissionRequest } from "./hooks/types.js";
+import type { PermissionRequest } from "./hooks/builtin/permission.js";
 
 const CYAN = "\u001b[36m";
 const RESET = "\u001b[0m";
