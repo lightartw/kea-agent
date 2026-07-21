@@ -53,10 +53,9 @@ src/
 │   │       ├── jsonl-storage.ts    #       JSONL read/write
 │   │       └── session-repo.ts     #       Session file management per project
 │   │
-│   ├── hooks/                      #   Generic hook system
+│   ├── hooks/                      #   Generic hook system (types + registry only; factory in coding/)
 │   │   ├── types.ts                #     HookEvent, PreToolUseEvent, Hook<T>, HookResult
-│   │   ├── registry.ts             #     HookRegistry — register + trigger
-│   │   └── factory.ts              #     createHookRegistry()
+│   │   └── registry.ts             #     HookRegistry — register + trigger + get()
 │   │
 │   └── tools/                      #   Generic tool types + registry
 │       ├── types.ts                #     Tool<T>, ToolResult
@@ -64,7 +63,7 @@ src/
 │
 ├── coding/                         # Layer 4: Coding Agent specifics
 │   ├── hooks/                      #   Built-in hooks (mirrors tools/ structure)
-│   │   ├── factory.ts              #     createDefaultHooks() — auto-registers built-in hooks
+│   │   ├── factory.ts              #     createHookRegistry() + createDefaultHooks()
 │   │   └── permission.ts           #     PermissionHook — 3-gate permission pipeline
 │   └── tools/                      #   Built-in coding tools
 │       ├── bash.ts                 #     BashTool — shell command execution

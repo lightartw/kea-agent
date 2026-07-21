@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createHookRegistry } from "../../../src/agent/hooks/factory.js";
+import { createHookRegistry } from "../../../src/coding/hooks/factory.js";
 import { HookRegistry } from "../../../src/agent/hooks/registry.js";
 import {
   type Hook,
