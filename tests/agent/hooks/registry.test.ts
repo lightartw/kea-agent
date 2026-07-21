@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createHookRegistry } from "../../../src/coding/hooks/factory.js";
+import { createHookRegistry } from "../../../src/harness/hooks/factory.js";
 import { HookRegistry } from "../../../src/agent/hooks/registry.js";
 import {
   type Hook,
@@ -15,10 +15,10 @@ class TestHook implements Hook<PreToolUseEvent> {
 
   constructor(
     readonly name: string,
-    private readonly run: () => HookResult | Promise<HookResult>,
+    private readonly run: () => HookResult | void | Promise<HookResult | void>,
   ) {}
 
-  async execute(_event: PreToolUseEvent): Promise<HookResult> {
+  async execute(_event: PreToolUseEvent): Promise<HookResult | void> {
     return this.run();
   }
 }
@@ -31,12 +31,12 @@ const event: PreToolUseEvent = {
 test("HookRegistry runs hooks in order and stops at the first block", async () => {
   const observed: string[] = [];
   const registry = new HookRegistry();
-  registry.register(new TestHook("first", () => { observed.push("first"); return undefined; }));
+  registry.register(new TestHook("first", () => { observed.push("first"); }));
   registry.register(new TestHook("block", () => {
     observed.push("block");
     return { block: true, reason: "blocked" };
   }));
-  registry.register(new TestHook("last", () => { observed.push("last"); return undefined; }));
+  registry.register(new TestHook("last", () => { observed.push("last"); }));
 
   assert.deepEqual(await registry.trigger(event), { block: true, reason: "blocked" });
   assert.deepEqual(observed, ["first", "block"]);
@@ -50,9 +50,9 @@ test("HookRegistry rejects duplicate names", () => {
 
 test("createHookRegistry registers every supplied hook", async () => {
   const observed: string[] = [];
-  const registry = createHookRegistry([
-    new TestHook("first", () => { observed.push("first"); return undefined; }),
-    new TestHook("second", () => { observed.push("second"); return undefined; }),
+  const registry = createHookRegistry(process.cwd(), [
+    new TestHook("first", () => { observed.push("first"); }),
+    new TestHook("second", () => { observed.push("second"); }),
   ]);
 
   await registry.trigger(event);
@@ -78,7 +78,6 @@ test("HookRegistry dispatches without knowing concrete hook event types", async 
     eventType: "test_event",
     async execute(testEvent) {
       observed = testEvent.value;
-      return undefined;
     },
   };
   const registry = new HookRegistry();

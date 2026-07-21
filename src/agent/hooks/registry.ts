@@ -19,16 +19,18 @@ export class HookRegistry {
 
   /**
    * Run one lifecycle event through every hook registered for that event type.
+   * The first hook that returns a non-void result stops the chain — matching the
+   * user's model: "return None (= undefined) to continue, return something to stop."
    * Failures are rethrown with the hook name so each lifecycle caller can
    * apply its own failure policy.
    */
-  async trigger<TEvent extends HookEvent>(event: TEvent): Promise<HookResult> {
+  async trigger<TEvent extends HookEvent>(event: TEvent): Promise<HookResult | undefined> {
     for (const hook of this.hooks.values()) {
       if (hook.eventType !== event.type) continue;
       try {
-        // The discriminator check above selects hooks specialized for TEvent.
+        // The discriminator check above selects hooks specialised for TEvent.
         const result = await (hook as Hook<TEvent>).execute(event);
-        if (result?.block === true) return result;
+        if (result !== undefined && result !== null) return result;
       } catch (error) {
         throw new Error(`hook '${hook.name}' failed`, { cause: error });
       }

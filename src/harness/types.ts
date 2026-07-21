@@ -1,4 +1,4 @@
-import type { Message } from "../../llm-client/types.js";
+import type { Message } from "../llm-client/types.js";
 
 /** A project groups sessions and owns a working directory. */
 export interface Project {

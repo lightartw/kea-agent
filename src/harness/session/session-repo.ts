@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Message } from "../../../llm-client/types.js";
+import type { Message } from "../../llm-client/types.js";
 import type { Project, SessionStore } from "../types.js";
 import { appendJsonl, readJsonl } from "./jsonl-storage.js";
 

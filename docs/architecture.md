@@ -2,174 +2,254 @@
 
 **Updated:** 2026-07-21
 
-## Layered Architecture
+## Three-Layer Architecture
 
-Kea Agent is organized into four layers plus a composition root. The dependency
-direction is strict: each layer only imports from layers below it.
+Kea follows Pi's layered design. Dependencies are strict: each layer only imports
+from layers below it.
 
 ```
-cli/ ──→ agent/ ──→ llm-client/ ──→ utils/
-            ↑
-        coding/
-```
+main.ts                    ← composition root
 
-### Layer Map
+  ├─ cli/                  ← presentation layer
+  ├─ harness/              ← application layer (tools, hooks, session persistence)
+  ├─ agent/                ← kernel layer (Agent, agent-loop, hooks, tools)
+  └─ llm-client/           ← AI abstraction layer
+       └─ utils/            ← pure utilities
+```
 
 | Layer | Directory | Depends On | What It Provides |
 |---|---|---|---|
-| Presentation | `cli/` | `agent/`, `coding/` | ANSI rendering, readline I/O |
-| Coding Agent | `coding/` | `agent/` | Built-in tools, PermissionHook, hook factory |
-| Agent Kernel | `agent/` | `llm-client/`, `utils/` | Agent loop, session, harness, hooks, tool registry |
-| AI Abstraction | `llm-client/` | `utils/` | Provider adapters, unified LLMClient, shared types |
-| Utilities | `utils/` | — | timeout, workspace path safety |
+| Presentation | `cli/` | `agent/`, `harness/` | ANSI rendering, readline I/O |
+| Application | `harness/` | `agent/`, `llm-client/` | Built-in tools, hooks, session persistence, AgentHarness |
+| Kernel | `agent/` | `llm-client/`, `utils/` | Agent class, pure agent-loop, hook registry, tool registry |
+| AI | `llm-client/` | `utils/` | Provider adapters, unified LLMClient |
+| Utilities | `utils/` | — | `runWithTimeout()`, `safePath()` |
+
+**Correspondence to Pi:**
+
+| Pi | Kea |
+|---|---|
+| `runAgentLoop()` | `agent/agent-loop.ts` |
+| `Agent` | `agent/agent.ts` |
+| `AgentSession` | `harness/agent-harness.ts` |
+| `ToolDefinition` | `harness/tools/types.ts` |
+| Extension system | `agent/hooks/` + `harness/hooks/` |
 
 ## Directory Structure
 
 ```
 src/
-├── main.ts                         # Composition root — wires everything together
+├── main.ts                           # Composition root
 │
-├── cli/                            # Layer 1: Presentation
-│   ├── render.ts                   #   renderAgentEvent — pure ANSI function
-│   └── frontend.ts                 #   CliFrontend — readline I/O + session loop
+├── cli/
+│   ├── render.ts                     #   renderAgentEvent — pure ANSI function
+│   └── frontend.ts                   #   CliFrontend — readline I/O + permission prompt
 │
-├── llm-client/                     # Layer 2: AI Abstraction
-│   ├── types.ts                    #   Message, LLMResponse, LLMClient, ToolCall, ToolSchema
-│   ├── factory.ts                  #   createLLMClient() — provider auto-detection
-│   ├── client.ts                   #   mergeOptions()
-│   └── adapters/                   #   Anthropic / OpenAI / Gemini adapters
-│
-├── agent/                          # Layer 3: Agent Kernel
-│   ├── agent-loop.ts               #   runAgentTurn — pure async generator
-│   ├── agent-session.ts            #   AgentSession — history + submit()
+├── harness/                          # Application layer
+│   ├── agent-harness.ts              #   AgentHarness(sessionStore, agent) — persistence
+│   ├── types.ts                      #   Project, SessionStore interfaces
+│   ├── system-prompt.ts              #   formatSystemPrompt()
+│   ├── messages.ts                   #   convertToLlm() — extensibility point
+│   ├── index.ts                      #   Public exports
 │   │
-│   ├── harness/                    #   Middle infrastructure (tool-agnostic, UI-agnostic)
-│   │   ├── agent-harness.ts        #     Wraps loop: project + sessions + system prompt
-│   │   ├── types.ts                #     Project, SessionStore interfaces
-│   │   ├── messages.ts             #     convertToLlm() — extensibility point
-│   │   ├── system-prompt.ts        #     formatSystemPrompt()
-│   │   └── session/                #     Session persistence
-│   │       ├── session.ts          #       Session — in-memory history
-│   │       ├── jsonl-storage.ts    #       JSONL read/write
-│   │       └── session-repo.ts     #       Session file management per project
+│   ├── session/                      #   Session persistence
+│   │   ├── session.ts                #     Session — in-memory history
+│   │   ├── jsonl-storage.ts          #     JSONL read/write
+│   │   └── session-repo.ts           #     Session file management per project
 │   │
-│   ├── hooks/                      #   Generic hook system (types + registry only; factory in coding/)
-│   │   ├── types.ts                #     HookEvent, PreToolUseEvent, Hook<T>, HookResult
-│   │   └── registry.ts             #     HookRegistry — register + trigger + get()
+│   ├── hooks/                        #   Built-in hook implementations
+│   │   ├── factory.ts                #     createHookRegistry(cwd) — 5 built-in hooks
+│   │   ├── permission.ts             #     PermissionHook — 3-gate permission pipeline
+│   │   ├── context-inject.ts         #     ContextInjectHook — logs working directory
+│   │   ├── log.ts                    #     LogHook + LargeOutputHook
+│   │   └── summary.ts                #     SummaryHook — tool-call count at session end
 │   │
-│   └── tools/                      #   Generic tool types + registry
-│       ├── types.ts                #     Tool<T>, ToolResult
-│       └── registry.ts             #     ToolRegistry — validate, hook gate, timeout, execute
+│   └── tools/                        #   Built-in tool implementations
+│       ├── types.ts                  #     ToolDefinition<T>, BashOperations
+│       ├── adapter.ts                #     wrapToolDefinition(def) → Tool
+│       ├── bash.ts                   #     createBashToolDefinition(cwd, ops?)
+│       ├── bash-ops.ts               #     LocalBashOperations — local spawn backend
+│       ├── files.ts                  #     createReadFileDef, createWriteFileDef, createEditFileDef
+│       ├── glob.ts                   #     createGlobDef
+│       └── factory.ts                #     createToolRegistry(cwd, hooks?) — 5 built-in tools
 │
-├── coding/                         # Layer 4: Coding Agent specifics
-│   ├── hooks/                      #   Built-in hooks (mirrors tools/ structure)
-│   │   ├── factory.ts              #     createHookRegistry()
-│   │   └── permission.ts           #     PermissionHook — 3-gate permission pipeline
-│   └── tools/                      #   Built-in coding tools
-│       ├── bash.ts                 #     BashTool — shell command execution
-│       ├── files.ts                #     ReadFileTool, WriteFileTool, EditFileTool
-│       ├── glob.ts                 #     GlobTool — file pattern matching
-│       └── factory.ts              #     createToolRegistry() — assembles default tool set
+├── agent/                            # Kernel layer
+│   ├── agent.ts                      #   Agent class — owns history + hooks, prompt()
+│   ├── agent-loop.ts                 #   runAgentTurn() — pure function, LLM stream + tool loop
+│   ├── types.ts                      #   AgentEvent
+│   │
+│   ├── hooks/                        #   Generic hook system (types + registry only)
+│   │   ├── types.ts                  #     HookEvent, Hook<T>, HookResult, 4 event types
+│   │   └── registry.ts               #     HookRegistry — register + trigger + get()
+│   │
+│   └── tools/                        #   Generic tool system
+│       ├── types.ts                  #     Tool<T>, ToolResult
+│       └── registry.ts               #     ToolRegistry — validate, hooks, timeout, execute
+│
+├── llm-client/
+│   ├── types.ts                      #   Message, LLMResponse, LLMClient, ToolCall, ToolSchema
+│   ├── factory.ts                    #   createLLMClient() — provider auto-detection
+│   ├── client.ts                     #   mergeOptions()
+│   └── adapters/                     #   Anthropic / OpenAI / Gemini adapters
 │
 └── utils/
-    ├── timeout.ts                  #   runWithTimeout(), TimeoutError
-    └── workspace.ts               #   safePath() — lexical workspace path guard
+    ├── timeout.ts                    #   runWithTimeout(), TimeoutError
+    └── workspace.ts                  #   safePath() — lexical workspace path guard
 ```
+
+## Hook Lifecycle
+
+Four hook events fire during a single `Agent.prompt()` call:
+
+| Order | Event | Trigger Location | Purpose |
+|---|---|---|---|
+| ① | `user_prompt_submit` | `Agent.prompt()` | Context injection, input validation |
+| ② | `pre_tool_use` | `ToolRegistry.execute()` | Permission checks (block before execution) |
+| ③ | `post_tool_use` | `ToolRegistry.execute()` | Side effects (logging, output size warnings) |
+| ④ | `stop` | `agent-loop.ts: runAgentTurn()` | Summary, compaction, force-continue |
+
+**Processing model:** hooks are called in registration order. The first hook that
+returns a non-undefined result stops the chain. Hooks that want to pass through
+MUST return undefined.
+
+**Built-in hooks (registered by `createHookRegistry(cwd)`):**
+
+| Hook | Event | Behavior |
+|---|---|---|
+| `context_inject` | ① | Logs working directory |
+| `permission` | ② | 3-gate permission pipeline (hard-deny → rule match → user prompt) |
+| `log` | ② | Prints tool name |
+| `large_output` | ③ | Warns when output > 100 KB |
+| `summary` | ④ | Prints tool-call count |
+
+**HookResult fields by lifecycle:**
+
+| Field | Used By | Effect |
+|---|---|---|
+| `block`, `reason` | ①, ② | Stop the chain; PreToolUse returns an error to the model |
+| `context` | ① | Inject a system message before the user message |
+| `messages` | ④ | Replace the entire message history (compaction) |
+| `forceContinue` | ④ | Inject a user message and continue the loop instead of stopping |
+
+## Agent and AgentHarness
+
+`Agent` owns the conversation and runs turns. `AgentHarness` wraps it with
+persistence:
+
+```ts
+// main.ts — initialization (once)
+const history = await sessionStore.load();
+const messages = history.length === 0
+  ? [{ role: "system", content: systemPrompt }]
+  : [...history];
+const agent = new Agent(client, toolRegistry, hooks, messages);
+const harness = new AgentHarness(sessionStore, agent);
+
+// Each user turn
+async *harness.prompt(userInput) {
+  const historyLength = agent.messages.length;
+  yield* agent.prompt(userInput);            // ①→④ hook lifecycle
+  for (let i = historyLength; ...) {
+    await sessionStore.append(agent.messages[i]); // persist new messages
+  }
+}
+```
+
+`Agent` is created once, not per-turn. Messages accumulate across turns in
+`agent.messages`. Like Pi's `Agent`, it is stateful but persistence-agnostic.
+
+## Tool System
+
+Two layers of abstraction, following Pi's pattern:
+
+| Layer | Type | Location | Purpose |
+|---|---|---|---|
+| Agent-kernel | `Tool<T>` | `agent/tools/types.ts` | LLM-facing schema, validation, execution interface |
+| Coding | `ToolDefinition<T>` | `harness/tools/types.ts` | Business logic, future UI rendering hooks |
+
+`wrapToolDefinition()` adapts a `ToolDefinition` into a `Tool`:
+
+```ts
+// harness/tools/factory.ts
+wrapToolDefinition(createBashToolDefinition(cwd))  // → Tool
+wrapToolDefinition(createReadFileDefinition(cwd))   // → Tool
+```
+
+Tools in `harness/tools/` never import from `agent/`. They implement
+`ToolDefinition`, a plain interface with `name`, `description`, `parameters`,
+and `execute()`.
+
+## BashOperations
+
+`BashOperations` is a swappable execution backend for the bash tool:
+
+```ts
+// harness/tools/types.ts
+interface BashOperations {
+  exec(command: string, cwd: string, signal: AbortSignal): Promise<string>;
+}
+```
+
+`LocalBashOperations` (default) spawns a local child process. Callers can
+inject SSH, Docker, or test backends through `createBashToolDefinition(cwd, ops)`.
 
 ## Key Design Decisions
 
-### Why ToolCall and ToolSchema live in llm-client
+**Why ToolCall and ToolSchema live in llm-client.** They are LLM-facing
+concepts. The three LLM adapters import them from within their own layer.
+`agent/tools/types.ts` re-exports them for convenience.
 
-`ToolCall` and `ToolSchema` are LLM-facing concepts — the tool schema format sent
-to providers and the tool calls returned by them. They are defined in
-`llm-client/types.ts` (Layer 2) and re-exported by `agent/tools/types.ts` (Layer 3)
-so that agent-level consumers see no change. The three LLM adapters import them
-directly from `../types.js` within their own layer, preserving the correct
-dependency direction.
+**Why hooks are split across agent/hooks/ and harness/hooks/.**
+`agent/hooks/` defines the generic system (`Hook<T>`, `HookRegistry`,
+event types). `harness/hooks/` provides concrete implementations
+(`PermissionHook`, `LogHook`, etc.) that know about coding-specific concerns.
 
-### Why PermissionHook is in coding/, not agent/hooks/
+**Why hook factory is in harness/, not agent/.**
+`agent/hooks/` has no factory — the kernel layer doesn't know which hooks
+exist. `harness/hooks/factory.ts` creates the concrete set. Mirrors the
+`harness/tools/factory.ts` pattern.
 
-PermissionHook knows about bash commands (`blockedBashFragment`) and file tools
-(`write_file`, `edit_file`). It is a coding-specific policy, not a generic
-agent hook. The generic hook system (`agent/hooks/`) only knows about
-`Hook<TEvent>`, `HookRegistry`, and `PreToolUseEvent` — it has no opinion on
-what hooks do.
+**Why PermissionHook is in harness/, not agent/.**
+It knows about bash command fragments and file tools. It is a coding-specific
+policy, not generic agent infrastructure.
 
-### Why main.ts doesn't construct hooks or tools directly
-
-`main.ts` calls two factories:
-- `createHookRegistry([new PermissionHook()])` — builds the hook pipeline from
-  concrete hooks. Adding a hook means adding one array element here.
-- `createToolRegistry(cwd, hooks)` — registers BashTool, file tools, GlobTool
-  without main.ts knowing which tools exist.
-
-No redundant "default" wrappers.
-
-### Why workspace.ts is in utils/, not coding/tools/
-
-`safePath()` is a shared utility consumed by `files.ts` and `glob.ts`. It is not
-a Tool — it has no schema, no execute(), and does not implement `Tool<T>`.
-Placing it in `utils/` keeps the dependency graph clean: tools import from
-utils, not from each other.
-
-### Harness: Agent vs. AgentHarness vs. AgentSession
-
-| Component | Location | Knows About | Doesn't Know |
-|---|---|---|---|
-| `runAgentTurn` | `agent/agent-loop.ts` | Messages → LLM → tools → loop | Sessions, JSONL, projects, system prompts |
-| `AgentHarness` | `agent/harness/` | Projects, session persistence, system prompt assembly | Bash, files, CLI, TUI, specific tools |
-| `AgentSession` | `agent/agent-session.ts` | Message history, one active submission | JSONL files, project paths, system prompts |
-
-The harness is the middle layer — it adds infrastructure (persistence, projects)
-to the pure agent loop, but remains tool-agnostic and UI-agnostic.
-
-## Global Storage Layout (`~/.kea/`)
-
-```
-~/.kea/
-├── settings.json                   # Global app settings
-├── history.jsonl                   # Prompt history (up-arrow recall)
-└── projects/
-    ├── -d-programming-kea_agent/  # Anonymous project (path-encoded)
-    │   ├── project.json           #   { name: null, workDir, createdAt }
-    │   ├── memory/                #   Per-project auto-memory (future)
-    │   └── sessions/
-    │       └── 20260721T183000_abc123.jsonl
-    │
-    └── my-named-project/          # Named project (user-created)
-        ├── project.json           #   { name: "my-named-project", workDir, createdAt }
-        ├── memory/
-        └── sessions/
-            └── 20260721T200000_xyz789.jsonl
-```
-
-- **Anonymous project:** ID derived from `cwd` by replacing path separators with `-`
-- **Named project:** ID is user-provided; can have custom `workDir`
-- **Sessions:** One JSONL file per session, named `<timestamp>_<uuid>.jsonl`
+**Why workspace.ts is in utils/, not harness/tools/.**
+`safePath()` is a shared utility consumed by file tools and glob tool. It is
+not a Tool — it has no schema, no execute().
 
 ## Permission Pipeline
 
 The three-gate pipeline runs inside `PermissionHook` (a `Hook<PreToolUseEvent>`):
 
 1. **Gate 1 — Hard Deny:** Forbidden Bash fragments (`rm -rf /`, `sudo`, etc.)
-   are blocked permanently. BashTool repeats this check before `spawn()`.
+   blocked permanently. `BashTool.execute()` repeats this check before `spawn()`.
 2. **Gate 2 — Rule Matching:** Ordered rules generate approval reasons for
    risky Bash commands and file modifications. The final Bash rule asks for all
-   unclassified commands as a safe default.
-3. **Gate 3 — User Approval:** The CLI/TUI adapter presents the request and
-   collects the user's decision. Only `y`/`yes` approves.
+   unclassified commands.
+3. **Gate 3 — User Approval:** The CLI/TUI adapter presents the request.
+   Only `y`/`yes` approves.
 
-The permission system is a guardrail against accidental damage, not a sandbox.
+## Global Storage (`~/.kea/`)
+
+```text
+~/.kea/
+├── settings.json
+├── history.jsonl
+└── projects/
+    └── -d-programming-kea_agent/    # Anonymous project (path-encoded from cwd)
+        ├── project.json
+        ├── memory/
+        └── sessions/
+            └── 20260721T183000_abc123.jsonl
+```
 
 ## Design Principles
 
 - **Events ≠ Messages:** `AgentEvent` is ephemeral presentation progress;
-  `Message` is durable conversation history sent to the model.
+  `Message` is durable conversation history.
 - **Generic before Specific:** The hook system and tool registry are generic
-  agent infrastructure. Coding-specific hooks and tools plug into them.
-- **Factory Pattern:** Composition root calls factories (`createLLMClient`,
-  `createHookRegistry`, `createToolRegistry`) rather than constructing
-  instances directly. Adding a new built-in component is a factory change.
-- **YAGNI:** Compaction, tree navigation, skills, prompt templates, ExecutionEnv,
-  and the extension system are absent. They are future harness features, not
-  premature abstractions.
+  kernel infrastructure. Coding-specific hooks and tools plug into them.
+- **Factory Pattern:** `createHookRegistry(cwd)` and `createToolRegistry(cwd)`
+  auto-register built-in components. Adding a new one is a factory change.
+- **Agent owns history, Harness owns persistence.** `Agent` accumulates
+  messages across turns; `AgentHarness` writes them to JSONL.

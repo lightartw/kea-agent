@@ -56,19 +56,36 @@ export class ToolRegistry {
     if (this.hooks !== undefined) {
       try {
         const result = await this.hooks.trigger({ type: "pre_tool_use", call });
-        if (result?.block === true) return this.error(result.reason);
+        if (result?.block === true) return this.error(result.reason ?? "blocked by hook");
       } catch (error) {
         return this.error(error instanceof Error ? error.message : String(error));
       }
     }
 
+    let toolResult: ToolResult;
     try {
       const content = await runWithTimeout(this.timeout, (timeoutSignal) =>
         tool.execute(call.arguments, timeoutSignal),
       );
-      return { content, isError: false };
+      toolResult = { content, isError: false };
     } catch (error) {
-      return this.error(error instanceof Error ? error.message : String(error));
+      toolResult = this.error(error instanceof Error ? error.message : String(error));
     }
+
+    // ③ PostToolUse — side-effect hooks (logging, auto-git-add) fire after
+    // execution regardless of success/failure.
+    if (this.hooks !== undefined) {
+      try {
+        await this.hooks.trigger({
+          type: "post_tool_use",
+          call,
+          result: toolResult,
+        });
+      } catch {
+        // Post hooks are side-effects; failures must not affect the tool result.
+      }
+    }
+
+    return toolResult;
   }
 }

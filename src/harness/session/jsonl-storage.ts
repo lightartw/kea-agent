@@ -1,7 +1,7 @@
 import { appendFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
-import type { Message } from "../../../llm-client/types.js";
+import type { Message } from "../../llm-client/types.js";
 
 /** Append one message line to a JSONL session file. */
 export async function appendJsonl(

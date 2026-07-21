@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AgentSession } from "../../src/agent/agent-session.js";
+import { Agent } from "../../src/agent/agent.js";
 import type { LLMClient, LLMResponse } from "../../src/llm-client/types.js";
 import { ToolRegistry } from "../../src/agent/tools/registry.js";
 
@@ -24,18 +24,17 @@ const client: LLMClient = {
   },
 };
 
-test("AgentSession owns conversation history across submissions", async () => {
-  const session = new AgentSession(client, new ToolRegistry(), [
+test("Agent owns conversation history across prompts", async () => {
+  const agent = new Agent(client, new ToolRegistry(), [
     { role: "system", content: "system" },
   ]);
 
   const events = [];
-  for await (const event of session.submit("hi")) events.push(event.type);
+  for await (const event of agent.prompt("hi")) events.push(event.type);
 
   assert.deepEqual(events, ["text_delta", "turn_end"]);
-  assert.deepEqual(session.messages.map((message) => message.role), [
-    "system",
-    "user",
-    "assistant",
-  ]);
+  assert.deepEqual(
+    agent.messages.map((message) => message.role),
+    ["system", "user", "assistant"],
+  );
 });

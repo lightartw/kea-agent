@@ -1,8 +1,8 @@
 import { createInterface, type Interface } from "node:readline/promises";
 
 import type { AgentEvent } from "../agent/types.js";
-import type { AgentHarness } from "../agent/harness/agent-harness.js";
-import type { PermissionRequest } from "../coding/hooks/permission.js";
+import type { AgentHarness } from "../harness/agent-harness.js";
+import type { PermissionRequest } from "../harness/hooks/permission.js";
 import { renderAgentEvent } from "./render.js";
 
 const CYAN = "[36m";
@@ -33,12 +33,12 @@ export class CliFrontend {
 
   /** Keep accepting user turns while AgentHarness owns conversation state. */
   async run(harness: AgentHarness): Promise<void> {
-    console.log("s01: Agent Loop");
+    console.log("Agent Loop");
     console.log("输入问题，回车发送。输入 q 退出。\n");
     while (true) {
       let query: string;
       try {
-        query = await this.readline.question(`${CYAN}s01 >> ${RESET}`);
+        query = await this.readline.question(`${CYAN}>> ${RESET}`);
       } catch {
         break;
       }

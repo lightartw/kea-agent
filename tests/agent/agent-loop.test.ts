@@ -48,7 +48,9 @@ function clientWithStreams(
   };
 }
 
-async function collect(stream: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
+async function collect(
+  stream: AsyncIterable<AgentEvent>,
+): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
   for await (const event of stream) events.push(event);
   return events;
@@ -63,7 +65,9 @@ test("runAgentTurn streams text and stores one complete assistant message", asyn
     { type: "response_done", response: final },
   ]]);
 
-  const events = await collect(runAgentTurn(history, client, new ToolRegistry()));
+  const events = await collect(
+    runAgentTurn(history, client, new ToolRegistry()),
+  );
 
   assert.deepEqual(events, [
     { type: "text_delta", text: "hel" },
@@ -141,7 +145,9 @@ test("tool results are in history before the next model stream", async () => {
     [
       [{
         type: "response_done",
-        response: response(null, [{ id: "c1", name: "noop", arguments: {} }]),
+        response: response(null, [
+          { id: "c1", name: "noop", arguments: {} },
+        ]),
       }],
       [{ type: "response_done", response: response(null) }],
     ],
@@ -170,7 +176,9 @@ test("Registry failures are emitted and returned to the model", async () => {
   ]);
   const history: Message[] = [{ role: "user", content: "run" }];
 
-  const events = await collect(runAgentTurn(history, client, new ToolRegistry()));
+  const events = await collect(
+    runAgentTurn(history, client, new ToolRegistry()),
+  );
 
   const toolEnd = events.find((event) => event.type === "tool_end");
   assert.equal(toolEnd?.type, "tool_end");

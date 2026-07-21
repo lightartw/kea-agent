@@ -73,7 +73,7 @@ export class PermissionHook implements Hook<PreToolUseEvent> {
    */
   requestPermission: PermissionRequester = async () => false;
 
-  async execute(event: PreToolUseEvent): Promise<HookResult> {
+  async execute(event: PreToolUseEvent): Promise<HookResult | void> {
     const { call } = event;
 
     // Gate 1: hard-denied Bash fragments can never be approved interactively.

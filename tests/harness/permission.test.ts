@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   PermissionHook,
   type PermissionRequest,
-} from "../../src/coding/hooks/permission.js";
+} from "../../src/harness/hooks/permission.js";
 import { HookRegistry } from "../../src/agent/hooks/registry.js";
 
 async function execute(

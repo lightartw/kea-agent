@@ -1,4 +1,4 @@
-import type { Message } from "../../../llm-client/types.js";
+import type { Message } from "../../llm-client/types.js";
 
 /**
  * In-memory message history for one session.
