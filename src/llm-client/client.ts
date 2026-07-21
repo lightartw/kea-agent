@@ -2,9 +2,9 @@ import type {
   LLMResponse,
   LLMStreamEvent,
   Message,
-  ToolSchema,
 } from "./models.js";
 import { timeoutMilliseconds } from "../utils/timeout.js";
+import type { ToolSchema } from "../tools/types.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const DEFAULT_MAX_TOKENS = 8_000;

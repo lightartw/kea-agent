@@ -4,15 +4,6 @@ import { resolve } from "node:path";
 import { Type, type Static } from "typebox";
 
 import { Tool } from "../base.js";
-import { ToolExecutionError } from "../errors.js";
-
-const DANGEROUS_COMMAND_FRAGMENTS = [
-  "rm -rf /",
-  "sudo",
-  "shutdown",
-  "reboot",
-  "> /dev/",
-] as const;
 
 const bashParameters = Type.Object(
   {
@@ -21,22 +12,12 @@ const bashParameters = Type.Object(
   { additionalProperties: false },
 );
 
-export interface BashToolOptions {
-  readonly cwd?: string;
-  readonly timeout?: number | null;
-}
-
 export class BashTool extends Tool<typeof bashParameters> {
   readonly cwd: string;
 
-  constructor(options: BashToolOptions = {}) {
-    super(
-      "bash",
-      "Run a shell command.",
-      bashParameters,
-      options.timeout ?? null,
-    );
-    this.cwd = resolve(options.cwd ?? process.cwd());
+  constructor(cwd = process.cwd()) {
+    super("bash", "Run a shell command.", bashParameters);
+    this.cwd = resolve(cwd);
   }
 
   async execute(
@@ -44,36 +25,16 @@ export class BashTool extends Tool<typeof bashParameters> {
     signal: AbortSignal,
   ): Promise<string> {
     const { command } = arguments_;
-    if (DANGEROUS_COMMAND_FRAGMENTS.some((fragment) => command.includes(fragment))) {
-      throw new ToolExecutionError("Dangerous command blocked");
-    }
     if (signal.aborted) throw signal.reason;
 
     return new Promise<string>((resolvePromise, rejectPromise) => {
-      let child;
-      try {
-        child = spawn(command, {
-          cwd: this.cwd,
-          shell: true,
-          windowsHide: true,
-          stdio: ["ignore", "pipe", "pipe"],
-          signal,
-        });
-      } catch (error) {
-        if (signal.aborted) {
-          rejectPromise(signal.reason);
-        } else {
-          rejectPromise(
-            new ToolExecutionError(
-              `Failed to start command: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-              { cause: error },
-            ),
-          );
-        }
-        return;
-      }
+      const child = spawn(command, {
+        cwd: this.cwd,
+        shell: true,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        signal,
+      });
 
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
@@ -85,15 +46,7 @@ export class BashTool extends Tool<typeof bashParameters> {
       });
 
       child.once("error", (error) => {
-        if (signal.aborted || error.name === "AbortError") {
-          rejectPromise(error);
-        } else {
-          rejectPromise(
-            new ToolExecutionError(`Failed to start command: ${error.message}`, {
-              cause: error,
-            }),
-          );
-        }
+        rejectPromise(error);
       });
 
       child.once("close", (code) => {
@@ -105,9 +58,7 @@ export class BashTool extends Tool<typeof bashParameters> {
         ).trim();
         if (code !== 0) {
           const detail = output ? `\n${output}` : "";
-          rejectPromise(
-            new ToolExecutionError(`Command exited with code ${String(code)}${detail}`),
-          );
+          rejectPromise(new Error(`Command exited with code ${String(code)}${detail}`));
           return;
         }
         resolvePromise(output || "(no output)");

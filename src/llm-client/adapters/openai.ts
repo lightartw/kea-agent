@@ -6,10 +6,9 @@ import type {
   LLMResponse,
   LLMStreamEvent,
   Message,
-  ToolCall,
-  ToolSchema,
 } from "../models.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
+import type { ToolCall, ToolSchema } from "../../tools/types.js";
 
 // OpenAI differs from our history only around tool calls: its arguments are JSON text.
 function messagesForOpenAI(messages: readonly Message[]): Record<string, unknown>[] {

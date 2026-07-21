@@ -1,11 +1,6 @@
-export type FinishReason = "stop" | "length" | "tool_calls" | null;
-export type ToolArguments = Record<string, unknown>;
+import type { ToolCall } from "../tools/types.js";
 
-export interface ToolCall {
-  readonly id: string;
-  readonly name: string;
-  readonly arguments: ToolArguments;
-}
+export type FinishReason = "stop" | "length" | "tool_calls" | null;
 
 /**
  * The agent's one history format. Adapters translate it at their boundary so
@@ -21,15 +16,6 @@ export interface Message {
   readonly toolCalls?: readonly ToolCall[];
   readonly toolCallId?: string;
   readonly name?: string;
-}
-
-export interface ToolSchema {
-  readonly type: "function";
-  readonly function: {
-    readonly name: string;
-    readonly description: string;
-    readonly parameters: Record<string, unknown>;
-  };
 }
 
 export interface TokenUsage {

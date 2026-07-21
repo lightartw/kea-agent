@@ -1,22 +1,12 @@
 import type { Static, TObject } from "typebox";
 
-import type { ToolSchema } from "../llm-client/models.js";
-
-export interface ToolResult {
-  readonly content: string;
-  readonly isError: boolean;
-}
-
-export function toolResult(content: string, isError = false): ToolResult {
-  return { content, isError };
-}
+import type { ToolSchema } from "./types.js";
 
 export abstract class Tool<TParameters extends TObject = TObject> {
   protected constructor(
     readonly name: string,
     readonly description: string,
     readonly parameters: TParameters,
-    readonly timeout: number | null = null,
   ) {}
 
   toSchema(): ToolSchema {

@@ -1,50 +1,23 @@
-import type { TObject } from "typebox";
 import { Compile, type Validator } from "typebox/compile";
 
-import type { ToolCall, ToolSchema } from "../llm-client/models.js";
-import {
-  TimeoutError,
-  runWithTimeout,
-  timeoutMilliseconds,
-} from "../utils/timeout.js";
-import { Tool, toolResult, type ToolResult } from "./base.js";
-import { ToolExecutionError } from "./errors.js";
+import { runWithTimeout, timeoutMilliseconds } from "../utils/timeout.js";
+import { Tool } from "./base.js";
+import type { ToolCall, ToolResult, ToolSchema } from "./types.js";
 
 const ERROR_PREFIX = "Error: ";
 
-interface RegisteredTool {
-  readonly tool: Tool<TObject>;
-  readonly validator: Validator;
-}
-
-export interface ToolRegistryOptions {
-  readonly defaultTimeout?: number;
-  readonly maxResultChars?: number;
-}
-
 export class ToolRegistry {
-  readonly defaultTimeout: number;
-  readonly maxResultChars: number;
-  private readonly tools = new Map<string, RegisteredTool>();
+  private readonly tools = new Map<string, Tool>();
 
-  constructor(options: ToolRegistryOptions = {}) {
-    this.defaultTimeout = options.defaultTimeout ?? 120;
-    this.maxResultChars = options.maxResultChars ?? 50_000;
-    timeoutMilliseconds(this.defaultTimeout);
-    if (!Number.isInteger(this.maxResultChars) || this.maxResultChars < 1) {
-      throw new Error("maxResultChars must be a positive integer");
-    }
+  constructor(private readonly timeout = 120) {
+    timeoutMilliseconds(timeout);
   }
 
-  register(tool: Tool<TObject>): void {
+  register(tool: Tool): void {
     if (this.tools.has(tool.name)) {
       throw new Error(`tool '${tool.name}' is already registered`);
     }
-    if (tool.timeout !== null) timeoutMilliseconds(tool.timeout);
-    this.tools.set(tool.name, {
-      tool,
-      validator: Compile(tool.parameters),
-    });
+    this.tools.set(tool.name, tool);
   }
 
   unregister(name: string): void {
@@ -52,50 +25,33 @@ export class ToolRegistry {
   }
 
   schemas(): ToolSchema[] {
-    return [...this.tools.values()].map(({ tool }) => tool.toSchema());
-  }
-
-  private result(content: string, isError = false): ToolResult {
-    return toolResult(content.slice(0, this.maxResultChars), isError);
+    return [...this.tools.values()].map((tool) => tool.toSchema());
   }
 
   private error(message: string): ToolResult {
-    return this.result(
-      message.startsWith(ERROR_PREFIX) ? message : `${ERROR_PREFIX}${message}`,
-      true,
-    );
+    return { content: message.startsWith(ERROR_PREFIX) ? message : `${ERROR_PREFIX}${message}`, isError: true };
   }
 
   async execute(call: ToolCall): Promise<ToolResult> {
-    const registered = this.tools.get(call.name);
-    if (registered === undefined) {
+    const tool = this.tools.get(call.name);
+    if (tool === undefined) {
       return this.error(`Unknown tool '${call.name}'`);
     }
-    if (!registered.validator.Check(call.arguments)) {
-      const detail = registered.validator.Errors(call.arguments)[0]?.message;
+    const validator: Validator = Compile(tool.parameters);
+    if (!validator.Check(call.arguments)) {
+      const detail = validator.Errors(call.arguments)[0]?.message;
       return this.error(
         `Invalid arguments for tool '${call.name}': ${detail ?? "validation failed"}`,
       );
     }
 
-    const timeout = registered.tool.timeout ?? this.defaultTimeout;
     try {
-      const content = await runWithTimeout(timeout, (timeoutSignal) =>
-        registered.tool.execute(call.arguments, timeoutSignal),
+      const content = await runWithTimeout(this.timeout, (timeoutSignal) =>
+        tool.execute(call.arguments, timeoutSignal),
       );
-      return this.result(content);
+      return { content, isError: false };
     } catch (error) {
-      if (error instanceof TimeoutError) {
-        return this.error(
-          `Tool '${call.name}' timed out after ${timeout} seconds`,
-        );
-      }
-      if (error instanceof ToolExecutionError) return this.error(error.message);
-      return this.error(
-        `Tool '${call.name}' failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      return this.error(error instanceof Error ? error.message : String(error));
     }
   }
 }

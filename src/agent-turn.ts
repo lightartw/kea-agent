@@ -2,9 +2,8 @@ import type { LLMClient } from "./llm-client/client.js";
 import type {
   LLMResponse,
   Message,
-  ToolCall,
 } from "./llm-client/models.js";
-import type { ToolResult } from "./tools/base.js";
+import type { ToolCall, ToolResult } from "./tools/types.js";
 import type { ToolRegistry } from "./tools/registry.js";
 
 export type AgentEvent =

@@ -2,8 +2,8 @@ import type { LLMClient, LLMConfig } from "../../src/llm-client/client.js";
 import type {
   LLMResponse,
   Message,
-  ToolSchema,
 } from "../../src/llm-client/models.js";
+import type { ToolSchema } from "../../src/tools/types.js";
 
 export const baseConfig: LLMConfig = {
   model: "test-model",
