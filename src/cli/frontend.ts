@@ -1,7 +1,7 @@
 import { createInterface, type Interface } from "node:readline/promises";
 
 import type { AgentEvent } from "../agent/agent-loop.js";
-import type { AgentSession } from "../agent/agent-session.js";
+import type { AgentHarness } from "../agent/harness/agent-harness.js";
 import type { PermissionRequest } from "../coding/permission.js";
 import { renderAgentEvent } from "./render.js";
 
@@ -32,7 +32,7 @@ export class CliFrontend {
   }
 
   /** Keep accepting user turns while AgentSession owns conversation state. */
-  async run(session: AgentSession): Promise<void> {
+  async run(harness: AgentHarness): Promise<void> {
     console.log("s01: Agent Loop");
     console.log("输入问题，回车发送。输入 q 退出。\n");
     while (true) {
@@ -44,7 +44,7 @@ export class CliFrontend {
       }
       if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
 
-      for await (const event of session.submit(query)) {
+      for await (const event of harness.prompt(query)) {
         renderAgentEvent(
           event,
           (text) => process.stdout.write(text),

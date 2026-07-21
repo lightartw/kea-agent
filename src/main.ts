@@ -1,14 +1,32 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { homedir } from "node:os";
 
 import { config as loadDotenv } from "dotenv";
 
-import { AgentSession } from "./agent-session.js";
-import { CliFrontend } from "./cli.js";
-import { PermissionHook } from "./hooks/builtin/permission.js";
-import { createHookRegistry } from "./hooks/factory.js";
+import { AgentHarness } from "./agent/harness/agent-harness.js";
+import { SessionRepo } from "./agent/harness/session/session-repo.js";
+import type { Project } from "./agent/harness/types.js";
+import { createHookRegistry } from "./agent/hooks/factory.js";
+import { CliFrontend } from "./cli/frontend.js";
+import { PermissionHook } from "./coding/permission.js";
+import { createToolRegistry } from "./coding/tools/factory.js";
 import { createLLMClient } from "./llm-client/factory.js";
-import { createToolRegistry } from "./tools/factory.js";
+import { formatSystemPrompt } from "./agent/harness/system-prompt.js";
+
+const CODING_SYSTEM_PROMPT = `You are a coding agent. Use bash, read_file, write_file, edit_file, and glob to solve tasks. Act, don't explain.`;
+
+function resolveProject(cwd: string): Project {
+  // Encode path as ID: /d/programming/kea_agent → -d-programming-kea_agent
+  const id = cwd.replace(/^([A-Za-z]):/, "-$1").replace(/[/\\]/g, "-");
+  const storageRoot = process.env.KEA_HOME ?? resolve(homedir(), ".kea");
+  return {
+    id,
+    name: null, // anonymous project; named projects added later
+    workDir: cwd,
+    storageDir: resolve(storageRoot, "projects", id),
+  };
+}
 
 /**
  * Node process composition root. Environment loading and concrete adapters stay
@@ -18,22 +36,32 @@ export async function asyncMain(): Promise<void> {
   loadDotenv({ override: true });
   const cli = new CliFrontend();
   try {
-    // Assemble one runtime explicitly: provider, cross-cutting hooks, tools,
-    // session state, then the current CLI presentation adapter.
+    // 1. AI layer
     const client = await createLLMClient();
-    // Permission is an ordinary hook. The factory only knows the common Hook
-    // interface and can register any number of independently configured hooks.
+
+    // 2. Project (anonymous by default, from cwd)
+    const project = resolveProject(process.cwd());
+
+    // 3. Coding-specific hooks and tools
     const hooks = createHookRegistry([
       new PermissionHook((request) => cli.requestPermission(request)),
     ]);
-    const registry = createToolRegistry(process.cwd(), hooks);
-    const session = new AgentSession(client, registry, [
-      {
-        role: "system",
-        content: `You are a coding agent at ${process.cwd()}. Use bash to solve tasks. Act, don't explain.`,
-      },
-    ]);
-    await cli.run(session);
+    const toolRegistry = createToolRegistry(project.workDir, hooks);
+
+    // 4. Harness — wires project, persistence, and agent loop together
+    const repo = new SessionRepo(project);
+    const sessionStore = await repo.create();
+    const harness = new AgentHarness(
+      project,
+      sessionStore,
+      client,
+      toolRegistry,
+      hooks,
+      formatSystemPrompt(CODING_SYSTEM_PROMPT),
+    );
+
+    // 5. CLI presentation
+    await cli.run(harness);
   } finally {
     cli.close();
   }
