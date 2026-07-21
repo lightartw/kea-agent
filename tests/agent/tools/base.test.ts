@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { Type, type Static } from "typebox";
 
-import { Tool } from "../../src/tools/types.js";
+import { Tool } from "../../../src/agent/tools/types.js";
 
 const parameters = Type.Object({ value: Type.String() });
 

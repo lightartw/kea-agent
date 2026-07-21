@@ -4,8 +4,8 @@ import test from "node:test";
 import {
   PermissionHook,
   type PermissionRequest,
-} from "../../src/hooks/builtin/permission.js";
-import { HookRegistry } from "../../src/hooks/registry.js";
+} from "../../src/coding/permission.js";
+import { HookRegistry } from "../../src/agent/hooks/registry.js";
 
 async function execute(
   name: string,

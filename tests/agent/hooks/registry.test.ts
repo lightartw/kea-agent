@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createHookRegistry } from "../../src/hooks/factory.js";
-import { HookRegistry } from "../../src/hooks/registry.js";
+import { createHookRegistry } from "../../../src/agent/hooks/factory.js";
+import { HookRegistry } from "../../../src/agent/hooks/registry.js";
 import {
   type Hook,
   type HookEvent,
   type HookResult,
   type PreToolUseEvent,
-} from "../../src/hooks/types.js";
+} from "../../../src/agent/hooks/types.js";
 
 class TestHook implements Hook<PreToolUseEvent> {
   readonly eventType = "pre_tool_use";

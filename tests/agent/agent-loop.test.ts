@@ -6,15 +6,15 @@ import { Type } from "typebox";
 import {
   runAgentTurn,
   type AgentEvent,
-} from "../src/agent-turn.js";
+} from "../../src/agent/agent-loop.js";
 import type {
   LLMClient,
   LLMResponse,
   LLMStreamEvent,
   Message,
-} from "../src/llm-client/types.js";
-import { Tool } from "../src/tools/types.js";
-import { ToolRegistry } from "../src/tools/registry.js";
+} from "../../src/llm-client/types.js";
+import { Tool } from "../../src/agent/tools/types.js";
+import { ToolRegistry } from "../../src/agent/tools/registry.js";
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 

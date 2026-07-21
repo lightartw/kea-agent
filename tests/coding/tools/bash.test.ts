@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BashTool } from "../../src/tools/builtin/bash.js";
+import { BashTool } from "../../../src/coding/tools/bash.js";
 
 function signal(): AbortSignal {
   return new AbortController().signal;

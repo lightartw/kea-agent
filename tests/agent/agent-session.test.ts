@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AgentSession } from "../src/agent-session.js";
-import type { LLMClient, LLMResponse } from "../src/llm-client/types.js";
-import { ToolRegistry } from "../src/tools/registry.js";
+import { AgentSession } from "../../src/agent/agent-session.js";
+import type { LLMClient, LLMResponse } from "../../src/llm-client/types.js";
+import { ToolRegistry } from "../../src/agent/tools/registry.js";
 
 const response: LLMResponse = {
   model: "test-model",

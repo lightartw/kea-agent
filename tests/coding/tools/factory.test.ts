@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createToolRegistry } from "../../src/tools/factory.js";
+import { createToolRegistry } from "../../../src/coding/tools/factory.js";
 
 test("createToolRegistry installs built-in tools", () => {
   assert.deepEqual(

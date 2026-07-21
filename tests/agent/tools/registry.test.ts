@@ -3,14 +3,14 @@ import test from "node:test";
 
 import { Type, type Static } from "typebox";
 
-import { HookRegistry } from "../../src/hooks/registry.js";
+import { HookRegistry } from "../../../src/agent/hooks/registry.js";
 import {
   type Hook,
   type HookResult,
   type PreToolUseEvent,
-} from "../../src/hooks/types.js";
-import { Tool } from "../../src/tools/types.js";
-import { ToolRegistry } from "../../src/tools/registry.js";
+} from "../../../src/agent/hooks/types.js";
+import { Tool } from "../../../src/agent/tools/types.js";
+import { ToolRegistry } from "../../../src/agent/tools/registry.js";
 
 const parameters = Type.Object({ value: Type.String() });
 
