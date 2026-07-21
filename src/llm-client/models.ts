@@ -8,34 +8,21 @@ export interface ToolCall {
   readonly arguments: ToolArguments;
 }
 
-export interface SystemMessage {
-  readonly role: "system";
-  readonly content: string;
-}
-
-export interface UserMessage {
-  readonly role: "user";
-  readonly content: string;
-}
-
-export interface AssistantMessage {
-  readonly role: "assistant";
+/**
+ * The agent's one history format. Adapters translate it at their boundary so
+ * provider-specific message types never spread into the rest of the project.
+ *
+ * The optional tool fields are meaningful only for `assistant` and `tool`
+ * roles. Keeping one shape makes the history easy to read and extend while
+ * the agent controls the values it appends.
+ */
+export interface Message {
+  readonly role: "system" | "user" | "assistant" | "tool";
   readonly content: string | null;
   readonly toolCalls?: readonly ToolCall[];
+  readonly toolCallId?: string;
+  readonly name?: string;
 }
-
-export interface ToolResultMessage {
-  readonly role: "tool";
-  readonly toolCallId: string;
-  readonly name: string;
-  readonly content: string;
-}
-
-export type Message =
-  | SystemMessage
-  | UserMessage
-  | AssistantMessage
-  | ToolResultMessage;
 
 export interface ToolSchema {
   readonly type: "function";

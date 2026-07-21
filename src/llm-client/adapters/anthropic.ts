@@ -29,6 +29,11 @@ import {
   timeoutMilliseconds,
 } from "../../utils/timeout.js";
 
+/**
+ * Anthropic boundary. Anthropic keeps system text outside `messages` and
+ * represents tool calls/results as content blocks, so conversion is required
+ * even though the agent has only one Message format.
+ */
 interface AnthropicClientLike {
   readonly messages: {
     create(
@@ -38,16 +43,15 @@ interface AnthropicClientLike {
   };
 }
 
-interface ConvertedMessages {
-  readonly system?: string;
-  readonly messages: readonly Record<string, unknown>[];
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
+  // Provider data is external. Guard the object reads that feed tool execution.
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function convertMessages(messages: readonly Message[]): ConvertedMessages {
+function convertMessages(messages: readonly Message[]) {
+  // System text and consecutive tool results must be moved into the shape the
+  // Anthropic API accepts; the temporary return value is request data, not a
+  // second application-level Message type.
   const systemParts: string[] = [];
   const converted: Record<string, unknown>[] = [];
   const pendingToolResults: Record<string, unknown>[] = [];
@@ -61,7 +65,7 @@ function convertMessages(messages: readonly Message[]): ConvertedMessages {
 
   for (const message of messages) {
     if (message.role === "system") {
-      systemParts.push(message.content);
+      systemParts.push(message.content ?? "");
       continue;
     }
     if (message.role === "tool") {
@@ -101,6 +105,7 @@ function convertMessages(messages: readonly Message[]): ConvertedMessages {
 }
 
 function convertTools(tools: readonly ToolSchema[]): readonly Record<string, unknown>[] {
+  // The agent uses OpenAI-style schemas; only Anthropic needs a rename here.
   return tools.map((tool) => ({
     name: tool.function.name,
     description: tool.function.description,
@@ -111,6 +116,7 @@ function convertTools(tools: readonly ToolSchema[]): readonly Record<string, unk
 function requestOptions(
   options: LLMOptions,
 ): Record<string, unknown> {
+  // Keep provider spelling at this boundary.
   const request: Record<string, unknown> = { max_tokens: options.maxTokens };
   if (options.temperature !== undefined) request.temperature = options.temperature;
   if (options.topP !== undefined) request.top_p = options.topP;
@@ -119,6 +125,7 @@ function requestOptions(
 }
 
 function finishReason(reason: unknown): FinishReason {
+  // Expose one finish vocabulary to callers despite SDK-specific names.
   switch (reason) {
     case "end_turn":
     case "stop_sequence":
@@ -133,6 +140,7 @@ function finishReason(reason: unknown): FinishReason {
 }
 
 function toolArguments(value: unknown): ToolArguments {
+  // ToolRegistry expects an object, never a scalar or array.
   if (!isRecord(value)) {
     throw new LLMProviderError("Anthropic tool arguments must be an object");
   }
@@ -140,6 +148,7 @@ function toolArguments(value: unknown): ToolArguments {
 }
 
 function parseToolArguments(value: string): ToolArguments {
+  // Streamed input_json_delta is accumulated as text before this final parse.
   try {
     return toolArguments(JSON.parse(value || "{}"));
   } catch (error) {
@@ -151,6 +160,7 @@ function parseToolArguments(value: string): ToolArguments {
 }
 
 function normalize(response: unknown, latencyMs: number): LLMResponse {
+  // Collapse Anthropic content blocks into the response used by agent-turn.
   if (!isRecord(response) || !Array.isArray(response.content)) {
     throw new LLMProviderError("Anthropic returned an invalid response");
   }
@@ -192,6 +202,7 @@ function normalize(response: unknown, latencyMs: number): LLMResponse {
 }
 
 function translateError(error: unknown, timedOut = false): unknown {
+  // Map SDK-specific errors into the errors the public client exposes.
   if (
     timedOut ||
     error instanceof TimeoutError ||
@@ -217,33 +228,25 @@ export class AnthropicAdapter implements LLMClient {
     private readonly client: AnthropicClientLike,
   ) {}
 
-  invoke(
+  async invoke(
     messages: readonly Message[],
     tools?: readonly ToolSchema[],
     options?: Partial<LLMOptions>,
   ): Promise<LLMResponse> {
-    return this.invokeInternal(messages, tools, options);
-  }
-
-  private async invokeInternal(
-    messages: readonly Message[],
-    tools: readonly ToolSchema[] | undefined,
-    callOptions: Partial<LLMOptions> | undefined,
-  ): Promise<LLMResponse> {
-    const options = mergeOptions(this.config.options, callOptions);
+    const mergedOptions = mergeOptions(this.config.options, options);
     const converted = convertMessages(messages);
     const request: Record<string, unknown> = {
       model: this.config.model,
       messages: converted.messages,
-      ...requestOptions(options),
+      ...requestOptions(mergedOptions),
     };
     if (converted.system !== undefined) request.system = converted.system;
     if (tools !== undefined) request.tools = convertTools(tools);
 
-    const timeoutMs = timeoutMilliseconds(options.timeout);
+    const timeoutMs = timeoutMilliseconds(mergedOptions.timeout);
     const started = performance.now();
     try {
-      const response = await runWithTimeout(options.timeout, (timeoutSignal) =>
+      const response = await runWithTimeout(mergedOptions.timeout, (timeoutSignal) =>
         this.client.messages.create(request, {
           timeout: timeoutMs,
           signal: timeoutSignal,
@@ -260,6 +263,8 @@ export class AnthropicAdapter implements LLMClient {
     tools?: readonly ToolSchema[],
     callOptions?: Partial<LLMOptions>,
   ): AsyncIterable<LLMStreamEvent> {
+    // Anthropic emits text and partial tool JSON as separate events. Keep the
+    // partial JSON private and expose a completed response at the end.
     const options = mergeOptions(this.config.options, callOptions);
     const converted = convertMessages(messages);
     const request: Record<string, unknown> = {
@@ -383,6 +388,7 @@ export class AnthropicAdapter implements LLMClient {
 export async function createAnthropicAdapter(
   config: LLMConfig,
 ): Promise<AnthropicAdapter> {
+  // SDK loading is deferred by the factory; this only builds its client.
   const clientOptions: { apiKey: string; baseURL?: string } = {
     apiKey: config.apiKey,
   };

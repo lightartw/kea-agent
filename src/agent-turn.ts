@@ -1,6 +1,5 @@
 import type { LLMClient } from "./llm-client/client.js";
 import type {
-  AssistantMessage,
   LLMResponse,
   Message,
   ToolCall,
@@ -37,7 +36,7 @@ export async function* runAgentTurn(
       throw new Error("LLM stream ended without response_done");
     }
 
-    const assistantMessage: AssistantMessage =
+    const assistantMessage: Message =
       response.toolCalls.length > 0
         ? {
             role: "assistant",

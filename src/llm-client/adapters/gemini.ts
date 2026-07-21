@@ -26,6 +26,11 @@ import {
   timeoutMilliseconds,
 } from "../../utils/timeout.js";
 
+/**
+ * Gemini boundary. Gemini calls assistant messages `model`, stores system
+ * text in config, and represents tools as function declarations. This file
+ * keeps those names out of the rest of the agent.
+ */
 interface GeminiClientLike {
   readonly models: {
     generateContent(request: Record<string, unknown>): Promise<unknown>;
@@ -40,22 +45,21 @@ interface GeminiClientOptions {
 
 type GeminiClientFactory = (options: GeminiClientOptions) => GeminiClientLike;
 
-interface ConvertedMessages {
-  readonly system?: string;
-  readonly contents: readonly Record<string, unknown>[];
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
+  // Provider data is external. Guard the object reads that feed tool execution.
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function convertMessages(messages: readonly Message[]): ConvertedMessages {
+function convertMessages(messages: readonly Message[]) {
+  // Split system text from conversation contents because Gemini accepts them
+  // in different request fields. The return value is request data, not another
+  // application Message type.
   const systemParts: string[] = [];
   const contents: Record<string, unknown>[] = [];
 
   for (const message of messages) {
     if (message.role === "system") {
-      systemParts.push(message.content);
+      systemParts.push(message.content ?? "");
     } else if (message.role === "assistant" && message.toolCalls !== undefined) {
       const parts: Record<string, unknown>[] = [];
       if (message.content) parts.push({ text: message.content });
@@ -100,6 +104,7 @@ function buildConfig(
   options: LLMOptions,
   signal: AbortSignal,
 ): Record<string, unknown> {
+  // Provider-specific option and tool spelling belongs in one request fragment.
   const config: Record<string, unknown> = {
     maxOutputTokens: options.maxTokens,
     abortSignal: signal,
@@ -123,6 +128,7 @@ function buildConfig(
 }
 
 function finishReason(response: Record<string, unknown>, hasCalls: boolean): FinishReason {
+  // Tool calls are the actionable terminal state for agent-turn.
   if (hasCalls) return "tool_calls";
   const candidates = Array.isArray(response.candidates) ? response.candidates : [];
   const first = candidates[0];
@@ -135,6 +141,7 @@ function finishReason(response: Record<string, unknown>, hasCalls: boolean): Fin
 }
 
 function toolArguments(value: unknown): ToolArguments {
+  // ToolRegistry expects an object, never a scalar or array.
   if (!isRecord(value)) {
     throw new LLMProviderError("Gemini tool arguments must be an object");
   }
@@ -147,6 +154,7 @@ function normalize(
   latencyMs: number,
   fallbackCallIndex = 0,
 ): LLMResponse {
+  // Convert Gemini's response once, then keep agent-turn provider-agnostic.
   if (!isRecord(response)) {
     throw new LLMProviderError("Gemini returned an invalid response");
   }
@@ -192,6 +200,7 @@ function normalize(
 }
 
 function authenticationStatus(error: unknown): number | undefined {
+  // Gemini does not expose one stable authentication error class.
   if (!isRecord(error)) return undefined;
   for (const key of ["status", "statusCode", "code"] as const) {
     const value = error[key];
@@ -201,6 +210,7 @@ function authenticationStatus(error: unknown): number | undefined {
 }
 
 function translateError(error: unknown, timedOut = false): unknown {
+  // Map SDK-specific errors into the errors the public client exposes.
   if (timedOut || error instanceof TimeoutError) {
     return new LLMTimeoutError("Gemini request timed out", { cause: error });
   }
@@ -222,28 +232,20 @@ export class GeminiAdapter implements LLMClient {
     private readonly client: GeminiClientLike,
   ) {}
 
-  invoke(
+  async invoke(
     messages: readonly Message[],
     tools?: readonly ToolSchema[],
     options?: Partial<LLMOptions>,
   ): Promise<LLMResponse> {
-    return this.invokeInternal(messages, tools, options);
-  }
-
-  private async invokeInternal(
-    messages: readonly Message[],
-    tools: readonly ToolSchema[] | undefined,
-    callOptions: Partial<LLMOptions> | undefined,
-  ): Promise<LLMResponse> {
-    const options = mergeOptions(this.config.options, callOptions);
+    const mergedOptions = mergeOptions(this.config.options, options);
     const converted = convertMessages(messages);
     const started = performance.now();
     try {
-      const response = await runWithTimeout(options.timeout, (timeoutSignal) =>
+      const response = await runWithTimeout(mergedOptions.timeout, (timeoutSignal) =>
         this.client.models.generateContent({
           model: this.config.model,
           contents: converted.contents,
-          config: buildConfig(converted.system, tools, options, timeoutSignal),
+          config: buildConfig(converted.system, tools, mergedOptions, timeoutSignal),
         }),
       );
       return normalize(
@@ -261,6 +263,8 @@ export class GeminiAdapter implements LLMClient {
     tools?: readonly ToolSchema[],
     callOptions?: Partial<LLMOptions>,
   ): AsyncIterable<LLMStreamEvent> {
+    // Gemini chunks contain complete function calls, but text and metadata can
+    // arrive in different chunks, so retain them until response_done.
     const options = mergeOptions(this.config.options, callOptions);
     const converted = convertMessages(messages);
     const timeoutSignal = AbortSignal.timeout(timeoutMilliseconds(options.timeout));
@@ -327,6 +331,7 @@ export async function createGeminiAdapter(
   clientFactory: GeminiClientFactory = (options) =>
     new GoogleGenAI(options) as unknown as GeminiClientLike,
 ): Promise<GeminiAdapter> {
+  // The injectable factory keeps SDK construction out of tests.
   const clientOptions: {
     apiKey: string;
     httpOptions?: { baseUrl: string };

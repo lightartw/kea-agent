@@ -29,6 +29,13 @@ import {
   timeoutMilliseconds,
 } from "../../utils/timeout.js";
 
+/**
+ * OpenAI boundary. The rest of the agent uses Message and ToolSchema; this
+ * file is the only place that knows OpenAI's `tool_calls` wire format.
+ *
+ * Main flow: convert history -> call SDK -> convert response back. Streaming
+ * additionally joins the partial tool-call JSON sent across several chunks.
+ */
 interface OpenAIClientLike {
   readonly chat: {
     readonly completions: {
@@ -41,12 +48,16 @@ interface OpenAIClientLike {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
+  // SDK data crosses an external boundary; only object-shaped values have the
+  // fields read below. This guard keeps a bad provider reply from becoming a tool call.
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function convertMessages(
   messages: readonly Message[],
 ): readonly Record<string, unknown>[] {
+  // OpenAI is the closest to our history format, except tool arguments must be
+  // JSON text and tool results use different field names.
   return messages.map((message) => {
     if (message.role === "assistant" && message.toolCalls !== undefined) {
       return {
@@ -76,6 +87,7 @@ function convertMessages(
 function requestOptions(
   options: LLMOptions,
 ): Record<string, unknown> {
+  // Keep SDK spelling here so public LLMOptions stays provider-neutral.
   const request: Record<string, unknown> = { max_tokens: options.maxTokens };
   if (options.temperature !== undefined) request.temperature = options.temperature;
   if (options.topP !== undefined) request.top_p = options.topP;
@@ -84,6 +96,7 @@ function requestOptions(
 }
 
 function finishReason(reason: unknown): FinishReason {
+  // A small shared vocabulary lets callers avoid branching by provider.
   switch (reason) {
     case "stop":
       return "stop";
@@ -98,6 +111,7 @@ function finishReason(reason: unknown): FinishReason {
 }
 
 function parseToolArguments(value: unknown): ToolArguments {
+  // OpenAI sends arguments as JSON text; tool execution needs an object.
   if (typeof value !== "string") {
     throw new LLMProviderError("OpenAI tool arguments must be JSON text");
   }
@@ -116,6 +130,8 @@ function parseToolArguments(value: unknown): ToolArguments {
 }
 
 function normalize(response: unknown, latencyMs: number): LLMResponse {
+  // This is the only response-shape conversion. Do not let SDK response types
+  // leak into agent-loop or tools.
   if (!isRecord(response) || !Array.isArray(response.choices)) {
     throw new LLMProviderError("OpenAI returned an invalid response");
   }
@@ -164,6 +180,8 @@ function normalize(response: unknown, latencyMs: number): LLMResponse {
 }
 
 function translateError(error: unknown, timedOut = false): unknown {
+  // SDKs expose different error classes. Preserve the project's two useful
+  // categories: timeout and provider failure.
   if (
     timedOut ||
     error instanceof TimeoutError ||
@@ -189,31 +207,23 @@ export class OpenAIAdapter implements LLMClient {
     private readonly client: OpenAIClientLike,
   ) {}
 
-  invoke(
+  async invoke(
     messages: readonly Message[],
     tools?: readonly ToolSchema[],
     options?: Partial<LLMOptions>,
   ): Promise<LLMResponse> {
-    return this.invokeInternal(messages, tools, options);
-  }
-
-  private async invokeInternal(
-    messages: readonly Message[],
-    tools: readonly ToolSchema[] | undefined,
-    callOptions: Partial<LLMOptions> | undefined,
-  ): Promise<LLMResponse> {
-    const options = mergeOptions(this.config.options, callOptions);
+    const mergedOptions = mergeOptions(this.config.options, options);
     const request: Record<string, unknown> = {
       model: this.config.model,
       messages: convertMessages(messages),
-      ...requestOptions(options),
+      ...requestOptions(mergedOptions),
     };
     if (tools !== undefined) request.tools = tools;
 
-    const timeoutMs = timeoutMilliseconds(options.timeout);
+    const timeoutMs = timeoutMilliseconds(mergedOptions.timeout);
     const started = performance.now();
     try {
-      const response = await runWithTimeout(options.timeout, (timeoutSignal) =>
+      const response = await runWithTimeout(mergedOptions.timeout, (timeoutSignal) =>
         this.client.chat.completions.create(request, {
           timeout: timeoutMs,
           signal: timeoutSignal,
@@ -230,6 +240,8 @@ export class OpenAIAdapter implements LLMClient {
     tools?: readonly ToolSchema[],
     callOptions?: Partial<LLMOptions>,
   ): AsyncIterable<LLMStreamEvent> {
+    // Text can be shown immediately, but OpenAI splits one tool call across
+    // chunks, so retain its pieces until the final response event.
     const options = mergeOptions(this.config.options, callOptions);
     const request: Record<string, unknown> = {
       model: this.config.model,
@@ -336,6 +348,8 @@ export class OpenAIAdapter implements LLMClient {
 export async function createOpenAIAdapter(
   config: LLMConfig,
 ): Promise<OpenAIAdapter> {
+  // Construction stays separate so importing the common client does not load
+  // every provider SDK.
   const clientOptions: { apiKey: string; baseURL?: string } = {
     apiKey: config.apiKey,
   };
