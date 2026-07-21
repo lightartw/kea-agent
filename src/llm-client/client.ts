@@ -11,43 +11,38 @@ const DEFAULT_TIMEOUT_SECONDS = 120;
 const DEFAULT_MAX_TOKENS = 8_000;
 
 export interface LLMOptions {
-  readonly timeout?: number;
-  readonly maxTokens?: number;
+  readonly timeout: number;
+  readonly maxTokens: number;
   readonly temperature?: number;
   readonly topP?: number;
   readonly stop?: readonly string[];
 }
 
-export interface ResolvedLLMOptions extends LLMOptions {
-  readonly timeout: number;
-  readonly maxTokens: number;
-}
-
-export interface AdapterConfig {
+export interface LLMConfig {
   readonly model: string;
   readonly apiKey: string;
   readonly baseUrl: string | null;
-  readonly defaultOptions: ResolvedLLMOptions;
+  readonly options: LLMOptions;
 }
 
 export interface LLMClient {
   invoke(
     messages: readonly Message[],
     tools?: readonly ToolSchema[],
-    options?: LLMOptions,
+    options?: Partial<LLMOptions>,
   ): Promise<LLMResponse>;
 
   stream(
     messages: readonly Message[],
     tools?: readonly ToolSchema[],
-    options?: LLMOptions,
+    options?: Partial<LLMOptions>,
   ): AsyncIterable<LLMStreamEvent>;
 }
 
 export function mergeOptions(
-  clientOptions: LLMOptions,
-  callOptions: LLMOptions = {},
-): ResolvedLLMOptions {
+  clientOptions: Partial<LLMOptions>,
+  callOptions: Partial<LLMOptions> = {},
+): LLMOptions {
   const merged = {
     timeout: DEFAULT_TIMEOUT_SECONDS,
     maxTokens: DEFAULT_MAX_TOKENS,

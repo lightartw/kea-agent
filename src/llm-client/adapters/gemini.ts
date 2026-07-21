@@ -2,10 +2,9 @@ import { GoogleGenAI } from "@google/genai";
 
 import {
   mergeOptions,
-  type AdapterConfig,
   type LLMClient,
+  type LLMConfig,
   type LLMOptions,
-  type ResolvedLLMOptions,
 } from "../client.js";
 import {
   LLMError,
@@ -98,7 +97,7 @@ function convertMessages(messages: readonly Message[]): ConvertedMessages {
 function buildConfig(
   system: string | undefined,
   tools: readonly ToolSchema[] | undefined,
-  options: ResolvedLLMOptions,
+  options: LLMOptions,
   signal: AbortSignal,
 ): Record<string, unknown> {
   const config: Record<string, unknown> = {
@@ -219,14 +218,14 @@ function translateError(error: unknown, timedOut = false): unknown {
 
 export class GeminiAdapter implements LLMClient {
   constructor(
-    private readonly config: AdapterConfig,
+    private readonly config: LLMConfig,
     private readonly client: GeminiClientLike,
   ) {}
 
   invoke(
     messages: readonly Message[],
     tools?: readonly ToolSchema[],
-    options?: LLMOptions,
+    options?: Partial<LLMOptions>,
   ): Promise<LLMResponse> {
     return this.invokeInternal(messages, tools, options);
   }
@@ -234,9 +233,9 @@ export class GeminiAdapter implements LLMClient {
   private async invokeInternal(
     messages: readonly Message[],
     tools: readonly ToolSchema[] | undefined,
-    callOptions: LLMOptions | undefined,
+    callOptions: Partial<LLMOptions> | undefined,
   ): Promise<LLMResponse> {
-    const options = mergeOptions(this.config.defaultOptions, callOptions);
+    const options = mergeOptions(this.config.options, callOptions);
     const converted = convertMessages(messages);
     const started = performance.now();
     try {
@@ -260,9 +259,9 @@ export class GeminiAdapter implements LLMClient {
   async *stream(
     messages: readonly Message[],
     tools?: readonly ToolSchema[],
-    callOptions?: LLMOptions,
+    callOptions?: Partial<LLMOptions>,
   ): AsyncIterable<LLMStreamEvent> {
-    const options = mergeOptions(this.config.defaultOptions, callOptions);
+    const options = mergeOptions(this.config.options, callOptions);
     const converted = convertMessages(messages);
     const timeoutSignal = AbortSignal.timeout(timeoutMilliseconds(options.timeout));
     const request = {
@@ -324,7 +323,7 @@ export class GeminiAdapter implements LLMClient {
 }
 
 export async function createGeminiAdapter(
-  config: AdapterConfig,
+  config: LLMConfig,
   clientFactory: GeminiClientFactory = (options) =>
     new GoogleGenAI(options) as unknown as GeminiClientLike,
 ): Promise<GeminiAdapter> {

@@ -1,15 +1,15 @@
-import type { AdapterConfig, LLMClient } from "../../src/llm-client/client.js";
+import type { LLMClient, LLMConfig } from "../../src/llm-client/client.js";
 import type {
   LLMResponse,
   Message,
   ToolSchema,
 } from "../../src/llm-client/models.js";
 
-export const baseConfig: AdapterConfig = {
+export const baseConfig: LLMConfig = {
   model: "test-model",
   apiKey: "test-key",
   baseUrl: null,
-  defaultOptions: { timeout: 120, maxTokens: 8_000 },
+  options: { timeout: 120, maxTokens: 8_000 },
 };
 
 export const userMessages: Message[] = [{ role: "user", content: "hello" }];

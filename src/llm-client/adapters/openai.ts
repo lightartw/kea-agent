@@ -5,10 +5,9 @@ import OpenAI, {
 
 import {
   mergeOptions,
-  type AdapterConfig,
   type LLMClient,
+  type LLMConfig,
   type LLMOptions,
-  type ResolvedLLMOptions,
 } from "../client.js";
 import {
   LLMError,
@@ -75,7 +74,7 @@ function convertMessages(
 }
 
 function requestOptions(
-  options: ResolvedLLMOptions,
+  options: LLMOptions,
 ): Record<string, unknown> {
   const request: Record<string, unknown> = { max_tokens: options.maxTokens };
   if (options.temperature !== undefined) request.temperature = options.temperature;
@@ -186,14 +185,14 @@ function translateError(error: unknown, timedOut = false): unknown {
 
 export class OpenAIAdapter implements LLMClient {
   constructor(
-    private readonly config: AdapterConfig,
+    private readonly config: LLMConfig,
     private readonly client: OpenAIClientLike,
   ) {}
 
   invoke(
     messages: readonly Message[],
     tools?: readonly ToolSchema[],
-    options?: LLMOptions,
+    options?: Partial<LLMOptions>,
   ): Promise<LLMResponse> {
     return this.invokeInternal(messages, tools, options);
   }
@@ -201,9 +200,9 @@ export class OpenAIAdapter implements LLMClient {
   private async invokeInternal(
     messages: readonly Message[],
     tools: readonly ToolSchema[] | undefined,
-    callOptions: LLMOptions | undefined,
+    callOptions: Partial<LLMOptions> | undefined,
   ): Promise<LLMResponse> {
-    const options = mergeOptions(this.config.defaultOptions, callOptions);
+    const options = mergeOptions(this.config.options, callOptions);
     const request: Record<string, unknown> = {
       model: this.config.model,
       messages: convertMessages(messages),
@@ -229,9 +228,9 @@ export class OpenAIAdapter implements LLMClient {
   async *stream(
     messages: readonly Message[],
     tools?: readonly ToolSchema[],
-    callOptions?: LLMOptions,
+    callOptions?: Partial<LLMOptions>,
   ): AsyncIterable<LLMStreamEvent> {
-    const options = mergeOptions(this.config.defaultOptions, callOptions);
+    const options = mergeOptions(this.config.options, callOptions);
     const request: Record<string, unknown> = {
       model: this.config.model,
       messages: convertMessages(messages),
@@ -335,7 +334,7 @@ export class OpenAIAdapter implements LLMClient {
 }
 
 export async function createOpenAIAdapter(
-  config: AdapterConfig,
+  config: LLMConfig,
 ): Promise<OpenAIAdapter> {
   const clientOptions: { apiKey: string; baseURL?: string } = {
     apiKey: config.apiKey,

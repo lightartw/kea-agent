@@ -1,7 +1,7 @@
 import {
   mergeOptions,
-  type AdapterConfig,
   type LLMClient,
+  type LLMConfig,
   type LLMOptions,
 } from "./client.js";
 import { LLMConfigurationError } from "./errors.js";
@@ -12,13 +12,6 @@ const PROVIDERS = {
   openai: { apiKey: "OPENAI_API_KEY", baseUrl: "OPENAI_BASE_URL" },
   gemini: { apiKey: "GEMINI_API_KEY", baseUrl: "GEMINI_BASE_URL" },
 } as const;
-
-export interface CreateLLMClientOptions extends LLMOptions {
-  readonly provider?: ProviderName;
-  readonly model?: string;
-  readonly apiKey?: string;
-  readonly baseUrl?: string | null;
-}
 
 export type LLMEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -63,11 +56,16 @@ function selectProvider(
   return selected as ProviderName;
 }
 
-function resolveConfig(
-  options: CreateLLMClientOptions,
-  environment: LLMEnvironment,
-): { readonly provider: ProviderName; readonly config: AdapterConfig } {
-  const { provider, model, apiKey, baseUrl, ...commonOptions } = options;
+export async function createLLMClient(
+  options: Partial<LLMOptions> & {
+    readonly provider?: ProviderName;
+    readonly model?: string;
+    readonly apiKey?: string;
+    readonly baseUrl?: string | null;
+  } = {},
+  environment: LLMEnvironment = process.env,
+): Promise<LLMClient> {
+  const { provider, model, apiKey, baseUrl, ...optionOverrides } = options;
   const selected = selectProvider(provider, environment);
   const variables = PROVIDERS[selected];
   const resolvedModel = model || environment.MODEL_ID;
@@ -86,23 +84,13 @@ function resolveConfig(
     );
   }
 
-  return {
-    provider: selected,
-    config: {
-      model: resolvedModel,
-      apiKey: resolvedApiKey,
-      baseUrl: resolvedBaseUrl,
-      defaultOptions: mergeOptions(commonOptions),
-    },
+  const config: LLMConfig = {
+    model: resolvedModel,
+    apiKey: resolvedApiKey,
+    baseUrl: resolvedBaseUrl,
+    options: mergeOptions(optionOverrides),
   };
-}
-
-export async function createLLMClient(
-  options: CreateLLMClientOptions = {},
-  environment: LLMEnvironment = process.env,
-): Promise<LLMClient> {
-  const { provider, config } = resolveConfig(options, environment);
-  switch (provider) {
+  switch (selected) {
     case "anthropic":
       return (await import("./adapters/anthropic.js")).createAnthropicAdapter(config);
     case "openai":

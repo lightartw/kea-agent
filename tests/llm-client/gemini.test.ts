@@ -147,7 +147,7 @@ test("Gemini maps authentication failures", async () => {
 
 test("Gemini enforces the common timeout", async () => {
   const adapter = new GeminiAdapter(
-    { ...baseConfig, defaultOptions: { timeout: 0.001, maxTokens: 8_000 } },
+    { ...baseConfig, options: { timeout: 0.001, maxTokens: 8_000 } },
     new FakeGeminiClient(new Promise(() => undefined)),
   );
   await assert.rejects(adapter.invoke(userMessages), LLMTimeoutError);
@@ -177,7 +177,7 @@ test("Gemini enforces timeout for the full stream", async () => {
     },
   };
   const adapter = new GeminiAdapter(
-    { ...baseConfig, defaultOptions: { timeout: 0.001, maxTokens: 8_000 } },
+    { ...baseConfig, options: { timeout: 0.001, maxTokens: 8_000 } },
     fake,
   );
 

@@ -127,7 +127,7 @@ test("Anthropic maps authentication and timeout failures", async () => {
 
 test("Anthropic enforces the common timeout", async () => {
   const adapter = new AnthropicAdapter(
-    { ...baseConfig, defaultOptions: { timeout: 0.001, maxTokens: 8_000 } },
+    { ...baseConfig, options: { timeout: 0.001, maxTokens: 8_000 } },
     new FakeAnthropicClient(new Promise(() => undefined)),
   );
   await assert.rejects(adapter.invoke(userMessages), LLMTimeoutError);
@@ -156,7 +156,7 @@ test("Anthropic enforces timeout for the full stream", async () => {
     },
   };
   const adapter = new AnthropicAdapter(
-    { ...baseConfig, defaultOptions: { timeout: 0.001, maxTokens: 8_000 } },
+    { ...baseConfig, options: { timeout: 0.001, maxTokens: 8_000 } },
     fake,
   );
 

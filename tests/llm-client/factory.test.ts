@@ -33,7 +33,7 @@ test("automatic detection creates the selected adapter with environment config",
     model: "env-model",
     apiKey: "env-key",
     baseUrl: "https://openai.example.test",
-    defaultOptions: { timeout: 120, maxTokens: 33 },
+    options: { timeout: 120, maxTokens: 33 },
   });
 });
 
