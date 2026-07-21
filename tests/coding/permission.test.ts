@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   PermissionHook,
   type PermissionRequest,
-} from "../../src/coding/permission.js";
+} from "../../src/coding/hooks/permission.js";
 import { HookRegistry } from "../../src/agent/hooks/registry.js";
 
 async function execute(
@@ -12,7 +12,9 @@ async function execute(
   arguments_: Record<string, unknown>,
   requestPermission: (request: PermissionRequest) => Promise<boolean>,
 ) {
-  return new PermissionHook(requestPermission).execute({
+  const hook = new PermissionHook();
+  hook.requestPermission = requestPermission;
+  return hook.execute({
     type: "pre_tool_use",
     call: { id: "call-1", name, arguments: arguments_ },
   });
@@ -92,7 +94,8 @@ test("PermissionHook reports the matched rule when asking for approval", async (
 
 test("PermissionHook registers through the common hook interface", async () => {
   const registry = new HookRegistry();
-  registry.register(new PermissionHook(async () => false));
+  // Default deny-all — no callback configured.
+  registry.register(new PermissionHook());
 
   const result = await registry.trigger({
     type: "pre_tool_use",

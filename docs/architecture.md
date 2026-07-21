@@ -63,8 +63,9 @@ src/
 │       └── registry.ts             #     ToolRegistry — validate, hook gate, timeout, execute
 │
 ├── coding/                         # Layer 4: Coding Agent specifics
-│   ├── hooks.ts                    #   createDefaultHooks() — factory for built-in hooks
-│   ├── permission.ts               #   PermissionHook — 3-gate permission pipeline
+│   ├── hooks/                      #   Built-in hooks (mirrors tools/ structure)
+│   │   ├── factory.ts              #     createDefaultHooks() — auto-registers built-in hooks
+│   │   └── permission.ts           #     PermissionHook — 3-gate permission pipeline
 │   └── tools/                      #   Built-in coding tools
 │       ├── bash.ts                 #     BashTool — shell command execution
 │       ├── files.ts                #     ReadFileTool, WriteFileTool, EditFileTool
@@ -98,13 +99,16 @@ what hooks do.
 ### Why main.ts doesn't construct hooks or tools directly
 
 `main.ts` calls two factories:
-- `createDefaultHooks(requestPermission)` — registers PermissionHook (and future
-  built-in hooks) without main.ts knowing which hooks exist
+- `createDefaultHooks()` — auto-registers PermissionHook (and future built-in
+  hooks) with zero special parameters. Callers configure hooks post-creation
+  via `HookRegistry.get()`.
 - `createToolRegistry(cwd, hooks)` — registers BashTool, file tools, GlobTool
-  without main.ts knowing which tools exist
+  without main.ts knowing which tools exist.
 
+Both factories follow the same pattern: the factory knows what to create,
+the caller provides infrastructure (`cwd` for tools, nothing for hooks).
 Adding a new built-in hook or tool is a one-line change in the respective
-factory. The composition root stays thin.
+factory — main.ts stays unchanged regardless of how many hooks exist.
 
 ### Why workspace.ts is in utils/, not coding/tools/
 

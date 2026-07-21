@@ -12,6 +12,11 @@ export class HookRegistry {
     this.hooks.set(hook.name, hook);
   }
 
+  /** Retrieve a registered hook by name so callers can configure it post-creation. */
+  get<T extends Hook = Hook>(name: string): T | undefined {
+    return this.hooks.get(name) as T | undefined;
+  }
+
   /**
    * Run one lifecycle event through every hook registered for that event type.
    * Failures are rethrown with the hook name so each lifecycle caller can

@@ -1,6 +1,6 @@
-import { blockedBashFragment } from "./tools/bash.js";
-import type { ToolCall } from "../agent/tools/types.js";
-import type { Hook, HookResult, PreToolUseEvent } from "../agent/hooks/types.js";
+import { blockedBashFragment } from "../tools/bash.js";
+import type { ToolCall } from "../../agent/tools/types.js";
+import type { Hook, HookResult, PreToolUseEvent } from "../../agent/hooks/types.js";
 
 /** Information a presentation adapter needs to ask for one approval. */
 export interface PermissionRequest {
@@ -66,7 +66,12 @@ export class PermissionHook implements Hook<PreToolUseEvent> {
   readonly name = "permission";
   readonly eventType = "pre_tool_use";
 
-  constructor(private readonly requestPermission: PermissionRequester) {}
+  /**
+   * The presentation adapter that asks the user for one approval.
+   * Defaults to always-deny. The CLI sets a real callback after construction
+   * via the HookRegistry.
+   */
+  requestPermission: PermissionRequester = async () => false;
 
   async execute(event: PreToolUseEvent): Promise<HookResult> {
     const { call } = event;

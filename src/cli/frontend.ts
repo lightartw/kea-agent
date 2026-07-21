@@ -2,7 +2,7 @@ import { createInterface, type Interface } from "node:readline/promises";
 
 import type { AgentEvent } from "../agent/agent-loop.js";
 import type { AgentHarness } from "../agent/harness/agent-harness.js";
-import type { PermissionRequest } from "../coding/permission.js";
+import type { PermissionRequest } from "../coding/hooks/permission.js";
 import { renderAgentEvent } from "./render.js";
 
 const CYAN = "[36m";
