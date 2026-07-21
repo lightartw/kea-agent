@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { isUtf8 } from "node:buffer";
 import { resolve } from "node:path";
 
 import { Type, type Static } from "typebox";
@@ -19,6 +20,19 @@ const bashParameters = Type.Object(
   },
   { additionalProperties: false },
 );
+
+function decodeOutput(output: Buffer): string {
+  if (process.platform !== "win32") return output.toString("utf8");
+
+  const gbk = new TextDecoder("gbk").decode(output);
+  if (!isUtf8(output)) return gbk;
+
+  const utf8 = output.toString("utf8");
+  // Some GBK byte pairs are accidentally valid UTF-8 (for example, 目录 becomes
+  // Ŀ¼). Latin-extended or private-use characters are typical of that mojibake;
+  // actual Node tools such as tsx emit normal UTF-8 instead.
+  return /[\u0100-\u024f\ue000-\uf8ff]/u.test(utf8) ? gbk : utf8;
+}
 
 export class BashTool extends Tool<typeof bashParameters> {
   readonly cwd: string;
@@ -62,11 +76,7 @@ export class BashTool extends Tool<typeof bashParameters> {
 
       child.once("close", (code) => {
         const outputBuffer = Buffer.concat([...stdout, ...stderr]);
-        const output = (
-          process.platform === "win32"
-            ? new TextDecoder("gbk").decode(outputBuffer)
-            : outputBuffer.toString("utf8")
-        ).trim();
+        const output = decodeOutput(outputBuffer).trim();
         if (code !== 0) {
           const detail = output ? `\n${output}` : "";
           rejectPromise(new Error(`Command exited with code ${String(code)}${detail}`));

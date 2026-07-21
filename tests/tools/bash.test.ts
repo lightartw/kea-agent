@@ -17,6 +17,13 @@ test("BashTool decodes Chinese Windows command output", {
   assert.equal(await new BashTool().execute({ command: "echo 目录" }, signal()), "目录");
 });
 
+test("BashTool preserves UTF-8 output on Windows", {
+  skip: process.platform !== "win32",
+}, async () => {
+  const command = `"${process.execPath}" -e "console.log(String.fromCodePoint(0x76ee, 0x5f55))"`;
+  assert.equal(await new BashTool().execute({ command }, signal()), "目录");
+});
+
 test("BashTool uses its configured working directory", async () => {
   const output = await new BashTool(process.cwd()).execute(
     { command: process.platform === "win32" ? "cd" : "pwd" },
