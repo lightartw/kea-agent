@@ -80,15 +80,15 @@ CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共�
 
 ## Hooks 与权限
 
-Hooks 是独立于 Agent loop 的切面扩展点。`HookRegistry` 管理显式注册的 hook；当前只定义实际使用的 `pre_tool_use`，并在工具参数验证通过后、工具 timeout 启动前顺序触发。第一个返回 `block` 的 hook 会阻止执行，hook 异常也会安全地阻止工具。
+Hooks 是独立于 Agent loop 的切面扩展点。`createHookRegistry(hooks)` 通过统一的 `Hook` 接口注册任意数量的 hook；当前只定义实际使用的 `pre_tool_use`，并在工具参数验证通过后、工具 timeout 启动前顺序触发。第一个返回 `block` 的 hook 会阻止执行，hook 异常也会安全地阻止工具。
 
 默认 CLI 注册内置 `PermissionHook`：
 
-- `read_file` 和 `glob` 直接放行；
-- `write_file`、`edit_file` 和普通 Bash 命令请求用户确认；
-- Bash 危险片段直接拒绝，不询问用户。
+- Gate 1：Bash hard-deny 片段直接拒绝，不能由用户批准；
+- Gate 2：有序规则为 Bash、`write_file` 和 `edit_file` 生成审批原因，`read_file` 与 `glob` 直接放行；
+- Gate 3：只有规则命中的调用才交给当前 CLI/TUI adapter 等待用户确认。
 
-Permission 等待不计入工具 timeout。`BashTool` 在启动进程前仍会再次检查危险片段，作为最后一道防线。权限确认只是防误操作机制，不是完整沙箱。
+为了安全，Gate 2 的最后一条 Bash 规则会询问所有未被 hard-deny 的命令，而不把未知命令自动视为安全。Permission 等待不计入工具 timeout。`BashTool` 在启动进程前仍会再次检查危险片段，作为最后一道防线；文件工具始终拒绝 workspace 路径逃逸。权限确认只是防误操作机制，不是完整沙箱。
 
 ## CLI 与核心边界
 

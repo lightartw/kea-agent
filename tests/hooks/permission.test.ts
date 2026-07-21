@@ -55,16 +55,39 @@ test("PermissionHook allows an approved Bash command", async () => {
   assert.equal(result, undefined);
 });
 
-test("PermissionHook hard-denies forbidden Bash commands without prompting", async () => {
-  let prompted = false;
-  const result = await execute("bash", { command: "sudo reboot" }, async () => {
-    prompted = true;
-    return true;
+test("PermissionHook hard-denies every forbidden Bash fragment without prompting", async () => {
+  const commands = [
+    "rm -rf /",
+    "sudo true",
+    "shutdown now",
+    "reboot",
+    "mkfs.ext4 /dev/sda",
+    "dd if=/dev/zero of=disk.img",
+    "echo x > /dev/sda",
+  ];
+
+  for (const command of commands) {
+    let prompted = false;
+    const result = await execute("bash", { command }, async () => {
+      prompted = true;
+      return true;
+    });
+
+    assert.equal(prompted, false, command);
+    assert.equal(result?.block, true, command);
+    assert.match(result?.reason ?? "", /forbidden fragment/, command);
+  }
+});
+
+test("PermissionHook reports the matched rule when asking for approval", async () => {
+  const requests: PermissionRequest[] = [];
+  await execute("bash", { command: "chmod 777 script.sh" }, async (request) => {
+    requests.push(request);
+    return false;
   });
 
-  assert.equal(prompted, false);
-  assert.equal(result?.block, true);
-  assert.match(result?.reason ?? "", /forbidden fragment/);
+  assert.equal(requests.length, 1);
+  assert.match(requests[0]?.reason ?? "", /potentially destructive/i);
 });
 
 test("PermissionHook registers through the common hook interface", async () => {

@@ -27,9 +27,22 @@ test("BashTool reports command failures", async () => {
   await assert.rejects(new BashTool().execute({ command: "exit 7" }, signal()), /code 7/);
 });
 
-test("BashTool blocks dangerous commands", async () => {
-  await assert.rejects(
-    new BashTool().execute({ command: "shutdown now" }, signal()),
-    /Dangerous command blocked/,
-  );
+test("BashTool blocks every dangerous fragment as a final backstop", async () => {
+  const commands = [
+    "rm -rf /",
+    "sudo true",
+    "shutdown now",
+    "reboot",
+    "mkfs.ext4 /dev/sda",
+    "dd if=/dev/zero of=disk.img",
+    "echo x > /dev/sda",
+  ];
+
+  for (const command of commands) {
+    await assert.rejects(
+      new BashTool().execute({ command }, signal()),
+      /Dangerous command blocked/,
+      command,
+    );
+  }
 });

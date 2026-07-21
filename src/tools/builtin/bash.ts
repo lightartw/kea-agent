@@ -11,6 +11,8 @@ const DANGEROUS_COMMAND_FRAGMENTS = [
   "sudo",
   "shutdown",
   "reboot",
+  "mkfs",
+  "dd if=",
   "> /dev/",
 ] as const;
 

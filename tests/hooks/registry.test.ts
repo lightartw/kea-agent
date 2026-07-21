@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createHookRegistry } from "../../src/hooks/factory.js";
 import { HookRegistry } from "../../src/hooks/registry.js";
 import {
   type Hook,
@@ -45,6 +46,17 @@ test("HookRegistry rejects duplicate names", () => {
   const registry = new HookRegistry();
   registry.register(new TestHook("test", () => ({ block: true, reason: "blocked" })));
   assert.throws(() => registry.register(new TestHook("test", () => undefined)), /already registered/);
+});
+
+test("createHookRegistry registers every supplied hook", async () => {
+  const observed: string[] = [];
+  const registry = createHookRegistry([
+    new TestHook("first", () => { observed.push("first"); return undefined; }),
+    new TestHook("second", () => { observed.push("second"); return undefined; }),
+  ]);
+
+  await registry.trigger(event);
+  assert.deepEqual(observed, ["first", "second"]);
 });
 
 test("HookRegistry reports hook failures", async () => {
