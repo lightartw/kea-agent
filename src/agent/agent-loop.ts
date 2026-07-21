@@ -19,6 +19,14 @@ export async function* runAgentTurn(
   hooks?: HookRegistry,
 ): AsyncIterable<AgentEvent> {
   while (true) {
+    // ④ pre_turn — before LLM stream, hooks can inject context.
+    if (hooks !== undefined) {
+      const result = await hooks.trigger({ type: "pre_turn" });
+      if (result?.context !== undefined) {
+        messages.push({ role: "user", content: result.context });
+      }
+    }
+
     let response: LLMResponse | undefined;
     for await (const event of client.stream(messages, registry.schemas())) {
       if (event.type === "text_delta") {
@@ -43,7 +51,7 @@ export async function* runAgentTurn(
     messages.push(assistantMessage);
 
     if (response.toolCalls.length === 0) {
-      // ④ Stop — before turn_end
+      // ⑤ Stop — before turn_end
       if (hooks !== undefined) {
         const result = await hooks.trigger({
           type: "stop",

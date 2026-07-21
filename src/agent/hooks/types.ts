@@ -6,7 +6,8 @@ import type { ToolCall, ToolResult } from "../tools/types.js";
  *   1. user_prompt_submit → Agent.prompt()
  *   2. pre_tool_use       → ToolRegistry.execute()
  *   3. post_tool_use      → ToolRegistry.execute()
- *   4. stop               → agent-loop.ts: runAgentTurn()
+ *   4. pre_turn           → agent-loop.ts: runAgentTurn()  (before LLM stream)
+ *   5. stop               → agent-loop.ts: runAgentTurn()  (no tool calls)
  *
  * trigger_hooks runs hooks in order, stops at the first non-undefined result.
  */
@@ -35,7 +36,12 @@ export interface PostToolUseEvent extends HookEvent {
   readonly result: ToolResult;
 }
 
-/** 4. stop — agent-loop.ts: runAgentTurn() */
+/** 4. pre_turn — agent-loop.ts: runAgentTurn() (before LLM stream) */
+export interface PreTurnEvent extends HookEvent {
+  readonly type: "pre_turn";
+}
+
+/** 5. stop — agent-loop.ts: runAgentTurn() */
 export interface StopEvent extends HookEvent {
   readonly type: "stop";
   readonly messages: readonly Message[];
@@ -46,6 +52,7 @@ export type HookEventUnion =
   | UserPromptSubmitEvent
   | PreToolUseEvent
   | PostToolUseEvent
+  | PreTurnEvent
   | StopEvent;
 
 /**
@@ -54,6 +61,7 @@ export type HookEventUnion =
  *   user_prompt_submit → { block, reason } | { context }
  *   pre_tool_use      → { block, reason }
  *   post_tool_use     → (usually void — side-effect only)
+ *   pre_turn          → { context }  (injected as user message before LLM call)
  *   stop              → { messages } | { forceContinue }
  */
 export interface HookResult {

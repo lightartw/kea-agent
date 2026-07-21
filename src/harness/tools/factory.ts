@@ -9,6 +9,7 @@ import {
   createWriteFileDefinition,
 } from "./files.js";
 import { createGlobDefinition } from "./glob.js";
+import { createTodoWriteDefinition } from "./todo-write.js";
 
 type ToolFactory = (workspace: string) => Tool;
 
@@ -18,6 +19,7 @@ const BUILTIN_FACTORIES: readonly ToolFactory[] = [
   (workspace) => wrapToolDefinition(createWriteFileDefinition(workspace)),
   (workspace) => wrapToolDefinition(createEditFileDefinition(workspace)),
   (workspace) => wrapToolDefinition(createGlobDefinition(workspace)),
+  (_workspace) => wrapToolDefinition(createTodoWriteDefinition()),
 ];
 
 /** Build the explicit default tool set for one workspace and hook pipeline. */

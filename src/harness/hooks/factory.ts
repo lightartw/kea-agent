@@ -4,6 +4,11 @@ import { ContextInjectHook } from "./context-inject.js";
 import { LargeOutputHook, LogHook } from "./log.js";
 import { PermissionHook } from "./permission.js";
 import { SummaryHook } from "./summary.js";
+import {
+  TodoCalledHook,
+  TodoRemindHook,
+  TodoResetHook,
+} from "./todo-reminder.js";
 
 function builtinHooks(cwd: string): readonly Hook[] {
   return [
@@ -12,6 +17,9 @@ function builtinHooks(cwd: string): readonly Hook[] {
     new LogHook(),
     new LargeOutputHook(),
     new SummaryHook(),
+    new TodoResetHook(),
+    new TodoCalledHook(),
+    new TodoRemindHook(),
   ];
 }
 
