@@ -2,7 +2,7 @@ import type { Static, TObject } from "typebox";
 import { Compile, type Validator } from "typebox/compile";
 
 // Re-export LLM-facing types from the layer that owns them.
-import type { ToolCall, ToolSchema } from "../llm-client/types.js";
+import type { ToolCall, ToolSchema } from "../../llm-client/types.js";
 export type { ToolCall, ToolSchema };
 
 /** The registry's result, returned to both the model and the terminal. */

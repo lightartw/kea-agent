@@ -2,7 +2,7 @@ import type {
   LLMClient,
   LLMResponse,
   Message,
-} from "./llm-client/types.js";
+} from "../llm-client/types.js";
 import type { ToolCall, ToolResult } from "./tools/types.js";
 import type { ToolRegistry } from "./tools/registry.js";
 

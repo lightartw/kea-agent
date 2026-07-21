@@ -1,5 +1,5 @@
-import { runAgentTurn, type AgentEvent } from "./agent-turn.js";
-import type { LLMClient, Message } from "./llm-client/types.js";
+import { runAgentTurn, type AgentEvent } from "./agent-loop.js";
+import type { LLMClient, Message } from "../llm-client/types.js";
 import type { ToolRegistry } from "./tools/registry.js";
 
 /**

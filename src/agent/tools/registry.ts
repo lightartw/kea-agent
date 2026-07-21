@@ -1,5 +1,5 @@
 import type { HookRegistry } from "../hooks/registry.js";
-import { runWithTimeout, timeoutMilliseconds } from "../utils/timeout.js";
+import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
 import { Tool, type ToolCall, type ToolResult, type ToolSchema } from "./types.js";
 
 const ERROR_PREFIX = "Error: ";
