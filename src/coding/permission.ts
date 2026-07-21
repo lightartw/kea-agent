@@ -1,6 +1,6 @@
-import { blockedBashFragment } from "../../tools/builtin/bash.js";
-import type { ToolCall } from "../../tools/types.js";
-import type { Hook, HookResult, PreToolUseEvent } from "../types.js";
+import { blockedBashFragment } from "./tools/bash.js";
+import type { ToolCall } from "../agent/tools/types.js";
+import type { Hook, HookResult, PreToolUseEvent } from "../agent/hooks/types.js";
 
 /** Information a presentation adapter needs to ask for one approval. */
 export interface PermissionRequest {

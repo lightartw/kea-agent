@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 import { Type, type Static } from "typebox";
 
-import { Tool } from "../types.js";
+import { Tool } from "../../agent/tools/types.js";
 
 const DANGEROUS_COMMAND_FRAGMENTS = [
   "rm -rf /",

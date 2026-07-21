@@ -3,8 +3,8 @@ import { sep } from "node:path";
 
 import { Type, type Static } from "typebox";
 
-import { Tool } from "../types.js";
-import { safePath } from "./workspace.js";
+import { Tool } from "../../agent/tools/types.js";
+import { safePath } from "../../utils/workspace.js";
 
 const globParameters = Type.Object(
   { pattern: Type.String({ description: "Glob pattern relative to the workspace." }) },

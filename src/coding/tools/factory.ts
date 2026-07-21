@@ -1,9 +1,9 @@
-import type { HookRegistry } from "../hooks/registry.js";
-import { BashTool } from "./builtin/bash.js";
-import { EditFileTool, ReadFileTool, WriteFileTool } from "./builtin/files.js";
-import { GlobTool } from "./builtin/glob.js";
-import { ToolRegistry } from "./registry.js";
-import type { Tool } from "./types.js";
+import type { HookRegistry } from "../../agent/hooks/registry.js";
+import { BashTool } from "./bash.js";
+import { EditFileTool, ReadFileTool, WriteFileTool } from "./files.js";
+import { GlobTool } from "./glob.js";
+import { ToolRegistry } from "../../agent/tools/registry.js";
+import type { Tool } from "../../agent/tools/types.js";
 
 const BUILTIN_TOOLS: readonly ((workspace: string) => Tool)[] = [
   (workspace) => new BashTool(workspace),
