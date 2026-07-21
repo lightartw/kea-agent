@@ -1,29 +1,12 @@
 import { createInterface, type Interface } from "node:readline/promises";
 
-import type { AgentEvent } from "./agent-turn.js";
-import type { AgentSession } from "./agent-session.js";
-import type { PermissionRequest } from "./hooks/builtin/permission.js";
+import type { AgentEvent } from "../agent/agent-loop.js";
+import type { AgentSession } from "../agent/agent-session.js";
+import type { PermissionRequest } from "../coding/permission.js";
+import { renderAgentEvent } from "./render.js";
 
-const CYAN = "\u001b[36m";
-const RESET = "\u001b[0m";
-
-/** Convert presentation-neutral agent events into the current line-based UI. */
-export function renderAgentEvent(
-  event: AgentEvent,
-  write: (text: string) => void,
-  log: (text: string) => void,
-): void {
-  if (event.type === "text_delta") {
-    write(event.text);
-  } else if (event.type === "tool_start") {
-    log(
-      `\n\u001b[33m[tool] $ ${event.call.name}: ${JSON.stringify(event.call.arguments)}\u001b[0m`,
-    );
-  } else if (event.type === "tool_end") {
-    const label = event.result.isError ? "\u001b[31m[tool error]" : "\u001b[90m[tool result]";
-    log(`${label} ${event.call.name}\u001b[0m\n${event.result.content.slice(0, 200)}`);
-  }
-}
+const CYAN = "[36m";
+const RESET = "[0m";
 
 /** The readline presentation adapter; core modules never import this class. */
 export class CliFrontend {
@@ -38,7 +21,7 @@ export class CliFrontend {
 
   /** Show one approval request. EOF and Ctrl+C are denials, not approvals. */
   async requestPermission(request: PermissionRequest): Promise<boolean> {
-    console.log(`\n\u001b[33m[permission] ${request.reason}\u001b[0m`);
+    console.log(`\n[33m[permission] ${request.reason}[0m`);
     console.log(`  ${request.call.name}: ${JSON.stringify(request.call.arguments)}`);
     try {
       const answer = await this.readline.question("  Allow? [y/N] ");
