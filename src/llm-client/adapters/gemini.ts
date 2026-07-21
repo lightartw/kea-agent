@@ -16,10 +16,10 @@ import type {
   LLMResponse,
   LLMStreamEvent,
   Message,
-  ToolArguments,
   ToolCall,
   ToolSchema,
 } from "../models.js";
+import { isRecord, toolArguments } from "../utils.js";
 import {
   TimeoutError,
   runWithTimeout,
@@ -44,11 +44,6 @@ interface GeminiClientOptions {
 }
 
 type GeminiClientFactory = (options: GeminiClientOptions) => GeminiClientLike;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  // Provider data is external. Guard the object reads that feed tool execution.
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function convertMessages(messages: readonly Message[]) {
   // Split system text from conversation contents because Gemini accepts them
@@ -140,14 +135,6 @@ function finishReason(response: Record<string, unknown>, hasCalls: boolean): Fin
   return null;
 }
 
-function toolArguments(value: unknown): ToolArguments {
-  // ToolRegistry expects an object, never a scalar or array.
-  if (!isRecord(value)) {
-    throw new LLMProviderError("Gemini tool arguments must be an object");
-  }
-  return { ...value };
-}
-
 function normalize(
   response: unknown,
   configuredModel: string,
@@ -172,7 +159,7 @@ function normalize(
           ? rawCall.id
           : `gemini-call-${fallbackCallIndex + index}`,
       name: rawCall.name,
-      arguments: toolArguments(rawCall.args ?? {}),
+      arguments: toolArguments("Gemini", rawCall.args ?? {}),
     };
   });
 

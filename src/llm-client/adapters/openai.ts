@@ -19,10 +19,10 @@ import type {
   LLMResponse,
   LLMStreamEvent,
   Message,
-  ToolArguments,
   ToolCall,
   ToolSchema,
 } from "../models.js";
+import { isRecord, parseToolArguments } from "../utils.js";
 import {
   TimeoutError,
   runWithTimeout,
@@ -45,12 +45,6 @@ interface OpenAIClientLike {
       ): Promise<unknown>;
     };
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  // SDK data crosses an external boundary; only object-shaped values have the
-  // fields read below. This guard keeps a bad provider reply from becoming a tool call.
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function convertMessages(
@@ -110,25 +104,6 @@ function finishReason(reason: unknown): FinishReason {
   }
 }
 
-function parseToolArguments(value: unknown): ToolArguments {
-  // OpenAI sends arguments as JSON text; tool execution needs an object.
-  if (typeof value !== "string") {
-    throw new LLMProviderError("OpenAI tool arguments must be JSON text");
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value || "{}");
-  } catch (error) {
-    throw new LLMProviderError("OpenAI tool arguments contain invalid JSON", {
-      cause: error,
-    });
-  }
-  if (!isRecord(parsed)) {
-    throw new LLMProviderError("OpenAI tool arguments must be an object");
-  }
-  return parsed;
-}
-
 function normalize(response: unknown, latencyMs: number): LLMResponse {
   // This is the only response-shape conversion. Do not let SDK response types
   // leak into agent-loop or tools.
@@ -155,7 +130,7 @@ function normalize(response: unknown, latencyMs: number): LLMResponse {
     return {
       id: rawCall.id,
       name: rawCall.function.name,
-      arguments: parseToolArguments(rawCall.function.arguments),
+      arguments: parseToolArguments("OpenAI", rawCall.function.arguments),
     };
   });
 
@@ -329,7 +304,7 @@ export class OpenAIAdapter implements LLMClient {
       .map(([, call]) => ({
         id: call.id,
         name: call.name,
-        arguments: parseToolArguments(call.argumentsText),
+        arguments: parseToolArguments("OpenAI", call.argumentsText),
       }));
     yield {
       type: "response_done",

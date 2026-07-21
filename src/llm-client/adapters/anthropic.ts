@@ -19,10 +19,10 @@ import type {
   LLMResponse,
   LLMStreamEvent,
   Message,
-  ToolArguments,
   ToolCall,
   ToolSchema,
 } from "../models.js";
+import { isRecord, parseToolArguments, toolArguments } from "../utils.js";
 import {
   TimeoutError,
   runWithTimeout,
@@ -41,11 +41,6 @@ interface AnthropicClientLike {
       options: { readonly timeout: number; readonly signal: AbortSignal },
     ): Promise<unknown>;
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  // Provider data is external. Guard the object reads that feed tool execution.
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function convertMessages(messages: readonly Message[]) {
@@ -139,26 +134,6 @@ function finishReason(reason: unknown): FinishReason {
   }
 }
 
-function toolArguments(value: unknown): ToolArguments {
-  // ToolRegistry expects an object, never a scalar or array.
-  if (!isRecord(value)) {
-    throw new LLMProviderError("Anthropic tool arguments must be an object");
-  }
-  return { ...value };
-}
-
-function parseToolArguments(value: string): ToolArguments {
-  // Streamed input_json_delta is accumulated as text before this final parse.
-  try {
-    return toolArguments(JSON.parse(value || "{}"));
-  } catch (error) {
-    if (error instanceof LLMProviderError) throw error;
-    throw new LLMProviderError("Anthropic tool arguments contain invalid JSON", {
-      cause: error,
-    });
-  }
-}
-
 function normalize(response: unknown, latencyMs: number): LLMResponse {
   // Collapse Anthropic content blocks into the response used by agent-turn.
   if (!isRecord(response) || !Array.isArray(response.content)) {
@@ -179,7 +154,7 @@ function normalize(response: unknown, latencyMs: number): LLMResponse {
       toolCalls.push({
         id: block.id,
         name: block.name,
-        arguments: toolArguments(block.input),
+        arguments: toolArguments("Anthropic", block.input),
       });
     }
   }
@@ -365,7 +340,7 @@ export class AnthropicAdapter implements LLMClient {
       .map(([, call]) => ({
         id: call.id,
         name: call.name,
-        arguments: parseToolArguments(call.argumentsText),
+        arguments: parseToolArguments("Anthropic", call.argumentsText),
       }));
     yield {
       type: "response_done",
