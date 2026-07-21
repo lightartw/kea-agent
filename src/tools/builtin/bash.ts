@@ -97,9 +97,12 @@ export class BashTool extends Tool<typeof bashParameters> {
       });
 
       child.once("close", (code) => {
-        const output = Buffer.concat([...stdout, ...stderr])
-          .toString("utf8")
-          .trim();
+        const outputBuffer = Buffer.concat([...stdout, ...stderr]);
+        const output = (
+          process.platform === "win32"
+            ? new TextDecoder("gbk").decode(outputBuffer)
+            : outputBuffer.toString("utf8")
+        ).trim();
         if (code !== 0) {
           const detail = output ? `\n${output}` : "";
           rejectPromise(

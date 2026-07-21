@@ -21,10 +21,11 @@ export function renderAgentEvent(
     write(event.text);
   } else if (event.type === "tool_start") {
     log(
-      `\u001b[33m$ ${event.call.name}: ${JSON.stringify(event.call.arguments)}\u001b[0m`,
+      `\n\u001b[33m[tool] $ ${event.call.name}: ${JSON.stringify(event.call.arguments)}\u001b[0m`,
     );
   } else if (event.type === "tool_end") {
-    log(event.result.content.slice(0, 200));
+    const label = event.result.isError ? "\u001b[31m[tool error]" : "\u001b[90m[tool result]";
+    log(`${label} ${event.call.name}\u001b[0m\n${event.result.content.slice(0, 200)}`);
   }
 }
 

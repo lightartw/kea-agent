@@ -20,6 +20,13 @@ test("BashTool captures output", async () => {
   assert.equal(output, "ok");
 });
 
+test("BashTool decodes Chinese Windows command output", {
+  skip: process.platform !== "win32",
+}, async () => {
+  const output = await new BashTool().execute({ command: "echo 目录" }, signal());
+  assert.equal(output, "目录");
+});
+
 test("BashTool concatenates stdout before stderr", async () => {
   const output = await new BashTool().execute(
     {

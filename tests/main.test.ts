@@ -26,7 +26,7 @@ test("renderAgentEvent writes text deltas without repeating turn content", () =>
   assert.deepEqual(logs, []);
 });
 
-test("renderAgentEvent displays tool calls and result previews", () => {
+test("renderAgentEvent clearly separates tool calls and result previews", () => {
   const logs: string[] = [];
   const log = (text: string): void => { logs.push(text); };
   const call = { id: "c1", name: "bash", arguments: { command: "pwd" } };
@@ -42,6 +42,23 @@ test("renderAgentEvent displays tool calls and result previews", () => {
     log,
   );
 
-  assert.equal(logs[0], '\u001b[33m$ bash: {"command":"pwd"}\u001b[0m');
-  assert.equal(logs[1], "x".repeat(200));
+  assert.equal(logs[0], '\n\u001b[33m[tool] $ bash: {"command":"pwd"}\u001b[0m');
+  assert.equal(logs[1], `\u001b[90m[tool result] bash\u001b[0m\n${"x".repeat(200)}`);
+});
+
+test("renderAgentEvent labels failed tools as errors", () => {
+  const logs: string[] = [];
+  const call = { id: "c1", name: "bash", arguments: { command: "bad" } };
+
+  renderAgentEvent(
+    {
+      type: "tool_end",
+      call,
+      result: { content: "command failed", isError: true },
+    },
+    () => undefined,
+    (text) => logs.push(text),
+  );
+
+  assert.deepEqual(logs, ["\u001b[31m[tool error] bash\u001b[0m\ncommand failed"]);
 });
