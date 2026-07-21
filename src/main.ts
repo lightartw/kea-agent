@@ -8,8 +8,8 @@ import { AgentHarness } from "./agent/harness/agent-harness.js";
 import { SessionRepo } from "./agent/harness/session/session-repo.js";
 import type { Project } from "./agent/harness/types.js";
 import { CliFrontend } from "./cli/frontend.js";
-import { createDefaultHooks } from "./coding/hooks/factory.js";
-import type { PermissionHook } from "./coding/hooks/permission.js";
+import { createHookRegistry } from "./coding/hooks/factory.js";
+import { PermissionHook } from "./coding/hooks/permission.js";
 import { createToolRegistry } from "./coding/tools/factory.js";
 import { createLLMClient } from "./llm-client/factory.js";
 import { formatSystemPrompt } from "./agent/harness/system-prompt.js";
@@ -44,7 +44,7 @@ export async function asyncMain(): Promise<void> {
 
     // 3. Coding-specific hooks and tools. Factories auto-register built-in
     //    hooks and tools so main.ts never constructs individual instances.
-    const hooks = createDefaultHooks();
+    const hooks = createHookRegistry([new PermissionHook()]);
     // Wire the presentation adapter into the permission hook post-creation.
     // This matches how tools receive cwd — infrastructure, not hook-specific.
     const perm = hooks.get<PermissionHook>("permission");

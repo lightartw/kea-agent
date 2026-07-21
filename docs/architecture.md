@@ -63,7 +63,7 @@ src/
 │
 ├── coding/                         # Layer 4: Coding Agent specifics
 │   ├── hooks/                      #   Built-in hooks (mirrors tools/ structure)
-│   │   ├── factory.ts              #     createHookRegistry() + createDefaultHooks()
+│   │   ├── factory.ts              #     createHookRegistry()
 │   │   └── permission.ts           #     PermissionHook — 3-gate permission pipeline
 │   └── tools/                      #   Built-in coding tools
 │       ├── bash.ts                 #     BashTool — shell command execution
@@ -98,16 +98,12 @@ what hooks do.
 ### Why main.ts doesn't construct hooks or tools directly
 
 `main.ts` calls two factories:
-- `createDefaultHooks()` — auto-registers PermissionHook (and future built-in
-  hooks) with zero special parameters. Callers configure hooks post-creation
-  via `HookRegistry.get()`.
+- `createHookRegistry([new PermissionHook()])` — builds the hook pipeline from
+  concrete hooks. Adding a hook means adding one array element here.
 - `createToolRegistry(cwd, hooks)` — registers BashTool, file tools, GlobTool
   without main.ts knowing which tools exist.
 
-Both factories follow the same pattern: the factory knows what to create,
-the caller provides infrastructure (`cwd` for tools, nothing for hooks).
-Adding a new built-in hook or tool is a one-line change in the respective
-factory — main.ts stays unchanged regardless of how many hooks exist.
+No redundant "default" wrappers.
 
 ### Why workspace.ts is in utils/, not coding/tools/
 
@@ -172,7 +168,7 @@ The permission system is a guardrail against accidental damage, not a sandbox.
 - **Generic before Specific:** The hook system and tool registry are generic
   agent infrastructure. Coding-specific hooks and tools plug into them.
 - **Factory Pattern:** Composition root calls factories (`createLLMClient`,
-  `createDefaultHooks`, `createToolRegistry`) rather than constructing
+  `createHookRegistry`, `createToolRegistry`) rather than constructing
   instances directly. Adding a new built-in component is a factory change.
 - **YAGNI:** Compaction, tree navigation, skills, prompt templates, ExecutionEnv,
   and the extension system are absent. They are future harness features, not
