@@ -64,17 +64,19 @@ CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共�
 
 请只在可信目录中运行本程序，并检查模型生成的命令。BashTool 具有最小危险片段拦截，但它不是完整沙箱，也不能替代系统权限隔离。
 
+在 Windows 上，BashTool 优先使用 Git Bash；未安装时使用 `bash.exe`（例如 WSL）。因此模型生成的命令统一采用 Bash 语法，例如 Windows 目录在 WSL 中写为 `/mnt/d/project`，不要使用 `cd D:\\project`。
+
 ## 工具系统
 
 工具通过 `ToolRegistry` 显式注册。每个工具继承泛型 `Tool<TParameters>`，使用 TypeBox 明确定义参数 schema，并实现异步 `execute()`。Registry 负责：
 
 - 导出 OpenAI function-tool schema；
 - 严格校验参数，不做类型转换或默认值注入；
-- 处理工具 timeout、错误结果和输出截断；
+- 处理工具 timeout 和错误结果；
 - 按模型返回顺序逐个执行同一轮工具调用。
 
 第一版不并行执行工具，也没有全局 Registry、装饰器注册或反射式 schema 生成。
-默认工具集合由 tools 模块中的 `createToolRegistry()` 创建，目前只注册 `BashTool`。
+默认工具集合由 tools 模块中的 `createToolRegistry()` 创建，注册 `BashTool` 以及读、写、编辑文件和 glob 查找工具。
 
 ## 统一 LLM Client
 

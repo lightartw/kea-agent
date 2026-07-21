@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { isUtf8 } from "node:buffer";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { Type, type Static } from "typebox";
@@ -21,17 +21,25 @@ const bashParameters = Type.Object(
   { additionalProperties: false },
 );
 
-function decodeOutput(output: Buffer): string {
-  if (process.platform !== "win32") return output.toString("utf8");
+type Shell = {
+  command: string;
+  arguments: string[];
+  commandOnStdin: boolean;
+};
 
-  const gbk = new TextDecoder("gbk").decode(output);
-  if (!isUtf8(output)) return gbk;
+function getShell(): Shell {
+  if (process.platform !== "win32") {
+    return { command: "bash", arguments: ["-c"], commandOnStdin: false };
+  }
 
-  const utf8 = output.toString("utf8");
-  // Some GBK byte pairs are accidentally valid UTF-8 (for example, 目录 becomes
-  // Ŀ¼). Latin-extended or private-use characters are typical of that mojibake;
-  // actual Node tools such as tsx emit normal UTF-8 instead.
-  return /[\u0100-\u024f\ue000-\uf8ff]/u.test(utf8) ? gbk : utf8;
+  // cmd.exe follows the active Windows code page. Like Pi, prefer Git Bash so
+  // both the command language and output are consistently UTF-8. The legacy
+  // WSL launcher is more reliable when the command is passed through stdin.
+  const gitBash = resolve(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe");
+  if (existsSync(gitBash)) {
+    return { command: gitBash, arguments: ["-c"], commandOnStdin: false };
+  }
+  return { command: "bash.exe", arguments: ["-s"], commandOnStdin: true };
 }
 
 export class BashTool extends Tool<typeof bashParameters> {
@@ -53,20 +61,25 @@ export class BashTool extends Tool<typeof bashParameters> {
     if (signal.aborted) throw signal.reason;
 
     return new Promise<string>((resolvePromise, rejectPromise) => {
-      const child = spawn(command, {
-        cwd: this.cwd,
-        shell: true,
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
-        signal,
-      });
+      const shell = getShell();
+      const child = spawn(
+        shell.command,
+        shell.commandOnStdin ? shell.arguments : [...shell.arguments, command],
+        {
+          cwd: this.cwd,
+          windowsHide: true,
+          stdio: [shell.commandOnStdin ? "pipe" : "ignore", "pipe", "pipe"],
+          signal,
+        },
+      );
+      if (shell.commandOnStdin) child.stdin?.end(command);
 
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
-      child.stdout.on("data", (chunk: Buffer | string) => {
+      child.stdout?.on("data", (chunk: Buffer | string) => {
         stdout.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       });
-      child.stderr.on("data", (chunk: Buffer | string) => {
+      child.stderr?.on("data", (chunk: Buffer | string) => {
         stderr.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       });
 
@@ -76,7 +89,9 @@ export class BashTool extends Tool<typeof bashParameters> {
 
       child.once("close", (code) => {
         const outputBuffer = Buffer.concat([...stdout, ...stderr]);
-        const output = decodeOutput(outputBuffer).trim();
+        // Decode after combining all chunks, so UTF-8 characters cannot be
+        // split at a chunk boundary.
+        const output = outputBuffer.toString("utf8").trim();
         if (code !== 0) {
           const detail = output ? `\n${output}` : "";
           rejectPromise(new Error(`Command exited with code ${String(code)}${detail}`));

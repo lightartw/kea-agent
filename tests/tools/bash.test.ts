@@ -11,30 +11,20 @@ test("BashTool captures output", async () => {
   assert.equal(await new BashTool().execute({ command: "echo ok" }, signal()), "ok");
 });
 
-test("BashTool decodes Chinese Windows command output", {
-  skip: process.platform !== "win32",
-}, async () => {
+test("BashTool preserves UTF-8 command output", async () => {
   assert.equal(await new BashTool().execute({ command: "echo 目录" }, signal()), "目录");
-});
-
-test("BashTool preserves UTF-8 output on Windows", {
-  skip: process.platform !== "win32",
-}, async () => {
-  const command = `"${process.execPath}" -e "console.log(String.fromCodePoint(0x76ee, 0x5f55))"`;
-  assert.equal(await new BashTool().execute({ command }, signal()), "目录");
 });
 
 test("BashTool uses its configured working directory", async () => {
   const output = await new BashTool(process.cwd()).execute(
-    { command: process.platform === "win32" ? "cd" : "pwd" },
+    { command: "pwd" },
     signal(),
   );
-  assert.match(output, /kea_agent/);
+  assert.match(output.replaceAll("\\", "/"), /kea_agent$/i);
 });
 
 test("BashTool reports command failures", async () => {
-  const command = process.platform === "win32" ? "exit /b 7" : "exit 7";
-  await assert.rejects(new BashTool().execute({ command }, signal()), /code 7/);
+  await assert.rejects(new BashTool().execute({ command: "exit 7" }, signal()), /code 7/);
 });
 
 test("BashTool blocks dangerous commands", async () => {
