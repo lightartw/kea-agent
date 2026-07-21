@@ -9,7 +9,7 @@ import { SessionRepo } from "./agent/harness/session/session-repo.js";
 import type { Project } from "./agent/harness/types.js";
 import { CliFrontend } from "./cli/frontend.js";
 import { createHookRegistry } from "./coding/hooks/factory.js";
-import { PermissionHook } from "./coding/hooks/permission.js";
+import type { PermissionHook } from "./coding/hooks/permission.js";
 import { createToolRegistry } from "./coding/tools/factory.js";
 import { createLLMClient } from "./llm-client/factory.js";
 import { formatSystemPrompt } from "./agent/harness/system-prompt.js";
@@ -44,11 +44,11 @@ export async function asyncMain(): Promise<void> {
 
     // 3. Coding-specific hooks and tools. Factories auto-register built-in
     //    hooks and tools so main.ts never constructs individual instances.
-    const hooks = createHookRegistry([new PermissionHook()]);
-    // Wire the presentation adapter into the permission hook post-creation.
-    // This matches how tools receive cwd — infrastructure, not hook-specific.
-    const perm = hooks.get<PermissionHook>("permission");
-    if (perm !== undefined) perm.requestPermission = (request) => cli.requestPermission(request);
+    const hooks = createHookRegistry();
+    // Wire the presentation adapter post-creation. The factory owns built-in
+    // hook instances; callers only inject infrastructure callbacks.
+    hooks.get<PermissionHook>("permission")!.requestPermission =
+      (request) => cli.requestPermission(request);
     const toolRegistry = createToolRegistry(project.workDir, hooks);
 
     // 4. Harness — wires project, persistence, and agent loop together
