@@ -1,5 +1,6 @@
 import type { ToolCall } from "../tools/types.js";
 
+/** Information a presentation layer needs to ask for one approval. */
 export interface PermissionRequest {
   readonly call: ToolCall;
   readonly reason: string;
@@ -9,6 +10,7 @@ export type PermissionRequester = (
   request: PermissionRequest,
 ) => Promise<boolean>;
 
+/** Capabilities supplied by the host without coupling hooks to CLI or TUI code. */
 export interface HookContext {
   readonly requestPermission: PermissionRequester;
 }
@@ -20,6 +22,7 @@ export interface PreToolUseEvent {
 
 export type HookEvent = PreToolUseEvent;
 
+/** Returning a block result short-circuits the remaining hooks and the tool. */
 export interface HookBlockResult {
   readonly block: true;
   readonly reason: string;
@@ -27,7 +30,7 @@ export interface HookBlockResult {
 
 export type HookResult = HookBlockResult | undefined;
 
-/** A lifecycle hook runs cross-cutting behavior around the agent core. */
+/** A lifecycle hook runs cross-cutting behavior without growing the agent loop. */
 export abstract class Hook<TEvent extends HookEvent = HookEvent> {
   protected constructor(
     readonly name: string,

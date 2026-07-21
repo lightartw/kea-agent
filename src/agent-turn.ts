@@ -16,12 +16,18 @@ export type AgentEvent =
     }
   | { readonly type: "turn_end"; readonly response: LLMResponse };
 
+/**
+ * Run one user turn. A turn may contain several provider round trips when the
+ * model calls tools; it ends only when the model returns no further tool calls.
+ */
 export async function* runAgentTurn(
   messages: Message[],
   client: LLMClient,
   registry: ToolRegistry,
 ): AsyncIterable<AgentEvent> {
   while (true) {
+    // Stream text immediately, but wait for response_done before trusting tool
+    // arguments because adapters assemble them incrementally.
     let response: LLMResponse | undefined;
     for await (const event of client.stream(messages, registry.schemas())) {
       if (event.type === "text_delta") {
@@ -35,6 +41,8 @@ export async function* runAgentTurn(
       throw new Error("LLM stream ended without response_done");
     }
 
+    // Store exactly one complete assistant message for this provider response.
+    // Tool calls must be in history before their results are appended.
     const assistantMessage: Message =
       response.toolCalls.length > 0
         ? {
@@ -50,6 +58,7 @@ export async function* runAgentTurn(
       return;
     }
 
+    // Preserve provider order: later calls may depend on earlier side effects.
     for (const call of response.toolCalls) {
       yield { type: "tool_start", call };
       const result = await registry.execute(call);

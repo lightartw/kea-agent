@@ -4,6 +4,7 @@ import type { PermissionRequester } from "./types.js";
 
 const denyWithoutInteraction: PermissionRequester = async () => false;
 
+/** Create the built-in hook set; headless callers fail closed by default. */
 export function createHookRegistry(
   requestPermission: PermissionRequester = denyWithoutInteraction,
 ): HookRegistry {

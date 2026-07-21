@@ -1,9 +1,10 @@
-import { runWithTimeout, timeoutMilliseconds } from "../utils/timeout.js";
 import type { HookRegistry } from "../hooks/registry.js";
+import { runWithTimeout, timeoutMilliseconds } from "../utils/timeout.js";
 import { Tool, type ToolCall, type ToolResult, type ToolSchema } from "./types.js";
 
 const ERROR_PREFIX = "Error: ";
 
+/** The single validated, hook-aware execution path for every registered tool. */
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
 
@@ -33,6 +34,11 @@ export class ToolRegistry {
     return { content: message.startsWith(ERROR_PREFIX) ? message : `${ERROR_PREFIX}${message}`, isError: true };
   }
 
+  /**
+   * Resolve and validate first, then run pre-tool hooks, and only then start the
+   * execution timeout. Time spent waiting for human approval is intentionally
+   * excluded from the tool's runtime budget.
+   */
   async execute(call: ToolCall): Promise<ToolResult> {
     const tool = this.tools.get(call.name);
     if (tool === undefined) {
@@ -45,6 +51,8 @@ export class ToolRegistry {
       );
     }
 
+    // This is the mandatory AOP gate: a block or hook failure never reaches
+    // runWithTimeout(), so no tool process or file operation has started yet.
     if (this.hooks !== undefined) {
       try {
         const result = await this.hooks.trigger({ type: "pre_tool_use", call });

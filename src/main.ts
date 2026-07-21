@@ -9,10 +9,16 @@ import { createHookRegistry } from "./hooks/factory.js";
 import { createLLMClient } from "./llm-client/factory.js";
 import { createToolRegistry } from "./tools/factory.js";
 
+/**
+ * Node process composition root. Environment loading and concrete adapters stay
+ * here so AgentSession, the agent loop, and hooks remain presentation-neutral.
+ */
 export async function asyncMain(): Promise<void> {
   loadDotenv({ override: true });
   const cli = new CliFrontend();
   try {
+    // Assemble one runtime explicitly: provider, cross-cutting hooks, tools,
+    // session state, then the current CLI presentation adapter.
     const client = await createLLMClient();
     const hooks = createHookRegistry((request) => cli.requestPermission(request));
     const registry = createToolRegistry(process.cwd(), hooks);

@@ -7,6 +7,7 @@ import type { PermissionRequest } from "./hooks/types.js";
 const CYAN = "\u001b[36m";
 const RESET = "\u001b[0m";
 
+/** Convert presentation-neutral agent events into the current line-based UI. */
 export function renderAgentEvent(
   event: AgentEvent,
   write: (text: string) => void,
@@ -24,6 +25,7 @@ export function renderAgentEvent(
   }
 }
 
+/** The readline presentation adapter; core modules never import this class. */
 export class CliFrontend {
   private readonly readline: Interface;
 
@@ -34,6 +36,7 @@ export class CliFrontend {
     });
   }
 
+  /** Show one approval request. EOF and Ctrl+C are denials, not approvals. */
   async requestPermission(request: PermissionRequest): Promise<boolean> {
     console.log(`\n\u001b[33m[permission] ${request.reason}\u001b[0m`);
     console.log(`  ${request.call.name}: ${JSON.stringify(request.call.arguments)}`);
@@ -45,6 +48,7 @@ export class CliFrontend {
     }
   }
 
+  /** Keep accepting user turns while AgentSession owns conversation state. */
   async run(session: AgentSession): Promise<void> {
     console.log("s01: Agent Loop");
     console.log("输入问题，回车发送。输入 q 退出。\n");
@@ -68,6 +72,7 @@ export class CliFrontend {
     }
   }
 
+  /** Safe to call after normal exit, Ctrl+C, or startup failure. */
   close(): void {
     this.readline.close();
   }
