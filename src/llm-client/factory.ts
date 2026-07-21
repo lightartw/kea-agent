@@ -4,8 +4,8 @@ import {
   type LLMConfig,
   type LLMOptions,
 } from "./client.js";
-import { LLMConfigurationError } from "./errors.js";
-import type { ProviderName } from "./models.js";
+
+type ProviderName = "anthropic" | "openai" | "gemini";
 
 const PROVIDERS = {
   anthropic: { apiKey: "ANTHROPIC_API_KEY", baseUrl: "ANTHROPIC_BASE_URL" },
@@ -27,12 +27,12 @@ function detectProvider(environment: LLMEnvironment): ProviderName {
     const accepted = Object.values(PROVIDERS)
       .map((variables) => variables.apiKey)
       .join(", ");
-    throw new LLMConfigurationError(
+    throw new Error(
       `No LLM provider configured; set exactly one of: ${accepted}`,
     );
   }
   if (detected.length > 1) {
-    throw new LLMConfigurationError(
+    throw new Error(
       `Multiple LLM providers configured: ${detected.join(", ")}`,
     );
   }
@@ -45,13 +45,13 @@ function selectProvider(
 ): ProviderName {
   if (provider === undefined) return detectProvider(environment);
   if (typeof provider !== "string") {
-    throw new LLMConfigurationError(
+    throw new Error(
       `Unsupported LLM provider: ${String(provider)}`,
     );
   }
   const selected = provider.toLowerCase();
   if (!(selected in PROVIDERS)) {
-    throw new LLMConfigurationError(`Unsupported LLM provider: ${selected}`);
+    throw new Error(`Unsupported LLM provider: ${selected}`);
   }
   return selected as ProviderName;
 }
@@ -76,10 +76,10 @@ export async function createLLMClient(
       : baseUrl || null;
 
   if (!resolvedModel) {
-    throw new LLMConfigurationError("Missing model; pass model or set MODEL_ID");
+    throw new Error("Missing model; pass model or set MODEL_ID");
   }
   if (!resolvedApiKey) {
-    throw new LLMConfigurationError(
+    throw new Error(
       `Missing API key; pass apiKey or set ${variables.apiKey}`,
     );
   }

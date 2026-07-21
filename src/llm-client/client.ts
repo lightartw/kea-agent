@@ -1,4 +1,3 @@
-import { LLMConfigurationError } from "./errors.js";
 import type {
   LLMResponse,
   LLMStreamEvent,
@@ -51,17 +50,15 @@ export function mergeOptions(
   };
 
   if (!Number.isFinite(merged.timeout) || merged.timeout <= 0) {
-    throw new LLMConfigurationError("timeout must be a positive finite number");
+    throw new Error("timeout must be a positive finite number");
   }
   try {
     timeoutMilliseconds(merged.timeout);
   } catch (error) {
-    throw new LLMConfigurationError("timeout exceeds the Node timer range", {
-      cause: error,
-    });
+    throw new Error("timeout exceeds the Node timer range", { cause: error });
   }
   if (!Number.isInteger(merged.maxTokens) || merged.maxTokens <= 0) {
-    throw new LLMConfigurationError("maxTokens must be a positive integer");
+    throw new Error("maxTokens must be a positive integer");
   }
 
   return merged;

@@ -1,4 +1,3 @@
-export type ProviderName = "anthropic" | "openai" | "gemini";
 export type FinishReason = "stop" | "length" | "tool_calls" | null;
 export type ToolArguments = Record<string, unknown>;
 

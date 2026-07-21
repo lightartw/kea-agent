@@ -1,19 +1,6 @@
-import Anthropic, {
-  APIConnectionTimeoutError,
-  AuthenticationError,
-} from "@anthropic-ai/sdk";
+import Anthropic from "@anthropic-ai/sdk";
 
-import {
-  mergeOptions,
-  type LLMClient,
-  type LLMConfig,
-  type LLMOptions,
-} from "../client.js";
-import {
-  LLMError,
-  LLMProviderError,
-  LLMTimeoutError,
-} from "../errors.js";
+import { mergeOptions, type LLMClient, type LLMConfig, type LLMOptions } from "../client.js";
 import type {
   FinishReason,
   LLMResponse,
@@ -22,352 +9,161 @@ import type {
   ToolCall,
   ToolSchema,
 } from "../models.js";
-import { isRecord, parseToolArguments, toolArguments } from "../utils.js";
-import {
-  TimeoutError,
-  runWithTimeout,
-  timeoutMilliseconds,
-} from "../../utils/timeout.js";
+import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
 
-/**
- * Anthropic boundary. Anthropic keeps system text outside `messages` and
- * represents tool calls/results as content blocks, so conversion is required
- * even though the agent has only one Message format.
- */
-interface AnthropicClientLike {
-  readonly messages: {
-    create(
-      request: Record<string, unknown>,
-      options: { readonly timeout: number; readonly signal: AbortSignal },
-    ): Promise<unknown>;
-  };
-}
-
-function convertMessages(messages: readonly Message[]) {
-  // System text and consecutive tool results must be moved into the shape the
-  // Anthropic API accepts; the temporary return value is request data, not a
-  // second application-level Message type.
-  const systemParts: string[] = [];
+// Anthropic requires system text separately and groups tool results as user content blocks.
+function messagesForAnthropic(messages: readonly Message[]) {
+  const system: string[] = [];
   const converted: Record<string, unknown>[] = [];
-  const pendingToolResults: Record<string, unknown>[] = [];
-
-  const flushToolResults = (): void => {
-    if (pendingToolResults.length > 0) {
-      converted.push({ role: "user", content: [...pendingToolResults] });
-      pendingToolResults.length = 0;
-    }
+  const results: Record<string, unknown>[] = [];
+  const flushResults = (): void => {
+    if (results.length) converted.push({ role: "user", content: results.splice(0) });
   };
 
   for (const message of messages) {
     if (message.role === "system") {
-      systemParts.push(message.content ?? "");
-      continue;
-    }
-    if (message.role === "tool") {
-      pendingToolResults.push({
-        type: "tool_result",
-        tool_use_id: message.toolCallId,
-        content: message.content,
-      });
-      continue;
-    }
-
-    flushToolResults();
-    if (message.role === "assistant" && message.toolCalls !== undefined) {
-      const content: Record<string, unknown>[] = [];
-      if (message.content) {
-        content.push({ type: "text", text: message.content });
-      }
-      content.push(
-        ...message.toolCalls.map((call) => ({
-          type: "tool_use",
-          id: call.id,
-          name: call.name,
-          input: call.arguments,
-        })),
-      );
-      converted.push({ role: "assistant", content });
+      if (message.content) system.push(message.content);
+    } else if (message.role === "tool") {
+      results.push({ type: "tool_result", tool_use_id: message.toolCallId, content: message.content });
     } else {
-      converted.push({ role: message.role, content: message.content });
+      flushResults();
+      if (message.role === "assistant" && message.toolCalls) {
+        converted.push({
+          role: "assistant",
+          content: [
+            ...(message.content ? [{ type: "text", text: message.content }] : []),
+            ...message.toolCalls.map((call) => ({ type: "tool_use", id: call.id, name: call.name, input: call.arguments })),
+          ],
+        });
+      } else {
+        converted.push({ role: message.role, content: message.content });
+      }
     }
   }
-
-  flushToolResults();
-  const system = systemParts.join("\n\n");
-  return system
-    ? { system, messages: converted }
-    : { messages: converted };
+  flushResults();
+  return { ...(system.length ? { system: system.join("\n\n") } : {}), messages: converted };
 }
 
-function convertTools(tools: readonly ToolSchema[]): readonly Record<string, unknown>[] {
-  // The agent uses OpenAI-style schemas; only Anthropic needs a rename here.
-  return tools.map((tool) => ({
-    name: tool.function.name,
-    description: tool.function.description,
-    input_schema: tool.function.parameters,
-  }));
+function optionsForAnthropic(options: LLMOptions): Record<string, unknown> {
+  return {
+    max_tokens: options.maxTokens,
+    ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+    ...(options.topP === undefined ? {} : { top_p: options.topP }),
+    ...(options.stop === undefined ? {} : { stop_sequences: options.stop }),
+  };
 }
 
-function requestOptions(
-  options: LLMOptions,
-): Record<string, unknown> {
-  // Keep provider spelling at this boundary.
-  const request: Record<string, unknown> = { max_tokens: options.maxTokens };
-  if (options.temperature !== undefined) request.temperature = options.temperature;
-  if (options.topP !== undefined) request.top_p = options.topP;
-  if (options.stop !== undefined) request.stop_sequences = options.stop;
-  return request;
+function toolsForAnthropic(tools: readonly ToolSchema[]): Record<string, unknown>[] {
+  return tools.map((tool) => ({ name: tool.function.name, description: tool.function.description, input_schema: tool.function.parameters }));
 }
 
-function finishReason(reason: unknown): FinishReason {
-  // Expose one finish vocabulary to callers despite SDK-specific names.
-  switch (reason) {
-    case "end_turn":
-    case "stop_sequence":
-      return "stop";
-    case "max_tokens":
-      return "length";
-    case "tool_use":
-      return "tool_calls";
-    default:
-      return null;
-  }
+function finishReason(reason: string | null | undefined): FinishReason {
+  if (reason === "tool_use") return "tool_calls";
+  if (reason === "max_tokens") return "length";
+  return reason === "end_turn" || reason === "stop_sequence" ? "stop" : null;
 }
 
-function normalize(response: unknown, latencyMs: number): LLMResponse {
-  // Collapse Anthropic content blocks into the response used by agent-turn.
-  if (!isRecord(response) || !Array.isArray(response.content)) {
-    throw new LLMProviderError("Anthropic returned an invalid response");
-  }
-
-  let text = "";
+function responseForAnthropic(response: any, latencyMs: number): LLMResponse {
+  let content = "";
   const toolCalls: ToolCall[] = [];
   for (const block of response.content) {
-    if (!isRecord(block)) continue;
-    if (block.type === "text" && typeof block.text === "string") {
-      text += block.text;
-    } else if (
-      block.type === "tool_use" &&
-      typeof block.id === "string" &&
-      typeof block.name === "string"
-    ) {
-      toolCalls.push({
-        id: block.id,
-        name: block.name,
-        arguments: toolArguments("Anthropic", block.input),
-      });
-    }
+    if (block.type === "text") content += block.text;
+    if (block.type === "tool_use") toolCalls.push({ id: block.id, name: block.name, arguments: block.input });
   }
-
-  const usage = isRecord(response.usage) ? response.usage : {};
-  const inputTokens = Number(usage.input_tokens ?? 0) || 0;
-  const outputTokens = Number(usage.output_tokens ?? 0) || 0;
+  const usage = response.usage ?? {};
+  const inputTokens = Number(usage.input_tokens ?? 0);
+  const outputTokens = Number(usage.output_tokens ?? 0);
   return {
-    model: typeof response.model === "string" ? response.model : "",
-    content: text || null,
+    model: response.model ?? "",
+    content: content || null,
     toolCalls,
-    usage: {
-      inputTokens,
-      outputTokens,
-      totalTokens: inputTokens + outputTokens,
-    },
+    usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
     latencyMs,
     finishReason: finishReason(response.stop_reason),
   };
 }
 
-function translateError(error: unknown, timedOut = false): unknown {
-  // Map SDK-specific errors into the errors the public client exposes.
-  if (
-    timedOut ||
-    error instanceof TimeoutError ||
-    error instanceof APIConnectionTimeoutError
-  ) {
-    return new LLMTimeoutError("Anthropic request timed out", { cause: error });
-  }
-  if (error instanceof AuthenticationError) {
-    return new LLMProviderError("Anthropic authentication failed", {
-      cause: error,
-    });
-  }
-  if (error instanceof LLMError) return error;
-  return new LLMProviderError(
-    `Anthropic request failed: ${error instanceof Error ? error.message : String(error)}`,
-    { cause: error },
-  );
-}
+/** Create the Anthropic implementation of the small LLMClient interface. */
+export function createAnthropicAdapter(config: LLMConfig): LLMClient {
+  const sdk = new Anthropic({ apiKey: config.apiKey, ...(config.baseUrl === null ? {} : { baseURL: config.baseUrl }) });
 
-export class AnthropicAdapter implements LLMClient {
-  constructor(
-    private readonly config: LLMConfig,
-    private readonly client: AnthropicClientLike,
-  ) {}
-
-  async invoke(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    options?: Partial<LLMOptions>,
-  ): Promise<LLMResponse> {
-    const mergedOptions = mergeOptions(this.config.options, options);
-    const converted = convertMessages(messages);
-    const request: Record<string, unknown> = {
-      model: this.config.model,
-      messages: converted.messages,
-      ...requestOptions(mergedOptions),
-    };
-    if (converted.system !== undefined) request.system = converted.system;
-    if (tools !== undefined) request.tools = convertTools(tools);
-
-    const timeoutMs = timeoutMilliseconds(mergedOptions.timeout);
-    const started = performance.now();
-    try {
-      const response = await runWithTimeout(mergedOptions.timeout, (timeoutSignal) =>
-        this.client.messages.create(request, {
-          timeout: timeoutMs,
-          signal: timeoutSignal,
-        }),
+  return {
+    async invoke(messages, tools, overrides) {
+      const options = mergeOptions(config.options, overrides);
+      const converted = messagesForAnthropic(messages);
+      const started = performance.now();
+      const response = await runWithTimeout(options.timeout, (signal) =>
+        sdk.messages.create(
+          {
+            model: config.model,
+            messages: converted.messages as any,
+            ...(converted.system === undefined ? {} : { system: converted.system }),
+            ...(tools === undefined ? {} : { tools: toolsForAnthropic(tools) as any }),
+            ...optionsForAnthropic(options),
+          } as any,
+          { timeout: timeoutMilliseconds(options.timeout), signal },
+        ),
       );
-      return normalize(response, Math.round(performance.now() - started));
-    } catch (error) {
-      throw translateError(error);
-    }
-  }
+      return responseForAnthropic(response, Math.round(performance.now() - started));
+    },
 
-  async *stream(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    callOptions?: Partial<LLMOptions>,
-  ): AsyncIterable<LLMStreamEvent> {
-    // Anthropic emits text and partial tool JSON as separate events. Keep the
-    // partial JSON private and expose a completed response at the end.
-    const options = mergeOptions(this.config.options, callOptions);
-    const converted = convertMessages(messages);
-    const request: Record<string, unknown> = {
-      model: this.config.model,
-      messages: converted.messages,
-      stream: true,
-      ...requestOptions(options),
-    };
-    if (converted.system !== undefined) request.system = converted.system;
-    if (tools !== undefined) request.tools = convertTools(tools);
+    async *stream(messages, tools, overrides): AsyncIterable<LLMStreamEvent> {
+      const options = mergeOptions(config.options, overrides);
+      const converted = messagesForAnthropic(messages);
+      const signal = AbortSignal.timeout(timeoutMilliseconds(options.timeout));
+      const stream = await sdk.messages.create(
+        {
+          model: config.model,
+          messages: converted.messages as any,
+          ...(converted.system === undefined ? {} : { system: converted.system }),
+          ...(tools === undefined ? {} : { tools: toolsForAnthropic(tools) as any }),
+          stream: true,
+          ...optionsForAnthropic(options),
+        } as any,
+        { timeout: timeoutMilliseconds(options.timeout), signal },
+      );
 
-    const timeoutMs = timeoutMilliseconds(options.timeout);
-    const timeoutSignal = AbortSignal.timeout(timeoutMs);
-    const started = performance.now();
-    let model = this.config.model;
-    let content = "";
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let finalReason: FinishReason = null;
-    const pendingCalls = new Map<
-      number,
-      { id: string; name: string; argumentsText: string }
-    >();
-    try {
-      const stream = await this.client.messages.create(request, {
-        timeout: timeoutMs,
-        signal: timeoutSignal,
-      });
-      if (
-        typeof stream !== "object" ||
-        stream === null ||
-        !(Symbol.asyncIterator in stream)
-      ) {
-        throw new LLMProviderError("Anthropic returned an invalid stream");
-      }
-      for await (const event of stream as AsyncIterable<unknown>) {
-        if (!isRecord(event)) continue;
-        if (event.type === "message_start" && isRecord(event.message)) {
-          if (typeof event.message.model === "string") model = event.message.model;
-          if (isRecord(event.message.usage)) {
-            inputTokens = Number(event.message.usage.input_tokens ?? 0) || 0;
-            outputTokens = Number(event.message.usage.output_tokens ?? 0) || 0;
-          }
-        } else if (
-          event.type === "content_block_start" &&
-          Number.isInteger(event.index) &&
-          isRecord(event.content_block) &&
-          event.content_block.type === "tool_use" &&
-          typeof event.content_block.id === "string" &&
-          typeof event.content_block.name === "string"
-        ) {
-          const input = event.content_block.input;
-          const argumentsText =
-            isRecord(input) && Object.keys(input).length > 0
-              ? JSON.stringify(input)
-              : "";
-          pendingCalls.set(Number(event.index), {
+      const started = performance.now();
+      let model = config.model;
+      let content = "";
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let reason: FinishReason = null;
+      const pending = new Map<number, { id: string; name: string; arguments: string }>();
+      for await (const event of stream as any) {
+        if (event.type === "message_start") {
+          model = event.message.model ?? model;
+          inputTokens = Number(event.message.usage?.input_tokens ?? 0);
+        } else if (event.type === "content_block_start" && event.content_block.type === "tool_use") {
+          pending.set(event.index, {
             id: event.content_block.id,
             name: event.content_block.name,
-            argumentsText,
+            arguments: Object.keys(event.content_block.input ?? {}).length ? JSON.stringify(event.content_block.input) : "",
           });
-        } else if (
-          event.type === "content_block_delta" &&
-          Number.isInteger(event.index) &&
-          isRecord(event.delta)
-        ) {
-          if (
-            event.delta.type === "text_delta" &&
-            typeof event.delta.text === "string" &&
-            event.delta.text
-          ) {
+        } else if (event.type === "content_block_delta") {
+          if (event.delta.type === "text_delta") {
             content += event.delta.text;
             yield { type: "text_delta", text: event.delta.text };
-          } else if (
-            event.delta.type === "input_json_delta" &&
-            typeof event.delta.partial_json === "string"
-          ) {
-            const pending = pendingCalls.get(Number(event.index));
-            if (pending !== undefined) {
-              pending.argumentsText += event.delta.partial_json;
-            }
+          } else if (event.delta.type === "input_json_delta") {
+            const call = pending.get(event.index);
+            if (call) call.arguments += event.delta.partial_json;
           }
         } else if (event.type === "message_delta") {
-          if (isRecord(event.delta)) {
-            finalReason = finishReason(event.delta.stop_reason) ?? finalReason;
-          }
-          if (isRecord(event.usage)) {
-            outputTokens = Number(event.usage.output_tokens ?? outputTokens) || 0;
-          }
+          reason = finishReason(event.delta.stop_reason) ?? reason;
+          outputTokens = Number(event.usage?.output_tokens ?? outputTokens);
         }
       }
-    } catch (error) {
-      throw translateError(error, timeoutSignal.aborted);
-    }
-
-    const toolCalls = [...pendingCalls.entries()]
-      .sort(([left], [right]) => left - right)
-      .map(([, call]) => ({
-        id: call.id,
-        name: call.name,
-        arguments: parseToolArguments("Anthropic", call.argumentsText),
-      }));
-    yield {
-      type: "response_done",
-      response: {
-        model,
-        content: content || null,
-        toolCalls,
-        usage: {
-          inputTokens,
-          outputTokens,
-          totalTokens: inputTokens + outputTokens,
+      yield {
+        type: "response_done",
+        response: {
+          model,
+          content: content || null,
+          toolCalls: [...pending.values()].map((call) => ({ ...call, arguments: JSON.parse(call.arguments || "{}") })),
+          usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
+          latencyMs: Math.round(performance.now() - started),
+          finishReason: reason,
         },
-        latencyMs: Math.round(performance.now() - started),
-        finishReason: finalReason,
-      },
-    };
-  }
-}
-
-export async function createAnthropicAdapter(
-  config: LLMConfig,
-): Promise<AnthropicAdapter> {
-  // SDK loading is deferred by the factory; this only builds its client.
-  const clientOptions: { apiKey: string; baseURL?: string } = {
-    apiKey: config.apiKey,
+      };
+    },
   };
-  if (config.baseUrl !== null) clientOptions.baseURL = config.baseUrl;
-  const client = new Anthropic(clientOptions);
-  return new AnthropicAdapter(config, client as unknown as AnthropicClientLike);
 }

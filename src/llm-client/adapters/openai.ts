@@ -1,19 +1,6 @@
-import OpenAI, {
-  APIConnectionTimeoutError,
-  AuthenticationError,
-} from "openai";
+import OpenAI from "openai";
 
-import {
-  mergeOptions,
-  type LLMClient,
-  type LLMConfig,
-  type LLMOptions,
-} from "../client.js";
-import {
-  LLMError,
-  LLMProviderError,
-  LLMTimeoutError,
-} from "../errors.js";
+import { mergeOptions, type LLMClient, type LLMConfig, type LLMOptions } from "../client.js";
 import type {
   FinishReason,
   LLMResponse,
@@ -22,313 +9,152 @@ import type {
   ToolCall,
   ToolSchema,
 } from "../models.js";
-import { isRecord, parseToolArguments } from "../utils.js";
-import {
-  TimeoutError,
-  runWithTimeout,
-  timeoutMilliseconds,
-} from "../../utils/timeout.js";
+import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
 
-/**
- * OpenAI boundary. The rest of the agent uses Message and ToolSchema; this
- * file is the only place that knows OpenAI's `tool_calls` wire format.
- *
- * Main flow: convert history -> call SDK -> convert response back. Streaming
- * additionally joins the partial tool-call JSON sent across several chunks.
- */
-interface OpenAIClientLike {
-  readonly chat: {
-    readonly completions: {
-      create(
-        request: Record<string, unknown>,
-        options: { readonly timeout: number; readonly signal: AbortSignal },
-      ): Promise<unknown>;
-    };
-  };
-}
-
-function convertMessages(
-  messages: readonly Message[],
-): readonly Record<string, unknown>[] {
-  // OpenAI is the closest to our history format, except tool arguments must be
-  // JSON text and tool results use different field names.
+// OpenAI differs from our history only around tool calls: its arguments are JSON text.
+function messagesForOpenAI(messages: readonly Message[]): Record<string, unknown>[] {
   return messages.map((message) => {
-    if (message.role === "assistant" && message.toolCalls !== undefined) {
+    if (message.role === "assistant" && message.toolCalls) {
       return {
         role: "assistant",
         content: message.content,
         tool_calls: message.toolCalls.map((call) => ({
           id: call.id,
           type: "function",
-          function: {
-            name: call.name,
-            arguments: JSON.stringify(call.arguments),
-          },
+          function: { name: call.name, arguments: JSON.stringify(call.arguments) },
         })),
       };
     }
     if (message.role === "tool") {
-      return {
-        role: "tool",
-        tool_call_id: message.toolCallId,
-        content: message.content,
-      };
+      return { role: "tool", tool_call_id: message.toolCallId, content: message.content };
     }
     return { role: message.role, content: message.content };
   });
 }
 
-function requestOptions(
-  options: LLMOptions,
-): Record<string, unknown> {
-  // Keep SDK spelling here so public LLMOptions stays provider-neutral.
-  const request: Record<string, unknown> = { max_tokens: options.maxTokens };
-  if (options.temperature !== undefined) request.temperature = options.temperature;
-  if (options.topP !== undefined) request.top_p = options.topP;
-  if (options.stop !== undefined) request.stop = options.stop;
-  return request;
-}
-
-function finishReason(reason: unknown): FinishReason {
-  // A small shared vocabulary lets callers avoid branching by provider.
-  switch (reason) {
-    case "stop":
-      return "stop";
-    case "length":
-      return "length";
-    case "tool_calls":
-    case "function_call":
-      return "tool_calls";
-    default:
-      return null;
-  }
-}
-
-function normalize(response: unknown, latencyMs: number): LLMResponse {
-  // This is the only response-shape conversion. Do not let SDK response types
-  // leak into agent-loop or tools.
-  if (!isRecord(response) || !Array.isArray(response.choices)) {
-    throw new LLMProviderError("OpenAI returned an invalid response");
-  }
-  const choice = response.choices[0];
-  if (!isRecord(choice) || !isRecord(choice.message)) {
-    throw new LLMProviderError("OpenAI returned no completion choice");
-  }
-
-  const providerCalls = Array.isArray(choice.message.tool_calls)
-    ? choice.message.tool_calls
-    : [];
-  const toolCalls: ToolCall[] = providerCalls.map((rawCall) => {
-    if (
-      !isRecord(rawCall) ||
-      typeof rawCall.id !== "string" ||
-      !isRecord(rawCall.function) ||
-      typeof rawCall.function.name !== "string"
-    ) {
-      throw new LLMProviderError("OpenAI returned an invalid tool call");
-    }
-    return {
-      id: rawCall.id,
-      name: rawCall.function.name,
-      arguments: parseToolArguments("OpenAI", rawCall.function.arguments),
-    };
-  });
-
-  const usage = isRecord(response.usage) ? response.usage : {};
-  const inputTokens = Number(usage.prompt_tokens ?? 0) || 0;
-  const outputTokens = Number(usage.completion_tokens ?? 0) || 0;
-  const totalTokens =
-    usage.total_tokens === undefined
-      ? inputTokens + outputTokens
-      : Number(usage.total_tokens) || 0;
+function optionsForOpenAI(options: LLMOptions): Record<string, unknown> {
   return {
-    model: typeof response.model === "string" ? response.model : "",
-    content:
-      typeof choice.message.content === "string"
-        ? choice.message.content || null
-        : null,
-    toolCalls,
-    usage: { inputTokens, outputTokens, totalTokens },
+    max_tokens: options.maxTokens,
+    ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+    ...(options.topP === undefined ? {} : { top_p: options.topP }),
+    ...(options.stop === undefined ? {} : { stop: options.stop }),
+  };
+}
+
+function finishReason(reason: string | null | undefined): FinishReason {
+  if (reason === "tool_calls" || reason === "function_call") return "tool_calls";
+  if (reason === "length") return "length";
+  return reason === "stop" ? "stop" : null;
+}
+
+function callsForOpenAI(calls: any[] = []): ToolCall[] {
+  return calls.map((call) => ({
+    id: call.id,
+    name: call.function.name,
+    arguments: JSON.parse(call.function.arguments || "{}"),
+  }));
+}
+
+function responseForOpenAI(response: any, latencyMs: number): LLMResponse {
+  const choice = response.choices[0];
+  const usage = response.usage ?? {};
+  const inputTokens = Number(usage.prompt_tokens ?? 0);
+  const outputTokens = Number(usage.completion_tokens ?? 0);
+  return {
+    model: response.model ?? "",
+    content: choice.message.content || null,
+    toolCalls: callsForOpenAI(choice.message.tool_calls),
+    usage: {
+      inputTokens,
+      outputTokens,
+      totalTokens: Number(usage.total_tokens ?? inputTokens + outputTokens),
+    },
     latencyMs,
     finishReason: finishReason(choice.finish_reason),
   };
 }
 
-function translateError(error: unknown, timedOut = false): unknown {
-  // SDKs expose different error classes. Preserve the project's two useful
-  // categories: timeout and provider failure.
-  if (
-    timedOut ||
-    error instanceof TimeoutError ||
-    error instanceof APIConnectionTimeoutError
-  ) {
-    return new LLMTimeoutError("OpenAI request timed out", { cause: error });
-  }
-  if (error instanceof AuthenticationError) {
-    return new LLMProviderError("OpenAI authentication failed", {
-      cause: error,
-    });
-  }
-  if (error instanceof LLMError) return error;
-  return new LLMProviderError(
-    `OpenAI request failed: ${error instanceof Error ? error.message : String(error)}`,
-    { cause: error },
-  );
-}
+/** Create the OpenAI implementation of the small LLMClient interface. */
+export function createOpenAIAdapter(config: LLMConfig): LLMClient {
+  const sdk = new OpenAI({
+    apiKey: config.apiKey,
+    ...(config.baseUrl === null ? {} : { baseURL: config.baseUrl }),
+  });
 
-export class OpenAIAdapter implements LLMClient {
-  constructor(
-    private readonly config: LLMConfig,
-    private readonly client: OpenAIClientLike,
-  ) {}
-
-  async invoke(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    options?: Partial<LLMOptions>,
-  ): Promise<LLMResponse> {
-    const mergedOptions = mergeOptions(this.config.options, options);
-    const request: Record<string, unknown> = {
-      model: this.config.model,
-      messages: convertMessages(messages),
-      ...requestOptions(mergedOptions),
-    };
-    if (tools !== undefined) request.tools = tools;
-
-    const timeoutMs = timeoutMilliseconds(mergedOptions.timeout);
-    const started = performance.now();
-    try {
-      const response = await runWithTimeout(mergedOptions.timeout, (timeoutSignal) =>
-        this.client.chat.completions.create(request, {
-          timeout: timeoutMs,
-          signal: timeoutSignal,
-        }),
+  return {
+    async invoke(messages, tools, overrides) {
+      const options = mergeOptions(config.options, overrides);
+      const timeout = timeoutMilliseconds(options.timeout);
+      const started = performance.now();
+      const response = await runWithTimeout(options.timeout, (signal) =>
+        sdk.chat.completions.create(
+          {
+            model: config.model,
+            messages: messagesForOpenAI(messages) as any,
+            ...(tools === undefined ? {} : { tools: tools as any }),
+            ...optionsForOpenAI(options),
+          },
+          { timeout, signal },
+        ),
       );
-      return normalize(response, Math.round(performance.now() - started));
-    } catch (error) {
-      throw translateError(error);
-    }
-  }
+      return responseForOpenAI(response, Math.round(performance.now() - started));
+    },
 
-  async *stream(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    callOptions?: Partial<LLMOptions>,
-  ): AsyncIterable<LLMStreamEvent> {
-    // Text can be shown immediately, but OpenAI splits one tool call across
-    // chunks, so retain its pieces until the final response event.
-    const options = mergeOptions(this.config.options, callOptions);
-    const request: Record<string, unknown> = {
-      model: this.config.model,
-      messages: convertMessages(messages),
-      stream: true,
-      stream_options: { include_usage: true },
-      ...requestOptions(options),
-    };
-    if (tools !== undefined) request.tools = tools;
+    async *stream(messages, tools, overrides): AsyncIterable<LLMStreamEvent> {
+      const options = mergeOptions(config.options, overrides);
+      const signal = AbortSignal.timeout(timeoutMilliseconds(options.timeout));
+      const stream = await sdk.chat.completions.create(
+        {
+          model: config.model,
+          messages: messagesForOpenAI(messages) as any,
+          ...(tools === undefined ? {} : { tools: tools as any }),
+          stream: true,
+          stream_options: { include_usage: true },
+          ...optionsForOpenAI(options),
+        },
+        { timeout: timeoutMilliseconds(options.timeout), signal },
+      );
 
-    const timeoutMs = timeoutMilliseconds(options.timeout);
-    const timeoutSignal = AbortSignal.timeout(timeoutMs);
-    const started = performance.now();
-    let model = this.config.model;
-    let content = "";
-    let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-    let finalReason: FinishReason = null;
-    const pendingCalls = new Map<
-      number,
-      { id: string; name: string; argumentsText: string }
-    >();
-    try {
-      const stream = await this.client.chat.completions.create(request, {
-        timeout: timeoutMs,
-        signal: timeoutSignal,
-      });
-      if (
-        typeof stream !== "object" ||
-        stream === null ||
-        !(Symbol.asyncIterator in stream)
-      ) {
-        throw new LLMProviderError("OpenAI returned an invalid stream");
-      }
-      for await (const chunk of stream as AsyncIterable<unknown>) {
-        if (!isRecord(chunk) || !Array.isArray(chunk.choices)) continue;
-        if (typeof chunk.model === "string") model = chunk.model;
-        if (isRecord(chunk.usage)) {
-          const inputTokens = Number(chunk.usage.prompt_tokens ?? 0) || 0;
-          const outputTokens = Number(chunk.usage.completion_tokens ?? 0) || 0;
-          usage = {
-            inputTokens,
-            outputTokens,
-            totalTokens:
-              Number(chunk.usage.total_tokens ?? inputTokens + outputTokens) || 0,
-          };
+      const started = performance.now();
+      let model = config.model;
+      let content = "";
+      let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+      let reason: FinishReason = null;
+      const pending = new Map<number, { id: string; name: string; arguments: string }>();
+      for await (const chunk of stream as any) {
+        if (chunk.model) model = chunk.model;
+        if (chunk.usage) {
+          const inputTokens = Number(chunk.usage.prompt_tokens ?? 0);
+          const outputTokens = Number(chunk.usage.completion_tokens ?? 0);
+          usage = { inputTokens, outputTokens, totalTokens: Number(chunk.usage.total_tokens ?? inputTokens + outputTokens) };
         }
-        for (const choice of chunk.choices) {
-          if (!isRecord(choice) || !isRecord(choice.delta)) continue;
-          finalReason = finishReason(choice.finish_reason) ?? finalReason;
-          if (typeof choice.delta.content === "string" && choice.delta.content) {
+        for (const choice of chunk.choices ?? []) {
+          reason = finishReason(choice.finish_reason) ?? reason;
+          if (choice.delta?.content) {
             content += choice.delta.content;
             yield { type: "text_delta", text: choice.delta.content };
           }
-          if (Array.isArray(choice.delta.tool_calls)) {
-            for (const [position, rawCall] of choice.delta.tool_calls.entries()) {
-              if (!isRecord(rawCall)) continue;
-              const index = Number.isInteger(rawCall.index)
-                ? Number(rawCall.index)
-                : position;
-              const pending = pendingCalls.get(index) ?? {
-                id: "",
-                name: "",
-                argumentsText: "",
-              };
-              if (typeof rawCall.id === "string") pending.id = rawCall.id;
-              if (isRecord(rawCall.function)) {
-                if (typeof rawCall.function.name === "string") {
-                  pending.name = rawCall.function.name;
-                }
-                if (typeof rawCall.function.arguments === "string") {
-                  pending.argumentsText += rawCall.function.arguments;
-                }
-              }
-              pendingCalls.set(index, pending);
-            }
+          for (const [position, call] of (choice.delta?.tool_calls ?? []).entries()) {
+            const index = call.index ?? position;
+            const value = pending.get(index) ?? { id: "", name: "", arguments: "" };
+            value.id = call.id ?? value.id;
+            value.name = call.function?.name ?? value.name;
+            value.arguments += call.function?.arguments ?? "";
+            pending.set(index, value);
           }
         }
       }
-    } catch (error) {
-      throw translateError(error, timeoutSignal.aborted);
-    }
-
-    const toolCalls = [...pendingCalls.entries()]
-      .sort(([left], [right]) => left - right)
-      .map(([, call]) => ({
-        id: call.id,
-        name: call.name,
-        arguments: parseToolArguments("OpenAI", call.argumentsText),
-      }));
-    yield {
-      type: "response_done",
-      response: {
-        model,
-        content: content || null,
-        toolCalls,
-        usage,
-        latencyMs: Math.round(performance.now() - started),
-        finishReason: finalReason,
-      },
-    };
-  }
-}
-
-export async function createOpenAIAdapter(
-  config: LLMConfig,
-): Promise<OpenAIAdapter> {
-  // Construction stays separate so importing the common client does not load
-  // every provider SDK.
-  const clientOptions: { apiKey: string; baseURL?: string } = {
-    apiKey: config.apiKey,
+      yield {
+        type: "response_done",
+        response: {
+          model,
+          content: content || null,
+          toolCalls: [...pending.values()].map((call) => ({ ...call, arguments: JSON.parse(call.arguments || "{}") })),
+          usage,
+          latencyMs: Math.round(performance.now() - started),
+          finishReason: reason,
+        },
+      };
+    },
   };
-  if (config.baseUrl !== null) clientOptions.baseURL = config.baseUrl;
-  const client = new OpenAI(clientOptions);
-  return new OpenAIAdapter(config, client as unknown as OpenAIClientLike);
 }
