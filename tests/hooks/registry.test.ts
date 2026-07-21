@@ -3,23 +3,29 @@ import test from "node:test";
 
 import { HookRegistry } from "../../src/hooks/registry.js";
 import {
+  type Hook,
+  type HookEvent,
   type HookResult,
-  type PreToolUseHook,
+  type PreToolUseEvent,
 } from "../../src/hooks/types.js";
-import type { ToolCall } from "../../src/tools/types.js";
 
-class TestHook implements PreToolUseHook {
+class TestHook implements Hook<PreToolUseEvent> {
+  readonly eventType = "pre_tool_use";
+
   constructor(
     readonly name: string,
     private readonly run: () => HookResult | Promise<HookResult>,
   ) {}
 
-  async execute(_call: ToolCall): Promise<HookResult> {
+  async execute(_event: PreToolUseEvent): Promise<HookResult> {
     return this.run();
   }
 }
 
-const call: ToolCall = { id: "call-1", name: "test", arguments: {} };
+const event: PreToolUseEvent = {
+  type: "pre_tool_use",
+  call: { id: "call-1", name: "test", arguments: {} },
+};
 
 test("HookRegistry runs hooks in order and stops at the first block", async () => {
   const observed: string[] = [];
@@ -31,7 +37,7 @@ test("HookRegistry runs hooks in order and stops at the first block", async () =
   }));
   registry.register(new TestHook("last", () => { observed.push("last"); return undefined; }));
 
-  assert.deepEqual(await registry.triggerPreToolUse(call), { block: true, reason: "blocked" });
+  assert.deepEqual(await registry.trigger(event), { block: true, reason: "blocked" });
   assert.deepEqual(observed, ["first", "block"]);
 });
 
@@ -45,5 +51,27 @@ test("HookRegistry reports hook failures", async () => {
   const registry = new HookRegistry();
   registry.register(new TestHook("broken", () => { throw new Error("boom"); }));
 
-  await assert.rejects(registry.triggerPreToolUse(call), /hook 'broken' failed/);
+  await assert.rejects(registry.trigger(event), /hook 'broken' failed/);
+});
+
+test("HookRegistry dispatches without knowing concrete hook event types", async () => {
+  interface TestEvent extends HookEvent {
+    readonly type: "test_event";
+    readonly value: string;
+  }
+
+  let observed = "";
+  const hook: Hook<TestEvent> = {
+    name: "test-event",
+    eventType: "test_event",
+    async execute(testEvent) {
+      observed = testEvent.value;
+      return undefined;
+    },
+  };
+  const registry = new HookRegistry();
+  registry.register(hook);
+
+  await registry.trigger({ type: "test_event", value: "handled" });
+  assert.equal(observed, "handled");
 });

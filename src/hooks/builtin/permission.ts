@@ -1,6 +1,6 @@
 import { blockedBashFragment } from "../../tools/builtin/bash.js";
 import type { ToolCall } from "../../tools/types.js";
-import type { HookResult, PreToolUseHook } from "../types.js";
+import type { Hook, HookResult, PreToolUseEvent } from "../types.js";
 
 /** Information a presentation adapter needs to ask for one approval. */
 export interface PermissionRequest {
@@ -17,12 +17,14 @@ function block(reason: string): HookResult {
 }
 
 /** Applies Kea's default approval policy immediately before tool execution. */
-export class PermissionHook implements PreToolUseHook {
+export class PermissionHook implements Hook<PreToolUseEvent> {
   readonly name = "permission";
+  readonly eventType = "pre_tool_use";
 
   constructor(private readonly requestPermission: PermissionRequester) {}
 
-  async execute(call: ToolCall): Promise<HookResult> {
+  async execute(event: PreToolUseEvent): Promise<HookResult> {
+    const { call } = event;
     if (call.name === "bash") {
       const command = call.arguments.command;
       if (typeof command !== "string") return block("invalid Bash command");

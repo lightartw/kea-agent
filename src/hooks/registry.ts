@@ -1,12 +1,11 @@
-import type { ToolCall } from "../tools/types.js";
-import type { HookResult, PreToolUseHook } from "./types.js";
+import type { Hook, HookEvent, HookResult } from "./types.js";
 
-/** Runs pre-tool hooks in registration order and stops at the first block. */
+/** Registers generic lifecycle hooks and runs matching hooks in order. */
 export class HookRegistry {
-  private readonly hooks = new Map<string, PreToolUseHook>();
+  private readonly hooks = new Map<string, Hook>();
 
   /** Hook names are unique so configuration and error messages stay unambiguous. */
-  register(hook: PreToolUseHook): void {
+  register(hook: Hook): void {
     if (this.hooks.has(hook.name)) {
       throw new Error(`hook '${hook.name}' is already registered`);
     }
@@ -14,14 +13,16 @@ export class HookRegistry {
   }
 
   /**
-   * Run one validated call through every registered pre-tool hook.
-   * Hook failures are rethrown with the hook name; the tool layer treats them
-   * as a failed-closed result and never executes the requested operation.
+   * Run one lifecycle event through every hook registered for that event type.
+   * Failures are rethrown with the hook name so each lifecycle caller can
+   * apply its own failure policy.
    */
-  async triggerPreToolUse(call: ToolCall): Promise<HookResult> {
+  async trigger<TEvent extends HookEvent>(event: TEvent): Promise<HookResult> {
     for (const hook of this.hooks.values()) {
+      if (hook.eventType !== event.type) continue;
       try {
-        const result = await hook.execute(call);
+        // The discriminator check above selects hooks specialized for TEvent.
+        const result = await (hook as Hook<TEvent>).execute(event);
         if (result?.block === true) return result;
       } catch (error) {
         throw new Error(`hook '${hook.name}' failed`, { cause: error });

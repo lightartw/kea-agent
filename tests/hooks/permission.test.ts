@@ -13,9 +13,8 @@ async function execute(
   requestPermission: (request: PermissionRequest) => Promise<boolean>,
 ) {
   return new PermissionHook(requestPermission).execute({
-    id: "call-1",
-    name,
-    arguments: arguments_,
+    type: "pre_tool_use",
+    call: { id: "call-1", name, arguments: arguments_ },
   });
 }
 
@@ -72,10 +71,13 @@ test("PermissionHook registers through the common hook interface", async () => {
   const registry = new HookRegistry();
   registry.register(new PermissionHook(async () => false));
 
-  const result = await registry.triggerPreToolUse({
-    id: "call-1",
-    name: "bash",
-    arguments: { command: "pwd" },
+  const result = await registry.trigger({
+    type: "pre_tool_use",
+    call: {
+      id: "call-1",
+      name: "bash",
+      arguments: { command: "pwd" },
+    },
   });
 
   assert.deepEqual(result, {

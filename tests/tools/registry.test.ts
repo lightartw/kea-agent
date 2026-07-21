@@ -5,10 +5,11 @@ import { Type, type Static } from "typebox";
 
 import { HookRegistry } from "../../src/hooks/registry.js";
 import {
+  type Hook,
   type HookResult,
-  type PreToolUseHook,
+  type PreToolUseEvent,
 } from "../../src/hooks/types.js";
-import { Tool, type ToolCall } from "../../src/tools/types.js";
+import { Tool } from "../../src/tools/types.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 
 const parameters = Type.Object({ value: Type.String() });
@@ -61,10 +62,11 @@ test("Registry applies its global timeout", async () => {
 test("Registry validates before hooks and never executes a blocked call", async () => {
   let hookCalls = 0;
   let executions = 0;
-  class BlockingHook implements PreToolUseHook {
+  class BlockingHook implements Hook<PreToolUseEvent> {
     readonly name = "block";
+    readonly eventType = "pre_tool_use";
 
-    async execute(_call: ToolCall): Promise<HookResult> {
+    async execute(_event: PreToolUseEvent): Promise<HookResult> {
       hookCalls += 1;
       return { block: true, reason: "blocked by test" };
     }
@@ -94,8 +96,9 @@ test("Registry validates before hooks and never executes a blocked call", async 
 
 test("Registry fails closed when a pre-tool hook throws", async () => {
   let executions = 0;
-  class BrokenHook implements PreToolUseHook {
+  class BrokenHook implements Hook<PreToolUseEvent> {
     readonly name = "broken";
+    readonly eventType = "pre_tool_use";
 
     async execute(): Promise<HookResult> {
       throw new Error("boom");
