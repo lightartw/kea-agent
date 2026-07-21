@@ -14,6 +14,10 @@ const DANGEROUS_COMMAND_FRAGMENTS = [
   "> /dev/",
 ] as const;
 
+export function blockedBashFragment(command: string): string | undefined {
+  return DANGEROUS_COMMAND_FRAGMENTS.find((fragment) => command.includes(fragment));
+}
+
 const bashParameters = Type.Object(
   {
     command: Type.String({ description: "Shell command to execute." }),
@@ -55,7 +59,7 @@ export class BashTool extends Tool<typeof bashParameters> {
     signal: AbortSignal,
   ): Promise<string> {
     const { command } = arguments_;
-    if (DANGEROUS_COMMAND_FRAGMENTS.some((fragment) => command.includes(fragment))) {
+    if (blockedBashFragment(command) !== undefined) {
       throw new Error("Dangerous command blocked");
     }
     if (signal.aborted) throw signal.reason;

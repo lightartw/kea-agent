@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { renderAgentEvent } from "../src/main.js";
+import { renderAgentEvent } from "../src/cli.js";
 import type { LLMResponse } from "../src/llm-client/types.js";
 
 const response: LLMResponse = {

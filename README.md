@@ -60,7 +60,7 @@ CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共�
 
 ## 使用方法
 
-程序启动后，在 `s01 >>` 提示符后输入任务并回车。模型产生的工具调用会以黄色 `$` 前缀显示。输入 `q`、`exit` 或直接按空回车退出。
+程序启动后，在 `s01 >>` 提示符后输入任务并回车。模型产生的工具调用会以黄色 `$` 前缀显示。Bash 命令以及写入、编辑文件会在执行前请求确认，直接回车默认拒绝。输入 `q`、`exit` 或直接按空回车退出。
 
 请只在可信目录中运行本程序，并检查模型生成的命令。BashTool 具有最小危险片段拦截，但它不是完整沙箱，也不能替代系统权限隔离。
 
@@ -77,6 +77,22 @@ CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共�
 
 第一版不并行执行工具，也没有全局 Registry、装饰器注册或反射式 schema 生成。
 默认工具集合由 tools 模块中的 `createToolRegistry()` 创建，注册 `BashTool` 以及读、写、编辑文件和 glob 查找工具。
+
+## Hooks 与权限
+
+Hooks 是独立于 Agent loop 的切面扩展点。`HookRegistry` 管理显式注册的 hook；当前只定义实际使用的 `pre_tool_use`，并在工具参数验证通过后、工具 timeout 启动前顺序触发。第一个返回 `block` 的 hook 会阻止执行，hook 异常也会安全地阻止工具。
+
+默认 CLI 注册内置 `PermissionHook`：
+
+- `read_file` 和 `glob` 直接放行；
+- `write_file`、`edit_file` 和普通 Bash 命令请求用户确认；
+- Bash 危险片段直接拒绝，不询问用户。
+
+Permission 等待不计入工具 timeout。`BashTool` 在启动进程前仍会再次检查危险片段，作为最后一道防线。权限确认只是防误操作机制，不是完整沙箱。
+
+## CLI 与核心边界
+
+`main.ts` 只负责加载本地环境并组装 LLM client、hooks、tools、`AgentSession` 和 CLI。`AgentSession` 持有完整消息历史并运行 Agent turn；`cli.ts` 只处理 `readline`、ANSI 展示和权限确认。未来 TUI 可以消费相同的 `AgentEvent` 并提供自己的权限交互，而不改动 Agent loop。
 
 ## 统一 LLM Client
 
