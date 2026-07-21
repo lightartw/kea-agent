@@ -3,9 +3,9 @@ import test from "node:test";
 
 import { createToolRegistry } from "../../src/tools/factory.js";
 
-test("createToolRegistry installs Bash", () => {
+test("createToolRegistry installs built-in tools", () => {
   assert.deepEqual(
     createToolRegistry(process.cwd()).schemas().map((schema) => schema.function.name),
-    ["bash"],
+    ["bash", "read_file", "write_file", "edit_file", "glob"],
   );
 });
