@@ -4,6 +4,8 @@
 
 当前版本专注于核心 Agent loop；TUI 尚未加入。
 
+架构文档：[docs/architecture.md](docs/architecture.md)
+
 ## 环境要求
 
 - Node.js 24 LTS
