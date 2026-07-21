@@ -3,18 +3,9 @@ import type {
   LLMResponse,
   Message,
 } from "../llm-client/types.js";
+import type { AgentEvent } from "./types.js";
 import type { ToolCall, ToolResult } from "./tools/types.js";
 import type { ToolRegistry } from "./tools/registry.js";
-
-export type AgentEvent =
-  | { readonly type: "text_delta"; readonly text: string }
-  | { readonly type: "tool_start"; readonly call: ToolCall }
-  | {
-      readonly type: "tool_end";
-      readonly call: ToolCall;
-      readonly result: ToolResult;
-    }
-  | { readonly type: "turn_end"; readonly response: LLMResponse };
 
 /**
  * Run one user turn. A turn may contain several provider round trips when the

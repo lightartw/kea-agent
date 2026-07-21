@@ -1,5 +1,6 @@
 export * from "./agent/agent-loop.js";
 export * from "./agent/agent-session.js";
+export * from "./agent/types.js";
 export * from "./agent/hooks/index.js";
 export * from "./agent/tools/index.js";
 export * from "./agent/harness/agent-harness.js";

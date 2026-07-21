@@ -1,7 +1,7 @@
 import { AgentSession } from "../agent-session.js";
 import type { LLMClient } from "../../llm-client/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { AgentEvent } from "../agent-loop.js";
+import type { AgentEvent } from "../types.js";
 import type { Project, SessionStore } from "./types.js";
 
 /**

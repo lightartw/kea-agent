@@ -1,4 +1,4 @@
-import type { AgentEvent } from "../agent/agent-loop.js";
+import type { AgentEvent } from "../agent/types.js";
 
 const CYAN = "[36m";
 const RESET = "[0m";

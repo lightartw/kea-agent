@@ -3,10 +3,8 @@ import test from "node:test";
 
 import { Type } from "typebox";
 
-import {
-  runAgentTurn,
-  type AgentEvent,
-} from "../../src/agent/agent-loop.js";
+import { runAgentTurn } from "../../src/agent/agent-loop.js";
+import type { AgentEvent } from "../../src/agent/types.js";
 import type {
   LLMClient,
   LLMResponse,
