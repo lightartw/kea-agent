@@ -95,23 +95,37 @@ for await (const event of client.stream(ctx)) {
 }
 ```
 
-## Layering
-
-```
-cli/  →  agent/  →  llm-client/  →  utils/
-                        ↑
-                   only depends on typebox (external)
-                   zero imports from agent/ or harness/
-```
-
 ## Internal (not exported)
 
-These exist in `types.ts` but are NOT in `index.ts` — consumed indirectly:
+These exist in `types.ts` but are NOT in `index.ts`. You can still `import type` them from `./types.js` when needed.
+
+**`LLMOptions`** — Passed as `Partial<LLMOptions>` to `createLLMClient()` and to `client.stream()` / `client.invoke()` for per-call overrides.
+
+```ts
+interface LLMOptions {
+  readonly timeout: number;       // seconds, default 120
+  readonly maxTokens: number;     // default 8000
+  readonly temperature?: number;
+  readonly topP?: number;
+  readonly stop?: readonly string[];
+}
+```
+
+**`LLMConfig`** — Resolved by the factory from env + options. Used to construct concrete adapters.
+
+```ts
+interface LLMConfig {
+  readonly model: string;
+  readonly apiKey: string;
+  readonly baseUrl: string | null;
+  readonly options: LLMOptions;
+}
+```
+
+**Other internal types:**
 
 | Type | Consumed via |
 |---|---|
 | `FinishReason` | `LLMResponse.finishReason` |
 | `TokenUsage` | `LLMResponse.usage` |
-| `LLMOptions` | `Partial<LLMOptions>` in method signatures |
-| `LLMStreamEvent` | `for await` type inference from `stream()` |
-| `LLMConfig` | Factory internal |
+| `LLMStreamEvent` | `for await` type inference from `stream()` return type |
