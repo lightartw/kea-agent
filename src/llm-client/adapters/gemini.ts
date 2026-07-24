@@ -2,42 +2,56 @@ import { GoogleGenAI } from "@google/genai";
 
 import { mergeOptions } from "../client.js";
 import type {
+  AssistantMessageEvent,
+  ContentBlock,
   Context,
-  FinishReason,
   LLMClient,
   LLMConfig,
   LLMOptions,
-  LLMResponse,
-  LLMStreamEvent,
   Message,
+  StopReason,
+  TextBlock,
+  ThinkingBlock,
   Tool,
   ToolCall,
 } from "../types.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
 
-// Gemini names assistant messages `model` and puts system text in config.
+// ── Message conversion ──
+
+/** Convert internal Message[] to Gemini's format.
+ *  v2: AssistantMessage.content is ContentBlock[] — map each block to its Gemini equivalent.
+ *  Gemini names assistant messages `model` and puts system text in config. */
 function messagesForGemini(messages: readonly Message[]) {
   const contents: Record<string, unknown>[] = [];
   for (const message of messages) {
-    if (message.role === "assistant" && message.toolCalls) {
-      contents.push({
-        role: "model",
-        parts: [
-          ...(message.content ? [{ text: message.content }] : []),
-          ...message.toolCalls.map((call) => ({ functionCall: { id: call.id, name: call.name, args: call.arguments } })),
-        ],
-      });
+    if (message.role === "assistant") {
+      const parts: Record<string, unknown>[] = [];
+      for (const block of message.content) {
+        if (block.type === "text") {
+          parts.push({ text: block.text });
+        } else if (block.type === "toolCall") {
+          parts.push({ functionCall: { id: block.id, name: block.name, args: block.arguments } });
+        }
+        // thinking blocks are not re-sent
+      }
+      if (parts.length > 0) {
+        contents.push({ role: "model", parts });
+      }
     } else if (message.role === "tool") {
       contents.push({
         role: "user",
         parts: [{ functionResponse: { id: message.toolCallId, name: message.name, response: { output: message.content } } }],
       });
     } else {
-      contents.push({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.content }] });
+      // Must be UserMessage — role is already narrowed to "user"
+      contents.push({ role: "user", parts: [{ text: message.content }] });
     }
   }
   return { contents };
 }
+
+// ── Conversion helpers ──
 
 function configForGemini(
   system: string | undefined,
@@ -64,38 +78,28 @@ function configForGemini(
   };
 }
 
-function finishReason(response: any, hasCalls: boolean): FinishReason {
-  if (hasCalls) return "tool_calls";
+function mapStopReason(response: any, hasCalls: boolean): StopReason {
+  if (hasCalls) return "toolUse";
   const reason = String(response.candidates?.[0]?.finishReason ?? "").split(".").at(-1)?.toUpperCase();
   if (reason === "MAX_TOKENS") return "length";
-  return reason === "STOP" ? "stop" : null;
+  if (reason === "STOP") return "stop";
+  return "error";
 }
 
-function callsForGemini(calls: any[] = [], offset = 0): ToolCall[] {
-  return calls.map((call, index) => ({
-    type: "toolCall" as const,
-    id: call.id || `gemini-call-${offset + index}`,
-    name: call.name,
-    arguments: call.args ?? {},
-  }));
-}
-
-function responseForGemini(response: any, configuredModel: string, latencyMs: number, callOffset = 0): LLMResponse {
-  const toolCalls = callsForGemini(response.functionCalls, callOffset);
+function extractUsage(response: any) {
   const usage = response.usageMetadata ?? {};
   const inputTokens = Number(usage.promptTokenCount ?? 0);
   const outputTokens = Number(usage.candidatesTokenCount ?? 0);
   return {
-    model: response.modelVersion || configuredModel,
-    content: response.text || null,
-    toolCalls,
-    usage: { inputTokens, outputTokens, totalTokens: Number(usage.totalTokenCount ?? inputTokens + outputTokens) },
-    latencyMs,
-    finishReason: finishReason(response, toolCalls.length > 0),
+    inputTokens,
+    outputTokens,
+    totalTokens: Number(usage.totalTokenCount ?? inputTokens + outputTokens),
   };
 }
 
-/** Gemini implementation of the common LLMClient interface. */
+// ── Adapter ──
+
+/** Gemini implementation of the v2 stream-only LLMClient interface. */
 export class GeminiAdapter implements LLMClient {
   private readonly sdk: GoogleGenAI;
 
@@ -106,30 +110,22 @@ export class GeminiAdapter implements LLMClient {
     });
   }
 
-  async invoke(
-    context: Context,
-    options?: Partial<LLMOptions>,
-  ): Promise<LLMResponse> {
-      const opts = mergeOptions(this.config.options, options);
-      const converted = messagesForGemini(context.messages);
-      const started = performance.now();
-      const response = await runWithTimeout(opts.timeout, (signal) =>
-        this.sdk.models.generateContent({
-          model: this.config.model,
-          contents: converted.contents as any,
-          config: configForGemini(context.systemPrompt, context.tools, opts, signal) as any,
-        }),
-      );
-      return responseForGemini(response, this.config.model, Math.round(performance.now() - started));
-  }
-
   async *stream(
     context: Context,
     options?: Partial<LLMOptions>,
-  ): AsyncIterable<LLMStreamEvent> {
-      const opts = mergeOptions(this.config.options, options);
-      const converted = messagesForGemini(context.messages);
-      const stream = await this.sdk.models.generateContentStream({
+  ): AsyncIterable<AssistantMessageEvent> {
+    const opts = mergeOptions(this.config.options, options);
+    const converted = messagesForGemini(context.messages);
+
+    const started = performance.now();
+    let model = this.config.model;
+    let content = "";
+    let stopReason: StopReason = "stop";
+    let allCalls: ToolCall[] = [];
+    let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+
+    try {
+      const sdkStream = await this.sdk.models.generateContentStream({
         model: this.config.model,
         contents: converted.contents as any,
         config: configForGemini(
@@ -140,33 +136,77 @@ export class GeminiAdapter implements LLMClient {
         ) as any,
       });
 
-      const started = performance.now();
-      let model = this.config.model;
-      let content = "";
-      let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-      let reason: FinishReason = null;
-      const toolCalls: ToolCall[] = [];
-      for await (const chunk of stream as any) {
-        const response = responseForGemini(chunk, this.config.model, 0, toolCalls.length);
-        model = response.model || model;
-        if (chunk.usageMetadata) usage = response.usage;
-        reason = response.finishReason ?? reason;
-        toolCalls.push(...response.toolCalls);
-        if (response.content) {
-          content += response.content;
-          yield { type: "text_delta", text: response.content };
+      for await (const chunk of sdkStream as any) {
+        // Model version
+        if (chunk.modelVersion) model = chunk.modelVersion;
+
+        // Usage
+        if (chunk.usageMetadata) {
+          usage = extractUsage(chunk);
+        }
+
+        // Text content (incremental in streaming)
+        if (chunk.text) {
+          content += chunk.text;
+          yield { type: "text_delta", text: chunk.text };
+        }
+
+        // Tool calls — Gemini sends complete function calls per chunk
+        const functionCalls = chunk.functionCalls ?? [];
+        for (const [i, call] of functionCalls.entries()) {
+          const id = call.id || `gemini-call-${allCalls.length + i}`;
+          const name = call.name;
+          const args = call.args ?? {};
+
+          yield { type: "toolcall_start", id, name };
+          if (Object.keys(args).length > 0) {
+            yield { type: "toolcall_delta", id, argumentsDelta: JSON.stringify(args) };
+          }
+          const toolCall: ToolCall = { type: "toolCall", id, name, arguments: args };
+          yield { type: "toolcall_end", toolCall };
+          allCalls.push(toolCall);
+        }
+
+        // Stop reason
+        const reason = mapStopReason(chunk, functionCalls.length > 0);
+        if (reason !== "stop" || chunk.candidates?.[0]?.finishReason) {
+          stopReason = reason;
         }
       }
+
+      // Build ContentBlock[] from accumulated state
+      const contentBlocks: ContentBlock[] = [];
+      if (content.length > 0) {
+        contentBlocks.push({ type: "text", text: content } as TextBlock);
+      }
+      contentBlocks.push(...allCalls);
+
+      const latencyMs = Math.round(performance.now() - started);
       yield {
-        type: "response_done",
-        response: {
+        type: "done",
+        message: {
+          role: "assistant",
+          content: contentBlocks,
           model,
-          content: content || null,
-          toolCalls,
           usage,
-          latencyMs: Math.round(performance.now() - started),
-          finishReason: toolCalls.length ? "tool_calls" : reason,
+          stopReason,
+          latencyMs,
         },
       };
+    } catch (err: unknown) {
+      const latencyMs = Math.round(performance.now() - started);
+      const message = err instanceof Error ? err.message : String(err);
+      yield {
+        type: "error",
+        message: {
+          role: "assistant",
+          content: [],
+          model,
+          stopReason: "error",
+          errorMessage: message,
+          latencyMs,
+        },
+      };
+    }
   }
 }

@@ -2,20 +2,28 @@ import Anthropic from "@anthropic-ai/sdk";
 
 import { mergeOptions } from "../client.js";
 import type {
+  AssistantMessage,
+  AssistantMessageEvent,
+  ContentBlock,
   Context,
-  FinishReason,
   LLMClient,
   LLMConfig,
   LLMOptions,
-  LLMResponse,
-  LLMStreamEvent,
   Message,
+  StopReason,
+  TextBlock,
+  ThinkingBlock,
   Tool,
   ToolCall,
+  TokenUsage,
 } from "../types.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
 
-// Anthropic requires system text separately and groups tool results as user content blocks.
+// ── Message conversion ──
+
+/** Convert internal Message[] to Anthropic's format.
+ *  Group tool results as user content blocks (Anthropic requirement).
+ *  AssistantMessage.content is ContentBlock[] — map each block to its Anthropic equivalent. */
 function messagesForAnthropic(messages: readonly Message[]): Record<string, unknown>[] {
   const converted: Record<string, unknown>[] = [];
   const results: Record<string, unknown>[] = [];
@@ -25,19 +33,27 @@ function messagesForAnthropic(messages: readonly Message[]): Record<string, unkn
 
   for (const message of messages) {
     if (message.role === "tool") {
+      // Tool results are grouped under a single user turn.
       results.push({ type: "tool_result", tool_use_id: message.toolCallId, content: message.content });
     } else {
       flushResults();
-      if (message.role === "assistant" && message.toolCalls) {
-        converted.push({
-          role: "assistant",
-          content: [
-            ...(message.content ? [{ type: "text", text: message.content }] : []),
-            ...message.toolCalls.map((call) => ({ type: "tool_use", id: call.id, name: call.name, input: call.arguments })),
-          ],
-        });
+      if (message.role === "assistant") {
+        // v2: message.content is ContentBlock[]
+        const blocks: Record<string, unknown>[] = [];
+        for (const block of message.content) {
+          if (block.type === "text") {
+            blocks.push({ type: "text", text: block.text });
+          } else if (block.type === "toolCall") {
+            blocks.push({ type: "tool_use", id: block.id, name: block.name, input: block.arguments });
+          }
+          // thinking blocks are not re-sent to the API
+        }
+        if (blocks.length > 0) {
+          converted.push({ role: "assistant", content: blocks });
+        }
       } else {
-        converted.push({ role: message.role, content: message.content });
+        // User message — content is a string
+        converted.push({ role: "user", content: message.content });
       }
     }
   }
@@ -45,46 +61,27 @@ function messagesForAnthropic(messages: readonly Message[]): Record<string, unkn
   return converted;
 }
 
-function optionsForAnthropic(options: LLMOptions): Record<string, unknown> {
-  return {
-    max_tokens: options.maxTokens,
-    ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
-    ...(options.topP === undefined ? {} : { top_p: options.topP }),
-    ...(options.stop === undefined ? {} : { stop_sequences: options.stop }),
-  };
-}
+// ── Conversion helpers ──
 
 function toolsForAnthropic(tools: readonly Tool[]): Record<string, unknown>[] {
   return tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.parameters }));
 }
 
-function finishReason(reason: string | null | undefined): FinishReason {
-  if (reason === "tool_use") return "tool_calls";
+function mapStopReason(reason: string | null | undefined): StopReason {
+  if (reason === "tool_use") return "toolUse";
   if (reason === "max_tokens") return "length";
-  return reason === "end_turn" || reason === "stop_sequence" ? "stop" : null;
+  return reason === "end_turn" || reason === "stop_sequence" ? "stop" : "error";
 }
 
-function responseForAnthropic(response: any, latencyMs: number): LLMResponse {
-  let content = "";
-  const toolCalls: ToolCall[] = [];
-  for (const block of response.content) {
-    if (block.type === "text") content += block.text;
-    if (block.type === "tool_use") toolCalls.push({ type: "toolCall", id: block.id, name: block.name, arguments: block.input });
-  }
-  const usage = response.usage ?? {};
-  const inputTokens = Number(usage.input_tokens ?? 0);
-  const outputTokens = Number(usage.output_tokens ?? 0);
-  return {
-    model: response.model ?? "",
-    content: content || null,
-    toolCalls,
-    usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
-    latencyMs,
-    finishReason: finishReason(response.stop_reason),
-  };
+function makeUsage(raw: Record<string, unknown> = {}): TokenUsage {
+  const inputTokens = Number(raw.input_tokens ?? 0);
+  const outputTokens = Number(raw.output_tokens ?? 0);
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
 }
 
-/** Anthropic implementation of the common LLMClient interface. */
+// ── Adapter ──
+
+/** Anthropic implementation of the v2 stream-only LLMClient interface. */
 export class AnthropicAdapter implements LLMClient {
   private readonly sdk: Anthropic;
 
@@ -92,87 +89,144 @@ export class AnthropicAdapter implements LLMClient {
     this.sdk = new Anthropic({ apiKey: config.apiKey, ...(config.baseUrl === null ? {} : { baseURL: config.baseUrl }) });
   }
 
-  async invoke(
-    context: Context,
-    options?: Partial<LLMOptions>,
-  ): Promise<LLMResponse> {
-      const opts = mergeOptions(this.config.options, options);
-      const converted = messagesForAnthropic(context.messages);
-      const started = performance.now();
-      const response = await runWithTimeout(opts.timeout, (signal) =>
-        this.sdk.messages.create(
-          {
-            model: this.config.model,
-            messages: converted as any,
-            ...(context.systemPrompt === undefined ? {} : { system: context.systemPrompt }),
-            ...(context.tools === undefined ? {} : { tools: toolsForAnthropic(context.tools) as any }),
-            ...optionsForAnthropic(opts),
-          } as any,
-          { timeout: timeoutMilliseconds(opts.timeout), signal },
-        ),
-      );
-      return responseForAnthropic(response, Math.round(performance.now() - started));
-  }
-
   async *stream(
     context: Context,
     options?: Partial<LLMOptions>,
-  ): AsyncIterable<LLMStreamEvent> {
-      const opts = mergeOptions(this.config.options, options);
-      const converted = messagesForAnthropic(context.messages);
-      const signal = AbortSignal.timeout(timeoutMilliseconds(opts.timeout));
-      const stream = await this.sdk.messages.create(
+  ): AsyncIterable<AssistantMessageEvent> {
+    const opts = mergeOptions(this.config.options, options);
+    const converted = messagesForAnthropic(context.messages);
+    const signal = AbortSignal.timeout(timeoutMilliseconds(opts.timeout));
+
+    type PendingBlock =
+      | { kind: "text"; text: string }
+      | { kind: "thinking"; thinking: string; signature?: string }
+      | { kind: "toolCall"; id: string; name: string; arguments: string };
+
+    const started = performance.now();
+    let model = this.config.model;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let stopReason: StopReason = "stop";
+    const pending = new Map<number, PendingBlock>();
+
+    try {
+      const sdkStream = await this.sdk.messages.create(
         {
           model: this.config.model,
           messages: converted as any,
           ...(context.systemPrompt === undefined ? {} : { system: context.systemPrompt }),
           ...(context.tools === undefined ? {} : { tools: toolsForAnthropic(context.tools) as any }),
           stream: true,
-          ...optionsForAnthropic(opts),
+          max_tokens: opts.maxTokens,
+          ...(opts.temperature === undefined ? {} : { temperature: opts.temperature }),
+          ...(opts.topP === undefined ? {} : { top_p: opts.topP }),
+          ...(opts.stop === undefined ? {} : { stop_sequences: opts.stop }),
         } as any,
         { timeout: timeoutMilliseconds(opts.timeout), signal },
       );
 
-      const started = performance.now();
-      let model = this.config.model;
-      let content = "";
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let reason: FinishReason = null;
-      const pending = new Map<number, { id: string; name: string; arguments: string }>();
-      for await (const event of stream as any) {
-        if (event.type === "message_start") {
-          model = event.message.model ?? model;
-          inputTokens = Number(event.message.usage?.input_tokens ?? 0);
-        } else if (event.type === "content_block_start" && event.content_block.type === "tool_use") {
-          pending.set(event.index, {
-            id: event.content_block.id,
-            name: event.content_block.name,
-            arguments: Object.keys(event.content_block.input ?? {}).length ? JSON.stringify(event.content_block.input) : "",
-          });
-        } else if (event.type === "content_block_delta") {
-          if (event.delta.type === "text_delta") {
-            content += event.delta.text;
-            yield { type: "text_delta", text: event.delta.text };
-          } else if (event.delta.type === "input_json_delta") {
-            const call = pending.get(event.index);
-            if (call) call.arguments += event.delta.partial_json;
+      for await (const event of sdkStream as any) {
+        switch (event.type) {
+          case "message_start": {
+            model = event.message?.model ?? model;
+            inputTokens = Number(event.message?.usage?.input_tokens ?? 0);
+            break;
           }
-        } else if (event.type === "message_delta") {
-          reason = finishReason(event.delta.stop_reason) ?? reason;
-          outputTokens = Number(event.usage?.output_tokens ?? outputTokens);
+
+          case "content_block_start": {
+            const block = event.content_block;
+            if (block.type === "tool_use") {
+              pending.set(event.index, {
+                kind: "toolCall",
+                id: block.id,
+                name: block.name,
+                arguments: Object.keys(block.input ?? {}).length ? JSON.stringify(block.input) : "",
+              });
+            } else if (block.type === "thinking") {
+              pending.set(event.index, { kind: "thinking", thinking: block.thinking ?? "" });
+            } else {
+              // text block (or other) — just track accumulator
+              pending.set(event.index, { kind: "text", text: block.text ?? "" });
+            }
+            break;
+          }
+
+          case "content_block_delta": {
+            const delta = event.delta;
+            const block = pending.get(event.index);
+            if (delta.type === "text_delta") {
+              yield { type: "text_delta", text: delta.text };
+              if (block && block.kind === "text") block.text += delta.text;
+            } else if (delta.type === "thinking_delta") {
+              yield { type: "thinking_delta", thinking: delta.thinking };
+              if (block && block.kind === "thinking") block.thinking += delta.thinking;
+            } else if (delta.type === "input_json_delta") {
+              yield { type: "toolcall_delta", id: block && block.kind === "toolCall" ? block.id : "", argumentsDelta: delta.partial_json };
+              if (block && block.kind === "toolCall") block.arguments += delta.partial_json;
+            }
+            break;
+          }
+
+          case "content_block_stop": {
+            const block = pending.get(event.index);
+            if (block && block.kind === "toolCall") {
+              const args = JSON.parse(block.arguments || "{}");
+              const toolCall: ToolCall = { type: "toolCall", id: block.id, name: block.name, arguments: args };
+              yield { type: "toolcall_end", toolCall };
+            }
+            // Capture thinking signature if present on stop event
+            if (block && block.kind === "thinking" && (event as any).content_block?.signature) {
+              block.signature = (event as any).content_block.signature;
+            }
+            break;
+          }
+
+          case "message_delta": {
+            stopReason = mapStopReason(event.delta?.stop_reason ?? event.usage?.stop_reason);
+            outputTokens = Number(event.usage?.output_tokens ?? outputTokens);
+            break;
+          }
         }
       }
+
+      // Build ContentBlock[] from accumulated blocks
+      const contentBlocks: ContentBlock[] = [];
+      for (const block of pending.values()) {
+        if (block.kind === "text" && block.text.length > 0) {
+          contentBlocks.push({ type: "text", text: block.text } as TextBlock);
+        } else if (block.kind === "thinking" && block.thinking.length > 0) {
+          contentBlocks.push({ type: "thinking", thinking: block.thinking, signature: block.signature } as ThinkingBlock);
+        } else if (block.kind === "toolCall") {
+          contentBlocks.push({ type: "toolCall", id: block.id, name: block.name, arguments: JSON.parse(block.arguments || "{}") } as ToolCall);
+        }
+      }
+
+      const latencyMs = Math.round(performance.now() - started);
       yield {
-        type: "response_done",
-        response: {
+        type: "done",
+        message: {
+          role: "assistant",
+          content: contentBlocks,
           model,
-          content: content || null,
-          toolCalls: [...pending.values()].map((call) => ({ type: "toolCall" as const, ...call, arguments: JSON.parse(call.arguments || "{}") })),
           usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
-          latencyMs: Math.round(performance.now() - started),
-          finishReason: reason,
+          stopReason,
+          latencyMs,
         },
       };
+    } catch (err: unknown) {
+      const latencyMs = Math.round(performance.now() - started);
+      const message = err instanceof Error ? err.message : String(err);
+      yield {
+        type: "error",
+        message: {
+          role: "assistant",
+          content: [],
+          model,
+          stopReason: "error",
+          errorMessage: message,
+          latencyMs,
+        },
+      };
+    }
   }
 }

@@ -2,39 +2,56 @@ import OpenAI from "openai";
 
 import { mergeOptions } from "../client.js";
 import type {
+  AssistantMessageEvent,
+  ContentBlock,
   Context,
-  FinishReason,
   LLMClient,
   LLMConfig,
   LLMOptions,
-  LLMResponse,
-  LLMStreamEvent,
   Message,
+  StopReason,
+  TextBlock,
+  ThinkingBlock,
   Tool,
   ToolCall,
 } from "../types.js";
-import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
+import { timeoutMilliseconds } from "../../utils/timeout.js";
 
-// OpenAI differs from our history only around tool calls: its arguments are JSON text.
+// ── Message conversion ──
+
+/** Convert internal Message[] to OpenAI's format.
+ *  v2: AssistantMessage.content is ContentBlock[] — map each block to its OpenAI equivalent. */
 function messagesForOpenAI(messages: readonly Message[]): Record<string, unknown>[] {
   return messages.map((message) => {
-    if (message.role === "assistant" && message.toolCalls) {
+    if (message.role === "assistant") {
+      const textParts: string[] = [];
+      const toolCalls: Record<string, unknown>[] = [];
+      for (const block of message.content) {
+        if (block.type === "text") {
+          textParts.push(block.text);
+        } else if (block.type === "toolCall") {
+          toolCalls.push({
+            id: block.id,
+            type: "function",
+            function: { name: block.name, arguments: JSON.stringify(block.arguments) },
+          });
+        }
+        // thinking blocks are not re-sent
+      }
       return {
         role: "assistant",
-        content: message.content,
-        tool_calls: message.toolCalls.map((call) => ({
-          id: call.id,
-          type: "function",
-          function: { name: call.name, arguments: JSON.stringify(call.arguments) },
-        })),
+        content: textParts.join("") || null,
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       };
     }
     if (message.role === "tool") {
       return { role: "tool", tool_call_id: message.toolCallId, content: message.content };
     }
-    return { role: message.role, content: message.content };
+    return { role: "user", content: message.content };
   });
 }
+
+// ── Conversion helpers ──
 
 function toolsForOpenAI(tools: readonly Tool[]): OpenAI.Chat.Completions.ChatCompletionTool[] {
   return tools.map((tool) => ({
@@ -43,50 +60,16 @@ function toolsForOpenAI(tools: readonly Tool[]): OpenAI.Chat.Completions.ChatCom
   }));
 }
 
-function optionsForOpenAI(options: LLMOptions): Record<string, unknown> {
-  return {
-    max_tokens: options.maxTokens,
-    ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
-    ...(options.topP === undefined ? {} : { top_p: options.topP }),
-    ...(options.stop === undefined ? {} : { stop: options.stop }),
-  };
-}
-
-function finishReason(reason: string | null | undefined): FinishReason {
-  if (reason === "tool_calls" || reason === "function_call") return "tool_calls";
+function mapStopReason(reason: string | null | undefined): StopReason {
+  if (reason === "tool_calls" || reason === "function_call") return "toolUse";
   if (reason === "length") return "length";
-  return reason === "stop" ? "stop" : null;
+  if (reason === "content_filter") return "error";
+  return reason === "stop" ? "stop" : "stop";
 }
 
-function callsForOpenAI(calls: any[] = []): ToolCall[] {
-  return calls.map((call) => ({
-    type: "toolCall" as const,
-    id: call.id,
-    name: call.function.name,
-    arguments: JSON.parse(call.function.arguments || "{}"),
-  }));
-}
+// ── Adapter ──
 
-function responseForOpenAI(response: any, latencyMs: number): LLMResponse {
-  const choice = response.choices[0];
-  const usage = response.usage ?? {};
-  const inputTokens = Number(usage.prompt_tokens ?? 0);
-  const outputTokens = Number(usage.completion_tokens ?? 0);
-  return {
-    model: response.model ?? "",
-    content: choice.message.content || null,
-    toolCalls: callsForOpenAI(choice.message.tool_calls),
-    usage: {
-      inputTokens,
-      outputTokens,
-      totalTokens: Number(usage.total_tokens ?? inputTokens + outputTokens),
-    },
-    latencyMs,
-    finishReason: finishReason(choice.finish_reason),
-  };
-}
-
-/** OpenAI implementation of the common LLMClient interface. */
+/** OpenAI implementation of the v2 stream-only LLMClient interface. */
 export class OpenAIAdapter implements LLMClient {
   private readonly sdk: OpenAI;
 
@@ -97,90 +80,139 @@ export class OpenAIAdapter implements LLMClient {
     });
   }
 
-  async invoke(
-    context: Context,
-    options?: Partial<LLMOptions>,
-  ): Promise<LLMResponse> {
-      const opts = mergeOptions(this.config.options, options);
-      const timeout = timeoutMilliseconds(opts.timeout);
-      const started = performance.now();
-      const apiMessages: Record<string, unknown>[] = context.systemPrompt
-        ? [{ role: "system" as const, content: context.systemPrompt }, ...messagesForOpenAI(context.messages)]
-        : messagesForOpenAI(context.messages);
-      const response = await runWithTimeout(opts.timeout, (signal) =>
-        this.sdk.chat.completions.create(
-          {
-            model: this.config.model,
-            messages: apiMessages as any,
-            ...(context.tools === undefined ? {} : { tools: toolsForOpenAI(context.tools) }),
-            ...optionsForOpenAI(opts),
-          },
-          { timeout, signal },
-        ),
-      );
-      return responseForOpenAI(response, Math.round(performance.now() - started));
-  }
-
   async *stream(
     context: Context,
     options?: Partial<LLMOptions>,
-  ): AsyncIterable<LLMStreamEvent> {
-      const opts = mergeOptions(this.config.options, options);
-      const signal = AbortSignal.timeout(timeoutMilliseconds(opts.timeout));
-      const apiMessages: Record<string, unknown>[] = context.systemPrompt
-        ? [{ role: "system" as const, content: context.systemPrompt }, ...messagesForOpenAI(context.messages)]
-        : messagesForOpenAI(context.messages);
-      const stream = await this.sdk.chat.completions.create(
+  ): AsyncIterable<AssistantMessageEvent> {
+    const opts = mergeOptions(this.config.options, options);
+    const apiMessages: Record<string, unknown>[] = context.systemPrompt
+      ? [{ role: "system" as const, content: context.systemPrompt }, ...messagesForOpenAI(context.messages)]
+      : messagesForOpenAI(context.messages);
+
+    const started = performance.now();
+    let model = this.config.model;
+    let reasoning = "";
+    let text = "";
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let stopReason: StopReason = "stop";
+
+    // Track tool calls: index → { id, name, arguments }
+    const toolCalls = new Map<number, { id: string; name: string; arguments: string; started: boolean }>();
+
+    try {
+      const sdkStream = await this.sdk.chat.completions.create(
         {
           model: this.config.model,
           messages: apiMessages as any,
           ...(context.tools === undefined ? {} : { tools: toolsForOpenAI(context.tools) }),
           stream: true,
           stream_options: { include_usage: true },
-          ...optionsForOpenAI(opts),
+          max_tokens: opts.maxTokens,
+          ...(opts.temperature === undefined ? {} : { temperature: opts.temperature }),
+          ...(opts.topP === undefined ? {} : { top_p: opts.topP }),
+          ...(opts.stop === undefined ? {} : { stop: [...opts.stop] }),
         },
-        { timeout: timeoutMilliseconds(opts.timeout), signal },
+        { timeout: timeoutMilliseconds(opts.timeout) },
       );
 
-      const started = performance.now();
-      let model = this.config.model;
-      let content = "";
-      let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-      let reason: FinishReason = null;
-      const pending = new Map<number, { id: string; name: string; arguments: string }>();
-      for await (const chunk of stream as any) {
+      for await (const chunk of sdkStream as any) {
         if (chunk.model) model = chunk.model;
         if (chunk.usage) {
-          const inputTokens = Number(chunk.usage.prompt_tokens ?? 0);
-          const outputTokens = Number(chunk.usage.completion_tokens ?? 0);
-          usage = { inputTokens, outputTokens, totalTokens: Number(chunk.usage.total_tokens ?? inputTokens + outputTokens) };
+          inputTokens = Number(chunk.usage.prompt_tokens ?? inputTokens);
+          outputTokens = Number(chunk.usage.completion_tokens ?? outputTokens);
         }
+
         for (const choice of chunk.choices ?? []) {
-          reason = finishReason(choice.finish_reason) ?? reason;
-          if (choice.delta?.content) {
-            content += choice.delta.content;
-            yield { type: "text_delta", text: choice.delta.content };
+          // Track finish reason
+          if (choice.finish_reason) {
+            stopReason = mapStopReason(choice.finish_reason);
           }
-          for (const [position, call] of (choice.delta?.tool_calls ?? []).entries()) {
+
+          const delta = choice.delta ?? {};
+
+          // Thinking / reasoning content
+          if (delta.reasoning_content) {
+            reasoning += delta.reasoning_content;
+            yield { type: "thinking_delta", thinking: delta.reasoning_content };
+          }
+
+          // Text content
+          if (delta.content) {
+            text += delta.content;
+            yield { type: "text_delta", text: delta.content };
+          }
+
+          // Tool calls
+          for (const [position, call] of (delta.tool_calls ?? []).entries()) {
             const index = call.index ?? position;
-            const value = pending.get(index) ?? { id: "", name: "", arguments: "" };
-            value.id = call.id ?? value.id;
-            value.name = call.function?.name ?? value.name;
-            value.arguments += call.function?.arguments ?? "";
-            pending.set(index, value);
+            let tc = toolCalls.get(index);
+            if (!tc) {
+              tc = { id: "", name: "", arguments: "", started: false };
+              toolCalls.set(index, tc);
+            }
+
+            if (call.id) tc.id = call.id;
+            if (call.function?.name) tc.name = call.function.name;
+
+            // First time we have both id and name → toolcall_start
+            if (!tc.started && tc.id && tc.name) {
+              tc.started = true;
+              yield { type: "toolcall_start", id: tc.id, name: tc.name };
+            }
+
+            if (call.function?.arguments) {
+              tc.arguments += call.function.arguments;
+              yield { type: "toolcall_delta", id: tc.id, argumentsDelta: call.function.arguments };
+            }
           }
         }
       }
+
+      // Build ContentBlock[] from accumulated state
+      const contentBlocks: ContentBlock[] = [];
+
+      if (reasoning.length > 0) {
+        contentBlocks.push({ type: "thinking", thinking: reasoning } as ThinkingBlock);
+      }
+      if (text.length > 0) {
+        contentBlocks.push({ type: "text", text } as TextBlock);
+      }
+
+      // Yield toolcall_end for each completed tool call, then add to contentBlocks
+      for (const tc of toolCalls.values()) {
+        const args = JSON.parse(tc.arguments || "{}");
+        const toolCall: ToolCall = { type: "toolCall", id: tc.id, name: tc.name, arguments: args };
+        yield { type: "toolcall_end", toolCall };
+        contentBlocks.push(toolCall);
+      }
+
+      const latencyMs = Math.round(performance.now() - started);
       yield {
-        type: "response_done",
-        response: {
+        type: "done",
+        message: {
+          role: "assistant",
+          content: contentBlocks,
           model,
-          content: content || null,
-          toolCalls: [...pending.values()].map((call) => ({ type: "toolCall" as const, ...call, arguments: JSON.parse(call.arguments || "{}") })),
-          usage,
-          latencyMs: Math.round(performance.now() - started),
-          finishReason: reason,
+          usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
+          stopReason,
+          latencyMs,
         },
       };
+    } catch (err: unknown) {
+      const latencyMs = Math.round(performance.now() - started);
+      const message = err instanceof Error ? err.message : String(err);
+      yield {
+        type: "error",
+        message: {
+          role: "assistant",
+          content: [],
+          model,
+          stopReason: "error",
+          errorMessage: message,
+          latencyMs,
+        },
+      };
+    }
   }
 }
