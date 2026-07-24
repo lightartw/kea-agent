@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 
 import { mergeOptions } from "../client.js";
 import type {
+  Context,
   FinishReason,
   LLMClient,
   LLMConfig,
@@ -9,13 +10,13 @@ import type {
   LLMResponse,
   LLMStreamEvent,
   Message,
+  Tool,
+  ToolCall,
 } from "../types.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
-import type { ToolCall, ToolSchema } from "../types.js";
 
 // Anthropic requires system text separately and groups tool results as user content blocks.
-function messagesForAnthropic(messages: readonly Message[]) {
-  const system: string[] = [];
+function messagesForAnthropic(messages: readonly Message[]): Record<string, unknown>[] {
   const converted: Record<string, unknown>[] = [];
   const results: Record<string, unknown>[] = [];
   const flushResults = (): void => {
@@ -23,9 +24,7 @@ function messagesForAnthropic(messages: readonly Message[]) {
   };
 
   for (const message of messages) {
-    if (message.role === "system") {
-      if (message.content) system.push(message.content);
-    } else if (message.role === "tool") {
+    if (message.role === "tool") {
       results.push({ type: "tool_result", tool_use_id: message.toolCallId, content: message.content });
     } else {
       flushResults();
@@ -43,7 +42,7 @@ function messagesForAnthropic(messages: readonly Message[]) {
     }
   }
   flushResults();
-  return { ...(system.length ? { system: system.join("\n\n") } : {}), messages: converted };
+  return converted;
 }
 
 function optionsForAnthropic(options: LLMOptions): Record<string, unknown> {
@@ -55,8 +54,8 @@ function optionsForAnthropic(options: LLMOptions): Record<string, unknown> {
   };
 }
 
-function toolsForAnthropic(tools: readonly ToolSchema[]): Record<string, unknown>[] {
-  return tools.map((tool) => ({ name: tool.function.name, description: tool.function.description, input_schema: tool.function.parameters }));
+function toolsForAnthropic(tools: readonly Tool[]): Record<string, unknown>[] {
+  return tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.parameters }));
 }
 
 function finishReason(reason: string | null | undefined): FinishReason {
@@ -70,7 +69,7 @@ function responseForAnthropic(response: any, latencyMs: number): LLMResponse {
   const toolCalls: ToolCall[] = [];
   for (const block of response.content) {
     if (block.type === "text") content += block.text;
-    if (block.type === "tool_use") toolCalls.push({ id: block.id, name: block.name, arguments: block.input });
+    if (block.type === "tool_use") toolCalls.push({ type: "toolCall", id: block.id, name: block.name, arguments: block.input });
   }
   const usage = response.usage ?? {};
   const inputTokens = Number(usage.input_tokens ?? 0);
@@ -94,46 +93,44 @@ export class AnthropicAdapter implements LLMClient {
   }
 
   async invoke(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    overrides?: Partial<LLMOptions>,
+    context: Context,
+    options?: Partial<LLMOptions>,
   ): Promise<LLMResponse> {
-      const options = mergeOptions(this.config.options, overrides);
-      const converted = messagesForAnthropic(messages);
+      const opts = mergeOptions(this.config.options, options);
+      const converted = messagesForAnthropic(context.messages);
       const started = performance.now();
-      const response = await runWithTimeout(options.timeout, (signal) =>
+      const response = await runWithTimeout(opts.timeout, (signal) =>
         this.sdk.messages.create(
           {
             model: this.config.model,
-            messages: converted.messages as any,
-            ...(converted.system === undefined ? {} : { system: converted.system }),
-            ...(tools === undefined ? {} : { tools: toolsForAnthropic(tools) as any }),
-            ...optionsForAnthropic(options),
+            messages: converted as any,
+            ...(context.systemPrompt === undefined ? {} : { system: context.systemPrompt }),
+            ...(context.tools === undefined ? {} : { tools: toolsForAnthropic(context.tools) as any }),
+            ...optionsForAnthropic(opts),
           } as any,
-          { timeout: timeoutMilliseconds(options.timeout), signal },
+          { timeout: timeoutMilliseconds(opts.timeout), signal },
         ),
       );
       return responseForAnthropic(response, Math.round(performance.now() - started));
   }
 
   async *stream(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    overrides?: Partial<LLMOptions>,
+    context: Context,
+    options?: Partial<LLMOptions>,
   ): AsyncIterable<LLMStreamEvent> {
-      const options = mergeOptions(this.config.options, overrides);
-      const converted = messagesForAnthropic(messages);
-      const signal = AbortSignal.timeout(timeoutMilliseconds(options.timeout));
+      const opts = mergeOptions(this.config.options, options);
+      const converted = messagesForAnthropic(context.messages);
+      const signal = AbortSignal.timeout(timeoutMilliseconds(opts.timeout));
       const stream = await this.sdk.messages.create(
         {
           model: this.config.model,
-          messages: converted.messages as any,
-          ...(converted.system === undefined ? {} : { system: converted.system }),
-          ...(tools === undefined ? {} : { tools: toolsForAnthropic(tools) as any }),
+          messages: converted as any,
+          ...(context.systemPrompt === undefined ? {} : { system: context.systemPrompt }),
+          ...(context.tools === undefined ? {} : { tools: toolsForAnthropic(context.tools) as any }),
           stream: true,
-          ...optionsForAnthropic(options),
+          ...optionsForAnthropic(opts),
         } as any,
-        { timeout: timeoutMilliseconds(options.timeout), signal },
+        { timeout: timeoutMilliseconds(opts.timeout), signal },
       );
 
       const started = performance.now();
@@ -171,7 +168,7 @@ export class AnthropicAdapter implements LLMClient {
         response: {
           model,
           content: content || null,
-          toolCalls: [...pending.values()].map((call) => ({ ...call, arguments: JSON.parse(call.arguments || "{}") })),
+          toolCalls: [...pending.values()].map((call) => ({ type: "toolCall" as const, ...call, arguments: JSON.parse(call.arguments || "{}") })),
           usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
           latencyMs: Math.round(performance.now() - started),
           finishReason: reason,

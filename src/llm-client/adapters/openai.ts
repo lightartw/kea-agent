@@ -2,6 +2,7 @@ import OpenAI from "openai";
 
 import { mergeOptions } from "../client.js";
 import type {
+  Context,
   FinishReason,
   LLMClient,
   LLMConfig,
@@ -9,9 +10,10 @@ import type {
   LLMResponse,
   LLMStreamEvent,
   Message,
+  Tool,
+  ToolCall,
 } from "../types.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
-import type { ToolCall, ToolSchema } from "../types.js";
 
 // OpenAI differs from our history only around tool calls: its arguments are JSON text.
 function messagesForOpenAI(messages: readonly Message[]): Record<string, unknown>[] {
@@ -51,6 +53,7 @@ function finishReason(reason: string | null | undefined): FinishReason {
 
 function callsForOpenAI(calls: any[] = []): ToolCall[] {
   return calls.map((call) => ({
+    type: "toolCall" as const,
     id: call.id,
     name: call.function.name,
     arguments: JSON.parse(call.function.arguments || "{}"),
@@ -88,20 +91,19 @@ export class OpenAIAdapter implements LLMClient {
   }
 
   async invoke(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    overrides?: Partial<LLMOptions>,
+    context: Context,
+    options?: Partial<LLMOptions>,
   ): Promise<LLMResponse> {
-      const options = mergeOptions(this.config.options, overrides);
-      const timeout = timeoutMilliseconds(options.timeout);
+      const opts = mergeOptions(this.config.options, options);
+      const timeout = timeoutMilliseconds(opts.timeout);
       const started = performance.now();
-      const response = await runWithTimeout(options.timeout, (signal) =>
+      const response = await runWithTimeout(opts.timeout, (signal) =>
         this.sdk.chat.completions.create(
           {
             model: this.config.model,
-            messages: messagesForOpenAI(messages) as any,
-            ...(tools === undefined ? {} : { tools: tools as any }),
-            ...optionsForOpenAI(options),
+            messages: messagesForOpenAI(context.messages) as any,
+            ...(context.tools === undefined ? {} : { tools: context.tools as any }),
+            ...optionsForOpenAI(opts),
           },
           { timeout, signal },
         ),
@@ -110,22 +112,21 @@ export class OpenAIAdapter implements LLMClient {
   }
 
   async *stream(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    overrides?: Partial<LLMOptions>,
+    context: Context,
+    options?: Partial<LLMOptions>,
   ): AsyncIterable<LLMStreamEvent> {
-      const options = mergeOptions(this.config.options, overrides);
-      const signal = AbortSignal.timeout(timeoutMilliseconds(options.timeout));
+      const opts = mergeOptions(this.config.options, options);
+      const signal = AbortSignal.timeout(timeoutMilliseconds(opts.timeout));
       const stream = await this.sdk.chat.completions.create(
         {
           model: this.config.model,
-          messages: messagesForOpenAI(messages) as any,
-          ...(tools === undefined ? {} : { tools: tools as any }),
+          messages: messagesForOpenAI(context.messages) as any,
+          ...(context.tools === undefined ? {} : { tools: context.tools as any }),
           stream: true,
           stream_options: { include_usage: true },
-          ...optionsForOpenAI(options),
+          ...optionsForOpenAI(opts),
         },
-        { timeout: timeoutMilliseconds(options.timeout), signal },
+        { timeout: timeoutMilliseconds(opts.timeout), signal },
       );
 
       const started = performance.now();
@@ -162,7 +163,7 @@ export class OpenAIAdapter implements LLMClient {
         response: {
           model,
           content: content || null,
-          toolCalls: [...pending.values()].map((call) => ({ ...call, arguments: JSON.parse(call.arguments || "{}") })),
+          toolCalls: [...pending.values()].map((call) => ({ type: "toolCall" as const, ...call, arguments: JSON.parse(call.arguments || "{}") })),
           usage,
           latencyMs: Math.round(performance.now() - started),
           finishReason: reason,

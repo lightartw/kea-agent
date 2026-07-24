@@ -1,3 +1,2 @@
-export * from "./client.js";
-export * from "./factory.js";
-export * from "./types.js";
+export type { Context, LLMClient, LLMResponse, Message, Tool, ToolCall } from "./types.js";
+export { createLLMClient } from "./factory.js";

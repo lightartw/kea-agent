@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 
 import { mergeOptions } from "../client.js";
 import type {
+  Context,
   FinishReason,
   LLMClient,
   LLMConfig,
@@ -9,18 +10,16 @@ import type {
   LLMResponse,
   LLMStreamEvent,
   Message,
+  Tool,
+  ToolCall,
 } from "../types.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
-import type { ToolCall, ToolSchema } from "../types.js";
 
 // Gemini names assistant messages `model` and puts system text in config.
 function messagesForGemini(messages: readonly Message[]) {
-  const system: string[] = [];
   const contents: Record<string, unknown>[] = [];
   for (const message of messages) {
-    if (message.role === "system") {
-      if (message.content) system.push(message.content);
-    } else if (message.role === "assistant" && message.toolCalls) {
+    if (message.role === "assistant" && message.toolCalls) {
       contents.push({
         role: "model",
         parts: [
@@ -37,12 +36,12 @@ function messagesForGemini(messages: readonly Message[]) {
       contents.push({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.content }] });
     }
   }
-  return { ...(system.length ? { system: system.join("\n\n") } : {}), contents };
+  return { contents };
 }
 
 function configForGemini(
   system: string | undefined,
-  tools: readonly ToolSchema[] | undefined,
+  tools: readonly Tool[] | undefined,
   options: LLMOptions,
   signal: AbortSignal,
 ): Record<string, unknown> {
@@ -56,9 +55,9 @@ function configForGemini(
     ...(tools === undefined ? {} : {
       tools: [{
         functionDeclarations: tools.map((tool) => ({
-          name: tool.function.name,
-          description: tool.function.description,
-          parametersJsonSchema: tool.function.parameters,
+          name: tool.name,
+          description: tool.description,
+          parametersJsonSchema: tool.parameters,
         })),
       }],
     }),
@@ -74,6 +73,7 @@ function finishReason(response: any, hasCalls: boolean): FinishReason {
 
 function callsForGemini(calls: any[] = [], offset = 0): ToolCall[] {
   return calls.map((call, index) => ({
+    type: "toolCall" as const,
     id: call.id || `gemini-call-${offset + index}`,
     name: call.name,
     arguments: call.args ?? {},
@@ -107,38 +107,36 @@ export class GeminiAdapter implements LLMClient {
   }
 
   async invoke(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    overrides?: Partial<LLMOptions>,
+    context: Context,
+    options?: Partial<LLMOptions>,
   ): Promise<LLMResponse> {
-      const options = mergeOptions(this.config.options, overrides);
-      const converted = messagesForGemini(messages);
+      const opts = mergeOptions(this.config.options, options);
+      const converted = messagesForGemini(context.messages);
       const started = performance.now();
-      const response = await runWithTimeout(options.timeout, (signal) =>
+      const response = await runWithTimeout(opts.timeout, (signal) =>
         this.sdk.models.generateContent({
           model: this.config.model,
           contents: converted.contents as any,
-          config: configForGemini(converted.system, tools, options, signal) as any,
+          config: configForGemini(context.systemPrompt, context.tools, opts, signal) as any,
         }),
       );
       return responseForGemini(response, this.config.model, Math.round(performance.now() - started));
   }
 
   async *stream(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
-    overrides?: Partial<LLMOptions>,
+    context: Context,
+    options?: Partial<LLMOptions>,
   ): AsyncIterable<LLMStreamEvent> {
-      const options = mergeOptions(this.config.options, overrides);
-      const converted = messagesForGemini(messages);
+      const opts = mergeOptions(this.config.options, options);
+      const converted = messagesForGemini(context.messages);
       const stream = await this.sdk.models.generateContentStream({
         model: this.config.model,
         contents: converted.contents as any,
         config: configForGemini(
-          converted.system,
-          tools,
-          options,
-          AbortSignal.timeout(timeoutMilliseconds(options.timeout)),
+          context.systemPrompt,
+          context.tools,
+          opts,
+          AbortSignal.timeout(timeoutMilliseconds(opts.timeout)),
         ) as any,
       });
 
