@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { renderAgentEvent } from "../src/cli/render.js";
-import type { AssistantMessage } from "../src/llm-client/types.js";
+import type { AssistantMessage } from "../src/ai/types.js";
 
 const message: AssistantMessage = {
   role: "assistant",

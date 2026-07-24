@@ -17,6 +17,11 @@ export class HookRegistry {
     return this.hooks.get(name) as T | undefined;
   }
 
+  /** All registered hooks. */
+  values(): IterableIterator<Hook> {
+    return this.hooks.values();
+  }
+
   /**
    * Run one lifecycle event through every hook registered for that event type.
    * The first hook that returns a non-void result stops the chain — matching the

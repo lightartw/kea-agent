@@ -1,60 +1,32 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Message } from "../../llm-client/types.js";
-import type { Project, SessionStore } from "../types.js";
-import { appendJsonl, readJsonl } from "./jsonl-storage.js";
-
-function sessionsDir(project: Project): string {
-  return join(project.storageDir, "sessions");
-}
-
-function sessionPath(project: Project, sessionId: string): string {
-  return join(sessionsDir(project), `${sessionId}.jsonl`);
-}
+import type { Message } from "../../ai/types.js";
+import type { SessionStore } from "../types.js";
+import { Session } from "./session.js";
+import { appendEntry } from "./jsonl-storage.js";
 
 function newSessionId(): string {
   const ts = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
   return `${ts}_${randomUUID().slice(0, 8)}`;
 }
 
-/** Manages JSONL session files under ~/.kea/projects/<id>/sessions/. */
-export class SessionRepo {
-  constructor(private readonly project: Project) {}
+/** Create a new empty session backed by a JSONL file under storageDir/sessions/. */
+export async function createSessionStore(storageDir: string): Promise<SessionStore> {
+  const dir = join(storageDir, "sessions");
+  await mkdir(dir, { recursive: true });
 
-  /** Create a new empty session, ready for messages to be appended. */
-  async create(): Promise<SessionStore> {
-    await mkdir(sessionsDir(this.project), { recursive: true });
-    const id = newSessionId();
-    const path = sessionPath(this.project, id);
-    const messages: Message[] = [];
-    // Write a header line so the file exists.
-    await appendJsonl(path, {
-      role: "user",
-      content: `session:${id}`,
-    });
-    return {
-      append: async (message: Message) => {
-        messages.push(message);
-        await appendJsonl(path, message);
-      },
-      load: async () => {
-        return (await readJsonl(path)).slice(1); // skip header
-      },
-    };
-  }
+  const id = newSessionId();
+  const path = join(dir, `${id}.jsonl`);
+  const session = new Session(id);
 
-  /** Open existing session by ID. */
-  async open(sessionId: string): Promise<SessionStore> {
-    const path = sessionPath(this.project, sessionId);
-    const stored = await readJsonl(path);
-    const messages = stored.slice(1); // skip header
-    return {
-      append: async (message: Message) => {
-        messages.push(message);
-        await appendJsonl(path, message);
-      },
-      load: async () => [...messages],
-    };
-  }
+  return {
+    session,
+    append: async (message: Message) => {
+      session.appendMessage(message);
+      const entries = session.toJSON();
+      await appendEntry(path, entries[entries.length - 1]!);
+    },
+    load: async () => session.buildContext().messages,
+  };
 }

@@ -4,22 +4,19 @@ import type {
   AssistantMessageEvent,
   ContentBlock,
   Context,
-  LLMClient,
-  LLMConfig,
-  LLMOptions,
   Message,
   StopReason,
+  StreamOptions,
   TextBlock,
   Tool,
   ToolCall,
 } from "../types.js";
 import { mergeSignals } from "../../utils/timeout.js";
 
+const DEFAULT_OPTIONS: StreamOptions = { timeout: 120, maxTokens: 8000 };
+
 // ── Message conversion ──
 
-/** Convert internal Message[] to Gemini's format.
- *  v2: AssistantMessage.content is ContentBlock[] — map each block to its Gemini equivalent.
- *  Gemini names assistant messages `model` and puts system text in config. */
 function messagesForGemini(messages: readonly Message[]) {
   const contents: Record<string, unknown>[] = [];
   for (const message of messages) {
@@ -31,7 +28,6 @@ function messagesForGemini(messages: readonly Message[]) {
         } else if (block.type === "toolCall") {
           parts.push({ functionCall: { id: block.id, name: block.name, args: block.arguments } });
         }
-        // thinking blocks are not re-sent
       }
       if (parts.length > 0) {
         contents.push({ role: "model", parts });
@@ -42,7 +38,6 @@ function messagesForGemini(messages: readonly Message[]) {
         parts: [{ functionResponse: { id: message.toolCallId, name: message.name, response: { output: message.content } } }],
       });
     } else {
-      // Must be UserMessage — role is already narrowed to "user"
       contents.push({ role: "user", parts: [{ text: message.content }] });
     }
   }
@@ -54,7 +49,7 @@ function messagesForGemini(messages: readonly Message[]) {
 function configForGemini(
   system: string | undefined,
   tools: readonly Tool[] | undefined,
-  options: LLMOptions,
+  options: StreamOptions,
   signal: AbortSignal,
 ): Record<string, unknown> {
   return {
@@ -97,26 +92,26 @@ function extractUsage(response: any) {
 
 // ── Adapter ──
 
-/** Gemini implementation of the v2 stream-only LLMClient interface. */
-export class GeminiAdapter implements LLMClient {
+export class GeminiAdapter {
   private readonly sdk: GoogleGenAI;
 
-  constructor(private readonly config: LLMConfig) {
+  constructor(apiKey: string, baseUrl?: string | null) {
     this.sdk = new GoogleGenAI({
-      apiKey: config.apiKey,
-      ...(config.baseUrl === null ? {} : { httpOptions: { baseUrl: config.baseUrl } }),
+      apiKey,
+      ...(baseUrl ? { httpOptions: { baseUrl } } : {}),
     });
   }
 
   async *stream(
+    model: string,
     context: Context,
-    options?: Partial<LLMOptions>,
+    options?: Partial<StreamOptions>,
   ): AsyncIterable<AssistantMessageEvent> {
-    const opts: LLMOptions = { ...this.config.options, ...options };
+    const opts: StreamOptions = { ...DEFAULT_OPTIONS, ...options };
     const converted = messagesForGemini(context.messages);
 
     const started = performance.now();
-    let model = this.config.model;
+    let usedModel = model;
     let content = "";
     let stopReason: StopReason = "stop";
     let allCalls: ToolCall[] = [];
@@ -124,7 +119,7 @@ export class GeminiAdapter implements LLMClient {
 
     try {
       const sdkStream = await this.sdk.models.generateContentStream({
-        model: this.config.model,
+        model,
         contents: converted.contents as any,
         config: configForGemini(
           context.systemPrompt,
@@ -135,21 +130,15 @@ export class GeminiAdapter implements LLMClient {
       });
 
       for await (const chunk of sdkStream as any) {
-        // Model version
-        if (chunk.modelVersion) model = chunk.modelVersion;
+        if (chunk.modelVersion) usedModel = chunk.modelVersion;
 
-        // Usage
-        if (chunk.usageMetadata) {
-          usage = extractUsage(chunk);
-        }
+        if (chunk.usageMetadata) usage = extractUsage(chunk);
 
-        // Text content (incremental in streaming)
         if (chunk.text) {
           content += chunk.text;
           yield { type: "text_delta", text: chunk.text };
         }
 
-        // Tool calls — Gemini sends complete function calls per chunk
         const functionCalls = chunk.functionCalls ?? [];
         for (const [i, call] of functionCalls.entries()) {
           const id = call.id || `gemini-call-${allCalls.length + i}`;
@@ -165,44 +154,39 @@ export class GeminiAdapter implements LLMClient {
           allCalls.push(toolCall);
         }
 
-        // Stop reason
         const reason = mapStopReason(chunk, functionCalls.length > 0);
         if (reason !== "stop" || chunk.candidates?.[0]?.finishReason) {
           stopReason = reason;
         }
       }
 
-      // Build ContentBlock[] from accumulated state
       const contentBlocks: ContentBlock[] = [];
       if (content.length > 0) {
         contentBlocks.push({ type: "text", text: content } as TextBlock);
       }
       contentBlocks.push(...allCalls);
 
-      const latencyMs = Math.round(performance.now() - started);
       yield {
         type: "done",
         message: {
           role: "assistant",
           content: contentBlocks,
-          model,
+          model: usedModel,
           usage,
           stopReason,
-          latencyMs,
+          latencyMs: Math.round(performance.now() - started),
         },
       };
     } catch (err: unknown) {
-      const latencyMs = Math.round(performance.now() - started);
-      const message = err instanceof Error ? err.message : String(err);
       yield {
         type: "error",
         message: {
           role: "assistant",
           content: [],
-          model,
+          model: usedModel,
           stopReason: "error",
-          errorMessage: message,
-          latencyMs,
+          errorMessage: err instanceof Error ? err.message : String(err),
+          latencyMs: Math.round(performance.now() - started),
         },
       };
     }

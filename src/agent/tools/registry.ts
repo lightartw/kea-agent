@@ -1,7 +1,7 @@
 import type { HookRegistry } from "../hooks/registry.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
 import { AgentTool, type ToolResult } from "./types.js";
-import type { Tool, ToolCall } from "../../llm-client/types.js";
+import type { Tool, ToolCall } from "../../ai/types.js";
 
 const ERROR_PREFIX = "Error: ";
 
@@ -29,6 +29,11 @@ export class ToolRegistry {
 
   schemas(): Tool[] {
     return [...this.tools.values()]; // AgentTool implements Tool
+  }
+
+  /** All registered tools with full AgentTool type (not just the Tool interface). */
+  all(): AgentTool[] {
+    return [...this.tools.values()];
   }
 
   private error(message: string): ToolResult {

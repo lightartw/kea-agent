@@ -1,9 +1,10 @@
 import type {
   Context,
-  LLMClient,
   Message,
+  ModelConfig,
+  StreamFn,
   ToolCall,
-} from "../llm-client/types.js";
+} from "../ai/types.js";
 import type { HookRegistry } from "./hooks/registry.js";
 import type { AgentEvent } from "./types.js";
 import type { ToolRegistry } from "./tools/registry.js";
@@ -18,7 +19,8 @@ import type { ToolRegistry } from "./tools/registry.js";
 export async function* runAgentLoop(
   messages: Message[],
   systemPrompt: string,
-  client: LLMClient,
+  streamFn: StreamFn,
+  model: ModelConfig,
   registry: ToolRegistry,
   hooks?: HookRegistry,
   signal?: AbortSignal,
@@ -52,8 +54,8 @@ export async function* runAgentLoop(
     const toolCalls: ToolCall[] = [];
     let forceContinue = false;
 
-    // Stream consumption — signal propagates to the HTTP request via LLMOptions
-    for await (const event of client.stream(ctx, signal === undefined ? {} : { signal })) {
+    // Stream consumption — signal propagates to the HTTP request via StreamOptions
+    for await (const event of streamFn(model, ctx, signal === undefined ? {} : { signal })) {
       switch (event.type) {
         case "text_delta":
           yield { type: "text_delta", text: event.text };

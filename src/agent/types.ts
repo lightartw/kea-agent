@@ -1,4 +1,4 @@
-import type { AssistantMessage, Message, ToolCall } from "../llm-client/types.js";
+import type { AssistantMessage, Message, ModelConfig, ToolCall } from "../ai/types.js";
 import type { ToolResult } from "./tools/types.js";
 
 /**
@@ -28,6 +28,7 @@ export type AgentEvent =
 /** Public read-only snapshot of the Agent's current state. */
 export interface AgentState {
   readonly messages: readonly Message[];
+  readonly model: ModelConfig;
   readonly systemPrompt: string;
   readonly isRunning: boolean;
   readonly errorMessage?: string;

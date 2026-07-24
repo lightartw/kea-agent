@@ -2,7 +2,6 @@ import { createInterface, type Interface } from "node:readline/promises";
 
 import type { AgentEvent } from "../agent/types.js";
 import type { AgentHarness } from "../harness/agent-harness.js";
-import type { PermissionRequest } from "../harness/hooks/permission.js";
 import { renderAgentEvent } from "./render.js";
 
 const CYAN = "\x1b[36m";
@@ -17,18 +16,6 @@ export class CliFrontend {
     this.readline.on("SIGINT", () => {
       this.readline.close();
     });
-  }
-
-  /** Show one approval request. EOF and Ctrl+C are denials, not approvals. */
-  async requestPermission(request: PermissionRequest): Promise<boolean> {
-    console.log(`\n\x1b[33m[permission] ${request.reason}\x1b[0m`);
-    console.log(`  ${request.call.name}: ${JSON.stringify(request.call.arguments)}`);
-    try {
-      const answer = await this.readline.question("  Allow? [y/N] ");
-      return ["y", "yes"].includes(answer.trim().toLowerCase());
-    } catch {
-      return false;
-    }
   }
 
   /** Keep accepting user turns while AgentHarness owns conversation state. */

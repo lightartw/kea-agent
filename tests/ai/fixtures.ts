@@ -1,17 +1,12 @@
 import type {
   AssistantMessage,
-  ContentBlock,
-  LLMClient,
-  LLMConfig,
+  AssistantMessageEvent,
+  Context,
   Message,
-} from "../../src/llm-client/types.js";
+  StreamFn,
+} from "../../src/ai/types.js";
 
-export const baseConfig: LLMConfig = {
-  model: "test-model",
-  apiKey: "test-key",
-  baseUrl: null,
-  options: { timeout: 120, maxTokens: 8_000 },
-};
+export const testModel = { provider: "anthropic", model: "test-model" };
 
 export const userMessages: Message[] = [{ role: "user", content: "hello" }];
 
@@ -35,7 +30,7 @@ export const commonHistory: Message[] = [
 ];
 
 export function makeAssistantMessage(
-  content: ContentBlock[],
+  content: AssistantMessage["content"],
   overrides: Partial<Pick<AssistantMessage, "model" | "stopReason" | "latencyMs">> = {},
 ): AssistantMessage {
   return {
@@ -51,11 +46,9 @@ export const textMessage: AssistantMessage = makeAssistantMessage([
   { type: "text", text: "ok" },
 ]);
 
-export const fakeClient: LLMClient = {
-  async *stream() {
-    yield { type: "text_delta", text: "ok" };
-    yield { type: "done", message: textMessage };
-  },
+export const fakeStreamFn: StreamFn = async function* () {
+  yield { type: "text_delta", text: "ok" };
+  yield { type: "done", message: textMessage };
 };
 
 export async function* asyncItems<T>(items: readonly T[]): AsyncIterable<T> {

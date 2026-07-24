@@ -1,5 +1,12 @@
 import type { TObject } from "typebox";
 
+// ── Model routing ──
+
+export interface ModelConfig {
+  readonly provider: string;
+  readonly model: string;
+}
+
 // ── Tool types ──
 
 export interface Tool {
@@ -82,20 +89,13 @@ export type AssistantMessageEvent =
 
 // ── Options ──
 
-export interface LLMOptions {
+export interface StreamOptions {
   readonly timeout: number;
   readonly maxTokens: number;
   readonly temperature?: number;
   readonly topP?: number;
   readonly stop?: readonly string[];
   readonly signal?: AbortSignal;
-}
-
-export interface LLMConfig {
-  readonly model: string;
-  readonly apiKey: string;
-  readonly baseUrl: string | null;
-  readonly options: LLMOptions;
 }
 
 // ── Context ──
@@ -106,11 +106,10 @@ export interface Context {
   readonly tools?: readonly Tool[];
 }
 
-// ── LLM Client (stream only — no invoke) ──
+// ── Stream function (replaces LLMClient interface) ──
 
-export interface LLMClient {
-  stream(
-    context: Context,
-    options?: Partial<LLMOptions>,
-  ): AsyncIterable<AssistantMessageEvent>;
-}
+export type StreamFn = (
+  model: ModelConfig,
+  context: Context,
+  options?: Partial<StreamOptions>,
+) => AsyncIterable<AssistantMessageEvent>;

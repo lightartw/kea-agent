@@ -10,13 +10,15 @@ import type {
   AssistantMessageEvent,
   ContentBlock,
   Context,
-  LLMClient,
   Message,
-} from "../../src/llm-client/types.js";
+  ModelConfig,
+  StreamFn,
+} from "../../src/ai/types.js";
 import { AgentTool } from "../../src/agent/tools/types.js";
 import { ToolRegistry } from "../../src/agent/tools/registry.js";
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });
+const testModel: ModelConfig = { provider: "test", model: "test-model" };
 
 function assistantMsg(
   text: string,
@@ -38,18 +40,16 @@ function assistantMsg(
   };
 }
 
-function clientWithStreams(
+function streamFnWithEvents(
   streams: readonly (readonly AssistantMessageEvent[])[],
   beforeStream?: (context: Context, index: number) => void,
-): LLMClient {
+): StreamFn {
   let index = 0;
-  return {
-    async *stream(context) {
-      const current = index;
-      index += 1;
-      beforeStream?.(context, current);
-      for (const event of streams[current] ?? []) yield event;
-    },
+  return async function* (_model, context) {
+    const current = index;
+    index += 1;
+    beforeStream?.(context, current);
+    for (const event of streams[current] ?? []) yield event;
   };
 }
 
@@ -64,14 +64,14 @@ async function collect(
 test("runAgentLoop streams text and stores one complete assistant message", async () => {
   const final = assistantMsg("hello");
   const history: Message[] = [{ role: "user", content: "hi" }];
-  const client = clientWithStreams([[
+  const streamFn = streamFnWithEvents([[
     { type: "text_delta", text: "hel" },
     { type: "text_delta", text: "lo" },
     { type: "done", message: final },
   ]]);
 
   const events = await collect(
-    runAgentLoop(history, "", client, new ToolRegistry()),
+    runAgentLoop(history, "", streamFn, testModel, new ToolRegistry()),
   );
 
   assert.deepEqual(events, [
@@ -102,24 +102,22 @@ test("runAgentLoop streams and executes tools sequentially", async () => {
   const tc1 = { type: "toolCall" as const, id: "c1", name: "first", arguments: {} };
   const tc2 = { type: "toolCall" as const, id: "c2", name: "second", arguments: {} };
   const finalMsg = assistantMsg("finished");
-  const client: LLMClient = {
-    async *stream(_context, _options) {
-      if (observed.length === 0) {
-        observed.push("done");
-        yield { type: "toolcall_start", id: "c1", name: "first" };
-        yield { type: "toolcall_end", toolCall: tc1 };
-        yield { type: "toolcall_start", id: "c2", name: "second" };
-        yield { type: "toolcall_end", toolCall: tc2 };
-        yield { type: "done", message: assistantMsg("", [tc1, tc2]) };
-      } else {
-        yield { type: "text_delta", text: "finished" };
-        yield { type: "done", message: finalMsg };
-      }
-    },
+  const streamFn: StreamFn = async function* (_model, _ctx, _opts) {
+    if (observed.length === 0) {
+      observed.push("done");
+      yield { type: "toolcall_start", id: "c1", name: "first" };
+      yield { type: "toolcall_end", toolCall: tc1 };
+      yield { type: "toolcall_start", id: "c2", name: "second" };
+      yield { type: "toolcall_end", toolCall: tc2 };
+      yield { type: "done", message: assistantMsg("", [tc1, tc2]) };
+    } else {
+      yield { type: "text_delta", text: "finished" };
+      yield { type: "done", message: finalMsg };
+    }
   };
   const history: Message[] = [{ role: "user", content: "run" }];
 
-  const events = await collect(runAgentLoop(history, "", client, registry));
+  const events = await collect(runAgentLoop(history, "", streamFn, testModel, registry));
 
   assert.deepEqual(observed, ["done", "first", "second"]);
   assert.deepEqual(events.map((event) => event.type), [
@@ -162,7 +160,7 @@ test("tool results are in history before the next model stream", async () => {
   registry.register(new NoopTool());
   const tc = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
   let secondHistory: readonly Message[] | undefined;
-  const client = clientWithStreams(
+  const streamFn = streamFnWithEvents(
     [
       [
         { type: "toolcall_start", id: "c1", name: "noop" },
@@ -177,7 +175,7 @@ test("tool results are in history before the next model stream", async () => {
   );
   const history: Message[] = [{ role: "user", content: "run" }];
 
-  await collect(runAgentLoop(history, "", client, registry));
+  await collect(runAgentLoop(history, "", streamFn, testModel, registry));
 
   assert.deepEqual(secondHistory?.at(-1), {
     role: "tool",
@@ -190,7 +188,7 @@ test("tool results are in history before the next model stream", async () => {
 
 test("Registry failures are emitted and returned to the model", async () => {
   const missingCall = { type: "toolCall" as const, id: "c1", name: "missing", arguments: {} };
-  const client = clientWithStreams([
+  const streamFn = streamFnWithEvents([
     [
       { type: "toolcall_start", id: "c1", name: "missing" },
       { type: "toolcall_end", toolCall: missingCall },
@@ -201,7 +199,7 @@ test("Registry failures are emitted and returned to the model", async () => {
   const history: Message[] = [{ role: "user", content: "run" }];
 
   const events = await collect(
-    runAgentLoop(history, "", client, new ToolRegistry()),
+    runAgentLoop(history, "", streamFn, testModel, new ToolRegistry()),
   );
 
   const toolEnd = events.find((event) => event.type === "tool_end");

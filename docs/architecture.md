@@ -1,255 +1,162 @@
-# Kea Agent Architecture
+# Kea Agent 架构
 
-**Updated:** 2026-07-21
+**更新:** 2026-07-24
 
-## Three-Layer Architecture
+## 两层类型模型
 
-Kea follows Pi's layered design. Dependencies are strict: each layer only imports
-from layers below it.
+### llm-client — 传输层
 
-```
-main.ts                    ← composition root
-
-  ├─ cli/                  ← presentation layer
-  ├─ harness/              ← application layer (tools, hooks, session persistence)
-  ├─ agent/                ← kernel layer (Agent, agent-loop, hooks, tools)
-  └─ llm-client/           ← AI abstraction layer
-       └─ utils/            ← pure utilities
-```
-
-| Layer | Directory | Depends On | What It Provides |
-|---|---|---|---|
-| Presentation | `cli/` | `agent/`, `harness/` | ANSI rendering, readline I/O |
-| Application | `harness/` | `agent/`, `llm-client/` | Built-in tools, hooks, session persistence, AgentHarness |
-| Kernel | `agent/` | `llm-client/`, `utils/` | Agent class, pure agent-loop, hook registry, tool registry |
-| AI | `llm-client/` | `utils/` | Provider adapters, unified LLMClient |
-| Utilities | `utils/` | — | `runWithTimeout()`, `safePath()` |
-
-**Correspondence to Pi:**
-
-| Pi | Kea |
-|---|---|
-| `runAgentLoop()` | `agent/agent-loop.ts` |
-| `Agent` | `agent/agent.ts` |
-| `AgentSession` | `harness/agent-harness.ts` |
-| `ToolDefinition` | `harness/tools/types.ts` |
-| Extension system | `agent/hooks/` + `harness/hooks/` |
-
-## Directory Structure
+定义 LLM 协议格式。纯数据 — 无行为、无执行、无 hook。
 
 ```
-src/
-├── main.ts                           # Composition root
-│
-├── cli/
-│   ├── render.ts                     #   renderAgentEvent — pure ANSI function
-│   └── frontend.ts                   #   CliFrontend — readline I/O + permission prompt
-│
-├── harness/                          # Application layer
-│   ├── agent-harness.ts              #   AgentHarness(sessionStore, agent) — persistence
-│   ├── types.ts                      #   Project, SessionStore interfaces
-│   ├── system-prompt.ts              #   formatSystemPrompt()
-│   ├── messages.ts                   #   convertToLlm() — extensibility point
-│   ├── index.ts                      #   Public exports
-│   │
-│   ├── session/                      #   Session persistence
-│   │   ├── session.ts                #     Session — in-memory history
-│   │   ├── jsonl-storage.ts          #     JSONL read/write
-│   │   └── session-repo.ts           #     Session file management per project
-│   │
-│   ├── hooks/                        #   Built-in hook implementations
-│   │   ├── factory.ts                #     createHookRegistry(cwd) — 5 built-in hooks
-│   │   ├── permission.ts             #     PermissionHook — 3-gate permission pipeline
-│   │   ├── context-inject.ts         #     ContextInjectHook — logs working directory
-│   │   ├── log.ts                    #     LogHook + LargeOutputHook
-│   │   └── summary.ts                #     SummaryHook — tool-call count at session end
-│   │
-│   └── tools/                        #   Built-in tool implementations
-│       ├── types.ts                  #     ToolDefinition<T>, BashOperations
-│       ├── adapter.ts                #     wrapToolDefinition(def) → Tool
-│       ├── bash.ts                   #     createBashToolDefinition(cwd, ops?)
-│       ├── bash-ops.ts               #     LocalBashOperations — local spawn backend
-│       ├── files.ts                  #     createReadFileDef, createWriteFileDef, createEditFileDef
-│       ├── glob.ts                   #     createGlobDef
-│       └── factory.ts                #     createToolRegistry(cwd, hooks?) — 5 built-in tools
-│
-├── agent/                            # Kernel layer
-│   ├── agent.ts                      #   Agent class — owns history + hooks, prompt()
-│   ├── agent-loop.ts                 #   runAgentTurn() — pure function, LLM stream + tool loop
-│   ├── types.ts                      #   AgentEvent
-│   │
-│   ├── hooks/                        #   Generic hook system (types + registry only)
-│   │   ├── types.ts                  #     HookEvent, Hook<T>, HookResult, 4 event types
-│   │   └── registry.ts               #     HookRegistry — register + trigger + get()
-│   │
-│   └── tools/                        #   Generic tool system
-│       ├── types.ts                  #     Tool<T>, ToolResult
-│       └── registry.ts               #     ToolRegistry — validate, hooks, timeout, execute
-│
-├── llm-client/
-│   ├── types.ts                      #   Message, LLMResponse, LLMClient, ToolCall, ToolSchema
-│   ├── factory.ts                    #   createLLMClient() — provider auto-detection
-│   ├── client.ts                     #   mergeOptions()
-│   └── adapters/                     #   Anthropic / OpenAI / Gemini adapters
-│
-└── utils/
-    ├── timeout.ts                    #   runWithTimeout(), TimeoutError
-    └── workspace.ts                  #   safePath() — lexical workspace path guard
+Tool               { name, description, parameters: TObject }
+ToolCall           { type:"toolCall", id, name, arguments }
+Message            UserMessage | AssistantMessage | ToolResultMessage
+UserMessage        { role:"user", content: string }
+AssistantMessage   { role:"assistant", content: ContentBlock[], model, stopReason, usage?, errorMessage?, latencyMs }
+ToolResultMessage  { role:"tool", toolCallId, name, content, isError? }
+
+Context            { systemPrompt?, messages: Message[], tools?: Tool[] }
+LLMClient          { stream(ctx, options?): AsyncIterable<AssistantMessageEvent> }
 ```
 
-## Hook Lifecycle
+`LLM` 前缀的类型（`LLMClient`、`LLMOptions`、`LLMConfig`）是传输层内部细节。
+其余都是全局数据类型 — 任何包都可以从 llm-client 直接导入 `Message`、`ToolCall`、`AssistantMessage`。
 
-Four hook events fire during a single `Agent.prompt()` call:
+适配器在 `llm-client/adapters/` 中。它们把统一的 `AssistantMessageEvent` 流翻译成各 provider 的原生协议。
+`createLLMClient()` 从环境变量自动检测 provider。
 
-| Order | Event | Trigger Location | Purpose |
-|---|---|---|---|
-| ① | `user_prompt_submit` | `Agent.prompt()` | Context injection, input validation |
-| ② | `pre_tool_use` | `ToolRegistry.execute()` | Permission checks (block before execution) |
-| ③ | `post_tool_use` | `ToolRegistry.execute()` | Side effects (logging, output size warnings) |
-| ④ | `stop` | `agent-loop.ts: runAgentTurn()` | Summary, compaction, force-continue |
+### agent — 行为层
 
-**Processing model:** hooks are called in registration order. The first hook that
-returns a non-undefined result stops the chain. Hooks that want to pass through
-MUST return undefined.
+在 llm-client 类型之上添加执行逻辑。不重定义、不重导出 llm-client 类型。
 
-**Built-in hooks (registered by `createHookRegistry(cwd)`):**
+```
+AgentTool<T>  extends Tool     抽象类 — 加了 validate() + execute()
+ToolResult                     { content: string, isError: boolean }
+AgentEvent                     11 种可辨识联合事件（流式 + 生命周期）
+AgentState                     { messages, systemPrompt, isRunning, errorMessage? }
 
-| Hook | Event | Behavior |
-|---|---|---|
-| `context_inject` | ① | Logs working directory |
-| `permission` | ② | 3-gate permission pipeline (hard-deny → rule match → user prompt) |
-| `log` | ② | Prints tool name |
-| `large_output` | ③ | Warns when output > 100 KB |
-| `summary` | ④ | Prints tool-call count |
+Agent                          有状态包装器 — 持有 history，委托给 runAgentLoop
+runAgentLoop()                 纯异步生成器 — LLM 流 + 工具循环
+ToolRegistry                   存储 AgentTool，校验参数，运行 hook 管道
 
-**HookResult fields by lifecycle:**
-
-| Field | Used By | Effect |
-|---|---|---|
-| `block`, `reason` | ①, ② | Stop the chain; PreToolUse returns an error to the model |
-| `context` | ① | Inject a system message before the user message |
-| `messages` | ④ | Replace the entire message history (compaction) |
-| `forceContinue` | ④ | Inject a user message and continue the loop instead of stopping |
-
-## Agent and AgentHarness
-
-`Agent` owns the conversation and runs turns. `AgentHarness` wraps it with
-persistence:
-
-```ts
-// main.ts — initialization (once)
-const history = await sessionStore.load();
-const messages = history.length === 0
-  ? [{ role: "system", content: systemPrompt }]
-  : [...history];
-const agent = new Agent(client, toolRegistry, hooks, messages);
-const harness = new AgentHarness(sessionStore, agent);
-
-// Each user turn
-async *harness.prompt(userInput) {
-  const historyLength = agent.messages.length;
-  yield* agent.prompt(userInput);            // ①→④ hook lifecycle
-  for (let i = historyLength; ...) {
-    await sessionStore.append(agent.messages[i]); // persist new messages
-  }
-}
+Hook<T>                        通用生命周期 hook 接口
+HookRegistry                   注册 hook，按事件类型链式调用（首个非 void 返回值停止）
+HookEventUnion                 5 种事件：user_prompt_submit, pre_tool_use, post_tool_use, pre_turn, stop
+HookResult                     { block?, reason?, messages?, context?, forceContinue? }
 ```
 
-`Agent` is created once, not per-turn. Messages accumulate across turns in
-`agent.messages`. Like Pi's `Agent`, it is stateful but persistence-agnostic.
+**命名规则：** `Agent` 前缀 = 有行为。无前缀 = 纯数据 / 传输格式。
+`AgentTool extends Tool` — 前者执行，后者只是 LLM 看到的 schema。
 
-## Tool System
+Kea 没有 `AgentMessage` 和 `AgentContext`。Pi 有它们是因为 Pi 在 session 历史中存储了非 LLM 消息
+（Bash 执行记录、UI 通知等），发给 LLM 前需要过滤掉。Kea 只存 llm-client 的 `Message` 类型 — 不需要转换层。
 
-Two layers of abstraction, following Pi's pattern:
+### harness — 应用层
 
-| Layer | Type | Location | Purpose |
-|---|---|---|---|
-| Agent-kernel | `Tool<T>` | `agent/tools/types.ts` | LLM-facing schema, validation, execution interface |
-| Coding | `ToolDefinition<T>` | `harness/tools/types.ts` | Business logic, future UI rendering hooks |
+连接 agent 和外部世界。内置工具（bash、files、glob）、内置 hook（permission、log、summary）、session 持久化。
 
-`wrapToolDefinition()` adapts a `ToolDefinition` into a `Tool`:
-
-```ts
-// harness/tools/factory.ts
-wrapToolDefinition(createBashToolDefinition(cwd))  // → Tool
-wrapToolDefinition(createReadFileDefinition(cwd))   // → Tool
+```
+AgentHarness      包装 Agent + SessionStore — prompt() → 持久化
+SessionRepo       管理每个 project 的 JSONL session 文件
+SessionStore      { load(): Message[], append(msg): void }
 ```
 
-Tools in `harness/tools/` never import from `agent/`. They implement
-`ToolDefinition`, a plain interface with `name`, `description`, `parameters`,
-and `execute()`.
+Harness 从 llm-client 导入 `Message`、`Tool`、`ToolCall`（全局数据）。
+从 agent 导入 `AgentTool`、`Hook`、`HookRegistry`（行为类型）。
+绝不导入传输层类型（`LLMClient`、`Context`、`AssistantMessageEvent`）。
 
-## BashOperations
+## 数据流
 
-`BashOperations` is a swappable execution backend for the bash tool:
+一次用户对话：`CliFrontend → AgentHarness.prompt() → Agent.prompt() → runAgentLoop() → client.stream()`
 
-```ts
-// harness/tools/types.ts
-interface BashOperations {
-  exec(command: string, cwd: string, signal: AbortSignal): Promise<string>;
-}
+对话期间，11 种 `AgentEvent` 通过异步生成器流回。CLI 在流式输出期间将 stdin 切换为 raw mode，
+ESC 键通过 `agent.abort()` 取消当前 run，`AbortSignal` 经由 `LLMOptions.signal` 一路传到
+provider HTTP 请求。
+
+对话结束后，`AgentHarness` 将新消息追加到 `SessionStore`。
+
+## Abort 信号路径
+
+```
+ESC → CliFrontend → harness.abort() → agent.abort()
+  → abortController.abort()
+  → signal 经由 runAgentLoop → client.stream({ signal })
+  → 适配器 mergeSignals(timeout, signal) → HTTP 请求取消
+  → signal.aborted 检查跳过剩余工具
+  → yield agent_end → Agent.isRunning = false
 ```
 
-`LocalBashOperations` (default) spawns a local child process. Callers can
-inject SSH, Docker, or test backends through `createBashToolDefinition(cwd, ops)`.
+## Session 持久化
 
-## Key Design Decisions
+扁平 JSONL 文件，存储在 `~/.kea/projects/<project-id>/sessions/` 下。
+每行是一个 `Message`（llm-client 的可辨识联合类型）。
+`SessionRepo` 管理目录；`SessionStore` 提供 `load()` 和 `append()`。
 
-**Why ToolCall and ToolSchema live in llm-client.** They are LLM-facing
-concepts. The three LLM adapters import them from within their own layer.
-`agent/tools/types.ts` re-exports them for convenience.
+没有树结构、没有 `model_change` 条目、没有 `buildContext()`。
+这些是 Pi 为树导航和多模型 session 设计的概念。Kea 需要时再加 — 当前扁平 JSONL 足够支持线性对话。
 
-**Why hooks are split across agent/hooks/ and harness/hooks/.**
-`agent/hooks/` defines the generic system (`Hook<T>`, `HookRegistry`,
-event types). `harness/hooks/` provides concrete implementations
-(`PermissionHook`, `LogHook`, etc.) that know about coding-specific concerns.
+## 工具系统
 
-**Why hook factory is in harness/, not agent/.**
-`agent/hooks/` has no factory — the kernel layer doesn't know which hooks
-exist. `harness/hooks/factory.ts` creates the concrete set. Mirrors the
-`harness/tools/factory.ts` pattern.
+两层，遵循 Pi 的模式：
 
-**Why PermissionHook is in harness/, not agent/.**
-It knows about bash command fragments and file tools. It is a coding-specific
-policy, not generic agent infrastructure.
+`ToolDefinition<T>`（harness）— 业务逻辑。在 `harness/tools/types.ts` 中。
+纯接口：`{ name, description, parameters, execute }`。绝不从 agent 导入。
 
-**Why workspace.ts is in utils/, not harness/tools/.**
-`safePath()` is a shared utility consumed by file tools and glob tool. It is
-not a Tool — it has no schema, no execute().
+`AgentTool<T>`（agent）— schema + 校验 + 执行契约。在 `agent/tools/types.ts` 中。
+继承 llm-client 的 `Tool` 的抽象类。
 
-## Permission Pipeline
+`wrapToolDefinition(def)`（`harness/tools/adapter.ts`）桥接两层。
+`createToolRegistry(cwd, hooks?)`（`harness/tools/factory.ts`）通过工厂数组注册所有内置工具。
 
-The three-gate pipeline runs inside `PermissionHook` (a `Hook<PreToolUseEvent>`):
+## Hook 系统
 
-1. **Gate 1 — Hard Deny:** Forbidden Bash fragments (`rm -rf /`, `sudo`, etc.)
-   blocked permanently. `BashTool.execute()` repeats this check before `spawn()`.
-2. **Gate 2 — Rule Matching:** Ordered rules generate approval reasons for
-   risky Bash commands and file modifications. The final Bash rule asks for all
-   unclassified commands.
-3. **Gate 3 — User Approval:** The CLI/TUI adapter presents the request.
-   Only `y`/`yes` approves.
+通用生命周期基础设施在 `agent/hooks/`（类型 + 注册器）。
+具体实现在 `harness/hooks/`（permission、log、summary、context-inject、todo-reminder）。
 
-## Global Storage (`~/.kea/`)
+一次 prompt 触发五个事件：
+
+1. `user_prompt_submit` — Agent.prompt() — 阻止或注入上下文
+2. `pre_turn` — runAgentLoop() — LLM 流之前注入上下文
+3. `pre_tool_use` — ToolRegistry.execute() — 权限门禁
+4. `post_tool_use` — ToolRegistry.execute() — 副作用（日志）
+5. `stop` — runAgentLoop() — 替换历史、强制继续
+
+链式语义：hook 按注册顺序执行。首个非 undefined 返回值停止链条。
+Hook 失败会被捕获并以 hook 名称重新抛出，每个生命周期调用方自行决定失败策略。
+
+## 目录结构
 
 ```text
-~/.kea/
-├── settings.json
-├── history.jsonl
-└── projects/
-    └── -d-programming-kea_agent/    # Anonymous project (path-encoded from cwd)
-        ├── project.json
-        ├── memory/
-        └── sessions/
-            └── 20260721T183000_abc123.jsonl
+src/
+├── main.ts                     组合根
+├── index.ts                    公开导出
+│
+├── cli/
+│   ├── frontend.ts             CliFrontend — readline I/O、ESC 检测、权限提示
+│   └── render.ts               renderAgentEvent — 纯 ANSI 函数
+│
+├── harness/                    应用层
+│   ├── agent-harness.ts        AgentHarness(sessionStore, agent) — 持久化包装
+│   ├── types.ts                Project、SessionStore
+│   ├── system-prompt.ts        formatSystemPrompt(template, vars)
+│   ├── session/                JSONL 持久化
+│   ├── hooks/                  内置 hook 实现
+│   └── tools/                  内置工具实现 + 工厂
+│
+├── agent/                      内核层
+│   ├── agent.ts                Agent 类
+│   ├── agent-loop.ts           runAgentLoop() 纯函数
+│   ├── types.ts                AgentEvent、AgentState
+│   ├── hooks/                  通用 hook 系统（类型 + 注册器）
+│   └── tools/                  通用工具系统（AgentTool、ToolResult、ToolRegistry）
+│
+├── llm-client/                 传输层
+│   ├── types.ts                Message、Tool、ToolCall、LLMClient、Context 等
+│   ├── factory.ts              createLLMClient() — provider 自动检测
+│   └── adapters/               Anthropic、OpenAI、Gemini
+│
+└── utils/
+    ├── timeout.ts              runWithTimeout()、mergeSignals()、timeoutMilliseconds()
+    └── workspace.ts            safePath()
 ```
-
-## Design Principles
-
-- **Events ≠ Messages:** `AgentEvent` is ephemeral presentation progress;
-  `Message` is durable conversation history.
-- **Generic before Specific:** The hook system and tool registry are generic
-  kernel infrastructure. Coding-specific hooks and tools plug into them.
-- **Factory Pattern:** `createHookRegistry(cwd)` and `createToolRegistry(cwd)`
-  auto-register built-in components. Adding a new one is a factory change.
-- **Agent owns history, Harness owns persistence.** `Agent` accumulates
-  messages across turns; `AgentHarness` writes them to JSONL.

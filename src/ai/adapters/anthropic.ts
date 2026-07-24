@@ -4,24 +4,21 @@ import type {
   AssistantMessageEvent,
   ContentBlock,
   Context,
-  LLMClient,
-  LLMConfig,
-  LLMOptions,
   Message,
   StopReason,
+  StreamOptions,
   TextBlock,
   ThinkingBlock,
   Tool,
   ToolCall,
   TokenUsage,
 } from "../types.js";
-import { mergeSignals, runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
+import { mergeSignals } from "../../utils/timeout.js";
+
+const DEFAULT_OPTIONS: StreamOptions = { timeout: 120, maxTokens: 8000 };
 
 // ── Message conversion ──
 
-/** Convert internal Message[] to Anthropic's format.
- *  Group tool results as user content blocks (Anthropic requirement).
- *  AssistantMessage.content is ContentBlock[] — map each block to its Anthropic equivalent. */
 function messagesForAnthropic(messages: readonly Message[]): Record<string, unknown>[] {
   const converted: Record<string, unknown>[] = [];
   const results: Record<string, unknown>[] = [];
@@ -31,12 +28,10 @@ function messagesForAnthropic(messages: readonly Message[]): Record<string, unkn
 
   for (const message of messages) {
     if (message.role === "tool") {
-      // Tool results are grouped under a single user turn.
       results.push({ type: "tool_result", tool_use_id: message.toolCallId, content: message.content });
     } else {
       flushResults();
       if (message.role === "assistant") {
-        // v2: message.content is ContentBlock[]
         const blocks: Record<string, unknown>[] = [];
         for (const block of message.content) {
           if (block.type === "text") {
@@ -44,13 +39,11 @@ function messagesForAnthropic(messages: readonly Message[]): Record<string, unkn
           } else if (block.type === "toolCall") {
             blocks.push({ type: "tool_use", id: block.id, name: block.name, input: block.arguments });
           }
-          // thinking blocks are not re-sent to the API
         }
         if (blocks.length > 0) {
           converted.push({ role: "assistant", content: blocks });
         }
       } else {
-        // User message — content is a string
         converted.push({ role: "user", content: message.content });
       }
     }
@@ -79,19 +72,19 @@ function makeUsage(raw: Record<string, unknown> = {}): TokenUsage {
 
 // ── Adapter ──
 
-/** Anthropic implementation of the v2 stream-only LLMClient interface. */
-export class AnthropicAdapter implements LLMClient {
+export class AnthropicAdapter {
   private readonly sdk: Anthropic;
 
-  constructor(private readonly config: LLMConfig) {
-    this.sdk = new Anthropic({ apiKey: config.apiKey, ...(config.baseUrl === null ? {} : { baseURL: config.baseUrl }) });
+  constructor(apiKey: string, baseUrl?: string | null) {
+    this.sdk = new Anthropic({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) });
   }
 
   async *stream(
+    model: string,
     context: Context,
-    options?: Partial<LLMOptions>,
+    options?: Partial<StreamOptions>,
   ): AsyncIterable<AssistantMessageEvent> {
-    const opts: LLMOptions = { ...this.config.options, ...options };
+    const opts: StreamOptions = { ...DEFAULT_OPTIONS, ...options };
     const converted = messagesForAnthropic(context.messages);
     const signal = mergeSignals(opts.timeout, opts.signal);
 
@@ -101,7 +94,7 @@ export class AnthropicAdapter implements LLMClient {
       | { kind: "toolCall"; id: string; name: string; arguments: string };
 
     const started = performance.now();
-    let model = this.config.model;
+    let usedModel = model;
     let inputTokens = 0;
     let outputTokens = 0;
     let stopReason: StopReason = "stop";
@@ -110,7 +103,7 @@ export class AnthropicAdapter implements LLMClient {
     try {
       const sdkStream = await this.sdk.messages.create(
         {
-          model: this.config.model,
+          model,
           messages: converted as any,
           ...(context.systemPrompt === undefined ? {} : { system: context.systemPrompt }),
           ...(context.tools === undefined ? {} : { tools: toolsForAnthropic(context.tools) as any }),
@@ -120,16 +113,15 @@ export class AnthropicAdapter implements LLMClient {
           ...(opts.topP === undefined ? {} : { top_p: opts.topP }),
           ...(opts.stop === undefined ? {} : { stop_sequences: opts.stop }),
         } as any,
-        { timeout: timeoutMilliseconds(opts.timeout), signal },
+        { timeout: Math.ceil(opts.timeout * 1000), signal },
       );
 
       for await (const event of sdkStream as any) {
         switch (event.type) {
-          case "message_start": {
-            model = event.message?.model ?? model;
+          case "message_start":
+            usedModel = event.message?.model ?? usedModel;
             inputTokens = Number(event.message?.usage?.input_tokens ?? 0);
             break;
-          }
 
           case "content_block_start": {
             const block = event.content_block;
@@ -144,7 +136,6 @@ export class AnthropicAdapter implements LLMClient {
             } else if (block.type === "thinking") {
               pending.set(event.index, { kind: "thinking", thinking: block.thinking ?? "" });
             } else {
-              // text block (or other) — just track accumulator
               pending.set(event.index, { kind: "text", text: block.text ?? "" });
             }
             break;
@@ -173,22 +164,19 @@ export class AnthropicAdapter implements LLMClient {
               const toolCall: ToolCall = { type: "toolCall", id: block.id, name: block.name, arguments: args };
               yield { type: "toolcall_end", toolCall };
             }
-            // Capture thinking signature if present on stop event
             if (block && block.kind === "thinking" && (event as any).content_block?.signature) {
               block.signature = (event as any).content_block.signature;
             }
             break;
           }
 
-          case "message_delta": {
+          case "message_delta":
             stopReason = mapStopReason(event.delta?.stop_reason ?? event.usage?.stop_reason);
             outputTokens = Number(event.usage?.output_tokens ?? outputTokens);
             break;
-          }
         }
       }
 
-      // Build ContentBlock[] from accumulated blocks
       const contentBlocks: ContentBlock[] = [];
       for (const block of pending.values()) {
         if (block.kind === "text" && block.text.length > 0) {
@@ -200,30 +188,27 @@ export class AnthropicAdapter implements LLMClient {
         }
       }
 
-      const latencyMs = Math.round(performance.now() - started);
       yield {
         type: "done",
         message: {
           role: "assistant",
           content: contentBlocks,
-          model,
+          model: usedModel,
           usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
           stopReason,
-          latencyMs,
+          latencyMs: Math.round(performance.now() - started),
         },
       };
     } catch (err: unknown) {
-      const latencyMs = Math.round(performance.now() - started);
-      const message = err instanceof Error ? err.message : String(err);
       yield {
         type: "error",
         message: {
           role: "assistant",
           content: [],
-          model,
+          model: usedModel,
           stopReason: "error",
-          errorMessage: message,
-          latencyMs,
+          errorMessage: err instanceof Error ? err.message : String(err),
+          latencyMs: Math.round(performance.now() - started),
         },
       };
     }

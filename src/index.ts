@@ -6,6 +6,6 @@ export * from "./agent/tools/index.js";
 export * from "./harness/agent-harness.js";
 export * from "./harness/types.js";
 export * from "./harness/index.js";
-export * from "./llm-client/index.js";
+export * from "./ai/index.js";
 export * from "./utils/timeout.js";
 export * from "./utils/workspace.js";

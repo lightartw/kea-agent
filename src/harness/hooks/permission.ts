@@ -1,105 +1,62 @@
 import { blockedBashFragment } from "../tools/bash.js";
-import type { ToolCall } from "../../llm-client/types.js";
-import type { Hook, HookResult, PreToolUseEvent } from "../../agent/hooks/types.js";
-
-/** Information a presentation adapter needs to ask for one approval. */
-export interface PermissionRequest {
-  readonly call: ToolCall;
-  readonly reason: string;
-}
-
-export type PermissionRequester = (
-  request: PermissionRequest,
-) => Promise<boolean>;
-
-interface PermissionRule {
-  readonly tools: readonly string[];
-  readonly check: (arguments_: Record<string, unknown>) => boolean;
-  readonly reason: (arguments_: Record<string, unknown>) => string;
-}
-
-const RISKY_BASH_FRAGMENTS = ["rm ", "> /etc/", "chmod 777"] as const;
+import type { HookResult, PreToolUseEvent } from "../../agent/hooks/types.js";
 
 /**
- * Gate 2 rules decide which otherwise-allowed calls still need approval.
- * The final Bash rule deliberately asks for unknown commands as a safe default.
+ * Pure policy hook. Blocks hard-denied bash fragments; allows everything else.
+ * Does NOT interact with the user — the CLI renders permission-denied errors
+ * and the model can retry or adapt.
  */
-const PERMISSION_RULES: readonly PermissionRule[] = [
-  {
-    tools: ["bash"],
-    check: (arguments_) => {
-      const command = arguments_.command;
-      return typeof command === "string" &&
-        RISKY_BASH_FRAGMENTS.some((fragment) => command.includes(fragment));
-    },
-    reason: () => "Potentially destructive shell command.",
-  },
-  {
-    tools: ["bash"],
-    check: () => true,
-    reason: () =>
-      "Shell commands can modify the system or access data outside the workspace.",
-  },
-  {
-    tools: ["write_file", "edit_file"],
-    check: () => true,
-    reason: (arguments_) =>
-      `This tool will modify ${typeof arguments_.path === "string" ? arguments_.path : "a workspace file"}.`,
-  },
-];
+
+const FORBIDDEN_BASH_FRAGMENTS = [
+  "rm ",
+  "> /etc/",
+  "chmod 777",
+  "> /dev/",
+  "sudo ",
+  "shutdown",
+  "reboot",
+  "mkfs",
+  "dd ",
+] as const;
 
 function block(reason: string): HookResult {
   return { block: true, reason: `Permission denied: ${reason}` };
 }
 
-function matchingRuleReason(call: ToolCall): string | undefined {
-  for (const rule of PERMISSION_RULES) {
-    if (rule.tools.includes(call.name) && rule.check(call.arguments)) {
-      return rule.reason(call.arguments);
+function checkBash(command: unknown): HookResult | undefined {
+  if (typeof command !== "string") return block("invalid Bash command");
+
+  const forbidden = blockedBashFragment(command);
+  if (forbidden !== undefined) {
+    return block(`command contains forbidden fragment '${forbidden}'`);
+  }
+
+  for (const fragment of FORBIDDEN_BASH_FRAGMENTS) {
+    if (command.includes(fragment)) {
+      return block(
+        fragment === "rm "
+          ? "file deletion is not allowed"
+          : `command contains forbidden fragment '${fragment}'`,
+      );
     }
   }
+
   return undefined;
 }
 
 /** Applies Kea's default approval policy immediately before tool execution. */
-export class PermissionHook implements Hook<PreToolUseEvent> {
+export class PermissionHook {
   readonly name = "permission";
-  readonly eventType = "pre_tool_use";
+  readonly eventType = "pre_tool_use" as const;
 
-  /**
-   * The presentation adapter that asks the user for one approval.
-   * Defaults to always-deny. The CLI sets a real callback after construction
-   * via the HookRegistry.
-   */
-  requestPermission: PermissionRequester = async () => false;
-
-  async execute(event: PreToolUseEvent): Promise<HookResult | void> {
+  execute(event: PreToolUseEvent): HookResult | undefined {
     const { call } = event;
 
-    // Gate 1: hard-denied Bash fragments can never be approved interactively.
     if (call.name === "bash") {
-      const command = call.arguments.command;
-      if (typeof command !== "string") return block("invalid Bash command");
-
-      // Hard-denied commands never reach the approval prompt. BashTool repeats
-      // this check immediately before spawn as a final safety backstop.
-      const forbidden = blockedBashFragment(command);
-      if (forbidden !== undefined) {
-        return block(`command contains forbidden fragment '${forbidden}'`);
-      }
+      return checkBash(call.arguments.command);
     }
 
-    // Gate 2: the first matching rule determines whether and why to ask.
-    const reason = matchingRuleReason(call);
-    if (reason === undefined) return undefined;
-
-    // Gate 3: presentation adapters implement the actual CLI/TUI interaction.
-    const allowed = await this.requestPermission({ call, reason });
-    if (allowed) return undefined;
-    return block(
-      call.name === "bash"
-        ? "Bash command rejected by user"
-        : "file change rejected by user",
-    );
+    // write_file / edit_file / glob / read_file / todo_write — allowed
+    return undefined;
   }
 }

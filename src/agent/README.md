@@ -8,20 +8,26 @@ Knows nothing about concrete tools (bash, files) or presentation (CLI, TUI).
 
 ### `Agent` — [agent.ts](agent.ts)
 
-Stateful wrapper owning conversation history and system prompt.
+Stateful wrapper. Owns conversation history. StreamFn, model, and systemPrompt
+are mutable — harness changes them across turns without rebuilding the Agent.
 
 ```ts
 import { Agent } from "./agent/agent.js";
 
-const agent = new Agent(client, registry, [], "You are helpful.", hooks);
+const agent = new Agent(streamFn, model, registry, [], "You are helpful.", hooks);
 
-agent.state        // AgentState — { messages, systemPrompt, isRunning, errorMessage? }
-agent.messages     // readonly Message[]
-agent.isRunning    // boolean
+agent.state         // AgentState — { messages, systemPrompt, isRunning, errorMessage? }
+agent.messages      // readonly Message[]
+agent.isRunning     // boolean
 
-agent.prompt("hi") // AsyncIterable<AgentEvent> — one user turn through the loop
-agent.abort()      // cancel current run (ESC key → HTTP cancel + loop exit)
-agent.reset()      // clear history + error state
+// Mutable config (harness changes these across turns)
+agent.streamFn      // StreamFn — set to switch provider
+agent.model         // ModelConfig — set to switch model
+agent.systemPrompt  // string — set to rebuild prompt
+
+agent.prompt("hi")  // AsyncIterable<AgentEvent> — one user turn through the loop
+agent.abort()       // cancel current run (ESC key → HTTP cancel + loop exit)
+agent.reset()       // clear history + error state
 ```
 
 ### `runAgentLoop` — [agent-loop.ts](agent-loop.ts)
@@ -32,12 +38,13 @@ Pure function. Mutates `messages` in-place, yields typed events. Usable directly
 import { runAgentLoop } from "./agent/agent-loop.js";
 
 async function* runAgentLoop(
-  messages: Message[],        // mutated in-place
+  messages: Message[],         // mutated in-place
   systemPrompt: string,
-  client: LLMClient,
+  streamFn: StreamFn,          // (model, ctx, opts?) => AsyncIterable<AssistantMessageEvent>
+  model: ModelConfig,          // { provider, model } — routing key per turn
   registry: ToolRegistry,
   hooks?: HookRegistry,
-  signal?: AbortSignal,       // agent.abort() propagates through here
+  signal?: AbortSignal,        // agent.abort() propagates through here
 ): AsyncIterable<AgentEvent>
 ```
 
@@ -77,7 +84,7 @@ interface AgentState {
 
 ### `AgentTool<T>` — [tools/types.ts](tools/types.ts)
 
-Abstract base class for all tools. Implements `Tool` from llm-client, adds `validate()` and `execute()`.
+Abstract base class for all tools. Implements `Tool` from ai, adds `validate()` and `execute()`.
 
 ```ts
 abstract class AgentTool<T extends TObject = TObject> implements Tool {
@@ -141,8 +148,12 @@ class HookRegistry {
 Minimal:
 
 ```ts
-const client = await createLLMClient();
-const agent = new Agent(client, new ToolRegistry(), [], "You are helpful.");
+import { createStreamFn } from "./ai/factory.js";
+import { Agent } from "./agent/agent.js";
+import { ToolRegistry } from "./agent/tools/registry.js";
+
+const stream = createStreamFn();
+const agent = new Agent(stream, { provider: "anthropic", model: "claude-sonnet-5" }, new ToolRegistry(), [], "You are helpful.");
 
 for await (const event of agent.prompt("What is 2+2?")) {
   if (event.type === "text_delta") process.stdout.write(event.text);
@@ -163,7 +174,7 @@ hooks.register(new PermissionHook());
 const registry = new ToolRegistry(120, hooks);
 registry.register(new EchoTool());
 
-const agent = new Agent(client, registry, [], "You are helpful.", hooks);
+const agent = new Agent(stream, { provider: "anthropic", model: "claude-sonnet-5" }, registry, [], "You are helpful.", hooks);
 for await (const event of agent.prompt("echo 'hi'")) { /* render */ }
 ```
 
@@ -171,18 +182,18 @@ Testing with `runAgentLoop` directly (no Agent needed):
 
 ```ts
 const history: Message[] = [{ role: "user", content: "hi" }];
-const client = { async *stream() { yield { type: "done", message }; } };
+const streamFn: StreamFn = async function* () { yield { type: "done", message }; };
 
-for await (const event of runAgentLoop(history, "", client, new ToolRegistry())) {
+for await (const event of runAgentLoop(history, "", streamFn, { provider: "t", model: "m" }, new ToolRegistry())) {
   // assert on events
 }
 ```
 
 ## Dependencies
 
-Imports from llm-client:
+Imports from ai:
 
 - **Data types** (global, any package can import): `Message`, `AssistantMessage`, `ToolCall`, `Tool`
-- **Transport types** (agent-loop boundary): `LLMClient`, `Context`
+- **Transport types** (agent-loop boundary): `StreamFn`, `ModelConfig`, `Context`
 
-Never re-exports llm-client types. Consumers import `Tool` or `ToolCall` from llm-client directly.
+Never re-exports ai types. Consumers import `Tool` or `ToolCall` from ai directly.

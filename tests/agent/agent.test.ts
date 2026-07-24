@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Agent } from "../../src/agent/agent.js";
-import type { AssistantMessage, LLMClient } from "../../src/llm-client/types.js";
+import type { AssistantMessage, ModelConfig, StreamFn } from "../../src/ai/types.js";
 import { ToolRegistry } from "../../src/agent/tools/registry.js";
+
+const testModel: ModelConfig = { provider: "test", model: "test-model" };
 
 const assistantMsg: AssistantMessage = {
   role: "assistant",
@@ -14,15 +16,13 @@ const assistantMsg: AssistantMessage = {
   latencyMs: 0,
 };
 
-const client: LLMClient = {
-  async *stream() {
-    yield { type: "text_delta", text: "hello" };
-    yield { type: "done", message: assistantMsg };
-  },
+const streamFn: StreamFn = async function* () {
+  yield { type: "text_delta", text: "hello" };
+  yield { type: "done", message: assistantMsg };
 };
 
 test("Agent owns conversation history across prompts", async () => {
-  const agent = new Agent(client, new ToolRegistry(), [], "system prompt");
+  const agent = new Agent(streamFn, testModel, new ToolRegistry(), [], "system prompt");
 
   const events = [];
   for await (const event of agent.prompt("hi")) events.push(event.type);

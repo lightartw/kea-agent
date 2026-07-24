@@ -1,7 +1,7 @@
 import type { Static, TObject } from "typebox";
 import { Compile, type Validator } from "typebox/compile";
 
-import type { Tool } from "../../llm-client/types.js";
+import type { Tool } from "../../ai/types.js";
 
 /** The registry's result, returned to both the model and the terminal. */
 export interface ToolResult {
@@ -9,7 +9,7 @@ export interface ToolResult {
   readonly isError: boolean;
 }
 
-/** Agent-side tool: schema + validation + execution. Implements the llm-client Tool interface. */
+/** Agent-side tool: schema + validation + execution. Implements the ai layer Tool interface. */
 export abstract class AgentTool<TParameters extends TObject = TObject> implements Tool {
   private readonly validator: Validator;
 

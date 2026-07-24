@@ -1,6 +1,6 @@
 import { runAgentLoop } from "./agent-loop.js";
 import type { AgentEvent, AgentState } from "./types.js";
-import type { LLMClient, Message } from "../llm-client/types.js";
+import type { Message, ModelConfig, StreamFn } from "../ai/types.js";
 import type { ToolRegistry } from "./tools/registry.js";
 import type { HookRegistry } from "./hooks/registry.js";
 
@@ -11,23 +11,29 @@ interface ActiveRun {
 
 /**
  * Stateful wrapper around the pure agent loop. Owns the conversation history,
- * system prompt, and all user-prompt-level lifecycle hooks. When compaction
- * is added it will live here as a method on the same object that owns the
- * messages.
+ * system prompt, model config, and stream function. Harness mutates model and
+ * systemPrompt across turns; Agent stays the same instance for the session.
  */
 export class Agent {
   private history: Message[];
   private activeRun: ActiveRun | undefined;
   private errorMessage: string | undefined;
+  private _streamFn: StreamFn;
+  private _model: ModelConfig;
+  private _systemPrompt: string;
 
   constructor(
-    private readonly client: LLMClient,
+    streamFn: StreamFn,
+    model: ModelConfig,
     private readonly registry: ToolRegistry,
     initialMessages: readonly Message[] = [],
-    private systemPrompt = "",
+    systemPrompt = "",
     private readonly hooks?: HookRegistry,
   ) {
     this.history = [...initialMessages];
+    this._streamFn = streamFn;
+    this._model = model;
+    this._systemPrompt = systemPrompt;
   }
 
   // ── Public state ──
@@ -35,7 +41,8 @@ export class Agent {
   get state(): AgentState {
     return {
       messages: this.history,
-      systemPrompt: this.systemPrompt,
+      model: this._model,
+      systemPrompt: this._systemPrompt,
       isRunning: this.activeRun !== undefined,
       ...(this.errorMessage === undefined ? {} : { errorMessage: this.errorMessage }),
     };
@@ -48,6 +55,17 @@ export class Agent {
   get isRunning(): boolean {
     return this.activeRun !== undefined;
   }
+
+  // ── Mutable config (Harness mutates these across turns) ──
+
+  get streamFn(): StreamFn { return this._streamFn; }
+  set streamFn(f: StreamFn) { this._streamFn = f; }
+
+  get model(): ModelConfig { return this._model; }
+  set model(m: ModelConfig) { this._model = m; }
+
+  get systemPrompt(): string { return this._systemPrompt; }
+  set systemPrompt(s: string) { this._systemPrompt = s; }
 
   // ── Control ──
 
@@ -84,7 +102,7 @@ export class Agent {
         });
         if (result?.block === true) return;
         if (result?.context !== undefined) {
-          this.systemPrompt += (this.systemPrompt ? "\n" : "") + result.context;
+          this._systemPrompt += (this._systemPrompt ? "\n" : "") + result.context;
         }
       }
 
@@ -93,8 +111,9 @@ export class Agent {
       // Yield events, capturing error state from the loop
       for await (const event of runAgentLoop(
         this.history,
-        this.systemPrompt,
-        this.client,
+        this._systemPrompt,
+        this._streamFn,
+        this._model,
         this.registry,
         this.hooks,
         abortController.signal,
