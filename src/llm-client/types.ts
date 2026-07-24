@@ -1,14 +1,12 @@
 import type { TObject } from "typebox";
 
-// ── LLM-facing tool definition (thin, no execute) ──
+// ── Tool types ──
 
 export interface Tool {
   readonly name: string;
   readonly description: string;
   readonly parameters: TObject;
 }
-
-// ── Wire-format tool call ──
 
 export interface ToolCall {
   readonly type: "toolCall";
@@ -17,17 +15,53 @@ export interface ToolCall {
   readonly arguments: Record<string, unknown>;
 }
 
-export type FinishReason = "stop" | "length" | "tool_calls" | null;
+// ── Content blocks (ordered within an assistant message) ──
 
-// ── Conversation messages (no system role) ──
+export type ContentBlock = TextBlock | ThinkingBlock | ToolCall;
 
-export interface Message {
-  readonly role: "user" | "assistant" | "tool";
-  readonly content: string | null;
-  readonly toolCalls?: readonly ToolCall[];
-  readonly toolCallId?: string;
-  readonly name?: string;
+export interface TextBlock {
+  readonly type: "text";
+  readonly text: string;
 }
+
+export interface ThinkingBlock {
+  readonly type: "thinking";
+  readonly thinking: string;
+  readonly signature?: string;
+}
+
+// ── Stop reason ──
+
+export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
+
+// ── Messages (discriminated union) ──
+
+export interface UserMessage {
+  readonly role: "user";
+  readonly content: string;
+}
+
+export interface AssistantMessage {
+  readonly role: "assistant";
+  readonly content: readonly ContentBlock[];
+  readonly model: string;
+  readonly usage?: TokenUsage;
+  readonly stopReason: StopReason;
+  readonly errorMessage?: string;
+  readonly latencyMs: number;
+}
+
+export interface ToolResultMessage {
+  readonly role: "tool";
+  readonly toolCallId: string;
+  readonly name: string;
+  readonly content: string;
+  readonly isError?: boolean;
+}
+
+export type Message = UserMessage | AssistantMessage | ToolResultMessage;
+
+// ── Token usage ──
 
 export interface TokenUsage {
   readonly inputTokens: number;
@@ -35,18 +69,18 @@ export interface TokenUsage {
   readonly totalTokens: number;
 }
 
-export interface LLMResponse {
-  readonly model: string;
-  readonly content: string | null;
-  readonly toolCalls: readonly ToolCall[];
-  readonly usage: TokenUsage;
-  readonly latencyMs: number;
-  readonly finishReason: FinishReason;
-}
+// ── Streaming events ──
 
-export type LLMStreamEvent =
-  | { readonly type: "text_delta"; readonly text: string }
-  | { readonly type: "response_done"; readonly response: LLMResponse };
+export type AssistantMessageEvent =
+  | { readonly type: "text_delta";      readonly text: string }
+  | { readonly type: "thinking_delta";  readonly thinking: string }
+  | { readonly type: "toolcall_start";  readonly id: string; readonly name: string }
+  | { readonly type: "toolcall_delta";  readonly id: string; readonly argumentsDelta: string }
+  | { readonly type: "toolcall_end";    readonly toolCall: ToolCall }
+  | { readonly type: "done";            readonly message: AssistantMessage }
+  | { readonly type: "error";           readonly message: AssistantMessage };
+
+// ── Options ──
 
 export interface LLMOptions {
   readonly timeout: number;
@@ -63,7 +97,7 @@ export interface LLMConfig {
   readonly options: LLMOptions;
 }
 
-// ── Request context (replaces separate params) ──
+// ── Context ──
 
 export interface Context {
   readonly systemPrompt?: string;
@@ -71,16 +105,11 @@ export interface Context {
   readonly tools?: readonly Tool[];
 }
 
-// ── LLM client interface ──
+// ── LLM Client (stream only — no invoke) ──
 
 export interface LLMClient {
-  invoke(
-    context: Context,
-    options?: Partial<LLMOptions>,
-  ): Promise<LLMResponse>;
-
   stream(
     context: Context,
     options?: Partial<LLMOptions>,
-  ): AsyncIterable<LLMStreamEvent>;
+  ): AsyncIterable<AssistantMessageEvent>;
 }
