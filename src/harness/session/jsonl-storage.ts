@@ -17,9 +17,11 @@ export async function readJsonl(path: string): Promise<Message[]> {
   try {
     const stream = createReadStream(path, { encoding: "utf8" });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    let isFirst = true;
     for await (const line of rl) {
       if (line.trim()) {
         const raw = JSON.parse(line) as { role: string };
+        if (isFirst) { isFirst = false; messages.push(raw as Message); continue; }
         if (raw.role === "system") continue; // skip legacy system messages
         messages.push(raw as Message);
       }

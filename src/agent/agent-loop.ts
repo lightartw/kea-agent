@@ -34,7 +34,7 @@ export async function* runAgentTurn(
       ...(systemPrompt ? { systemPrompt } : {}),
       messages,
       tools: registry.schemas(),
-    } as Context;
+    };
 
     let response: LLMResponse | undefined;
     for await (const event of client.stream(ctx)) {

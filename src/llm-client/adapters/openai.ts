@@ -36,6 +36,13 @@ function messagesForOpenAI(messages: readonly Message[]): Record<string, unknown
   });
 }
 
+function toolsForOpenAI(tools: readonly Tool[]): OpenAI.Chat.Completions.ChatCompletionTool[] {
+  return tools.map((tool) => ({
+    type: "function" as const,
+    function: { name: tool.name, description: tool.description, parameters: tool.parameters as unknown as Record<string, unknown> },
+  }));
+}
+
 function optionsForOpenAI(options: LLMOptions): Record<string, unknown> {
   return {
     max_tokens: options.maxTokens,
@@ -105,7 +112,7 @@ export class OpenAIAdapter implements LLMClient {
           {
             model: this.config.model,
             messages: apiMessages as any,
-            ...(context.tools === undefined ? {} : { tools: context.tools as any }),
+            ...(context.tools === undefined ? {} : { tools: toolsForOpenAI(context.tools) }),
             ...optionsForOpenAI(opts),
           },
           { timeout, signal },
@@ -127,7 +134,7 @@ export class OpenAIAdapter implements LLMClient {
         {
           model: this.config.model,
           messages: apiMessages as any,
-          ...(context.tools === undefined ? {} : { tools: context.tools as any }),
+          ...(context.tools === undefined ? {} : { tools: toolsForOpenAI(context.tools) }),
           stream: true,
           stream_options: { include_usage: true },
           ...optionsForOpenAI(opts),
