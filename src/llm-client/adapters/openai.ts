@@ -97,11 +97,14 @@ export class OpenAIAdapter implements LLMClient {
       const opts = mergeOptions(this.config.options, options);
       const timeout = timeoutMilliseconds(opts.timeout);
       const started = performance.now();
+      const apiMessages: Record<string, unknown>[] = context.systemPrompt
+        ? [{ role: "system" as const, content: context.systemPrompt }, ...messagesForOpenAI(context.messages)]
+        : messagesForOpenAI(context.messages);
       const response = await runWithTimeout(opts.timeout, (signal) =>
         this.sdk.chat.completions.create(
           {
             model: this.config.model,
-            messages: messagesForOpenAI(context.messages) as any,
+            messages: apiMessages as any,
             ...(context.tools === undefined ? {} : { tools: context.tools as any }),
             ...optionsForOpenAI(opts),
           },
@@ -117,10 +120,13 @@ export class OpenAIAdapter implements LLMClient {
   ): AsyncIterable<LLMStreamEvent> {
       const opts = mergeOptions(this.config.options, options);
       const signal = AbortSignal.timeout(timeoutMilliseconds(opts.timeout));
+      const apiMessages: Record<string, unknown>[] = context.systemPrompt
+        ? [{ role: "system" as const, content: context.systemPrompt }, ...messagesForOpenAI(context.messages)]
+        : messagesForOpenAI(context.messages);
       const stream = await this.sdk.chat.completions.create(
         {
           model: this.config.model,
-          messages: messagesForOpenAI(context.messages) as any,
+          messages: apiMessages as any,
           ...(context.tools === undefined ? {} : { tools: context.tools as any }),
           stream: true,
           stream_options: { include_usage: true },
