@@ -1,9 +1,7 @@
 import type { Static, TObject } from "typebox";
 import { Compile, type Validator } from "typebox/compile";
 
-// Re-export LLM-facing types from the layer that owns them.
-import type { ToolCall, ToolSchema } from "../../llm-client/types.js";
-export type { ToolCall, ToolSchema };
+import type { Tool, ToolCall } from "../../llm-client/types.js";
 
 /** The registry's result, returned to both the model and the terminal. */
 export interface ToolResult {
@@ -11,8 +9,8 @@ export interface ToolResult {
   readonly isError: boolean;
 }
 
-/** A tool describes itself to the model and executes one validated call. */
-export abstract class Tool<TParameters extends TObject = TObject> {
+/** Agent-side tool: schema + validation + execution. Implements the llm-client Tool interface. */
+export abstract class AgentTool<TParameters extends TObject = TObject> implements Tool {
   private readonly validator: Validator;
 
   protected constructor(
@@ -21,17 +19,6 @@ export abstract class Tool<TParameters extends TObject = TObject> {
     readonly parameters: TParameters,
   ) {
     this.validator = Compile(parameters);
-  }
-
-  toSchema(): ToolSchema {
-    return {
-      type: "function",
-      function: {
-        name: this.name,
-        description: this.description,
-        parameters: this.parameters as Record<string, unknown>,
-      },
-    };
   }
 
   /** Keep TypeBox details with the schema that defines valid arguments. */
@@ -45,3 +32,6 @@ export abstract class Tool<TParameters extends TObject = TObject> {
     timeoutSignal: AbortSignal,
   ): Promise<string>;
 }
+
+// Re-export for consumers that only import from agent/tools
+export type { Tool, ToolCall };

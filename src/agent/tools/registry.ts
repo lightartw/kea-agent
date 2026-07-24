@@ -1,12 +1,13 @@
 import type { HookRegistry } from "../hooks/registry.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
-import { Tool, type ToolCall, type ToolResult, type ToolSchema } from "./types.js";
+import { AgentTool, type ToolCall, type ToolResult } from "./types.js";
+import type { Tool } from "../../llm-client/types.js";
 
 const ERROR_PREFIX = "Error: ";
 
 /** The single validated, hook-aware execution path for every registered tool. */
 export class ToolRegistry {
-  private readonly tools = new Map<string, Tool>();
+  private readonly tools = new Map<string, AgentTool>();
 
   constructor(
     private readonly timeout = 120,
@@ -15,7 +16,7 @@ export class ToolRegistry {
     timeoutMilliseconds(timeout);
   }
 
-  register(tool: Tool): void {
+  register(tool: AgentTool): void {
     if (this.tools.has(tool.name)) {
       throw new Error(`tool '${tool.name}' is already registered`);
     }
@@ -26,8 +27,8 @@ export class ToolRegistry {
     this.tools.delete(name);
   }
 
-  schemas(): ToolSchema[] {
-    return [...this.tools.values()].map((tool) => tool.toSchema());
+  schemas(): Tool[] {
+    return [...this.tools.values()]; // AgentTool implements Tool
   }
 
   private error(message: string): ToolResult {
