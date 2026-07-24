@@ -1,6 +1,5 @@
 import OpenAI from "openai";
 
-import { mergeOptions } from "../client.js";
 import type {
   AssistantMessageEvent,
   ContentBlock,
@@ -84,7 +83,7 @@ export class OpenAIAdapter implements LLMClient {
     context: Context,
     options?: Partial<LLMOptions>,
   ): AsyncIterable<AssistantMessageEvent> {
-    const opts = mergeOptions(this.config.options, options);
+    const opts: LLMOptions = { ...this.config.options, ...options };
     const apiMessages: Record<string, unknown>[] = context.systemPrompt
       ? [{ role: "system" as const, content: context.systemPrompt }, ...messagesForOpenAI(context.messages)]
       : messagesForOpenAI(context.messages);

@@ -1,7 +1,32 @@
-import {
-  mergeOptions,
-} from "./client.js";
 import type { LLMClient, LLMConfig, LLMOptions } from "./types.js";
+import { timeoutMilliseconds } from "../utils/timeout.js";
+
+// ── Defaults ──
+
+const DEFAULT_TIMEOUT_SECONDS = 120;
+const DEFAULT_MAX_TOKENS = 8_000;
+
+export function resolveOptions(
+  clientOptions: Partial<LLMOptions>,
+  callOptions: Partial<LLMOptions> = {},
+): LLMOptions {
+  const merged = {
+    timeout: DEFAULT_TIMEOUT_SECONDS,
+    maxTokens: DEFAULT_MAX_TOKENS,
+    ...clientOptions,
+    ...callOptions,
+  };
+  if (!Number.isFinite(merged.timeout) || merged.timeout <= 0) {
+    throw new Error("timeout must be a positive finite number");
+  }
+  timeoutMilliseconds(merged.timeout);
+  if (!Number.isInteger(merged.maxTokens) || merged.maxTokens <= 0) {
+    throw new Error("maxTokens must be a positive integer");
+  }
+  return merged;
+}
+
+// ── Provider detection ──
 
 type ProviderName = "anthropic" | "openai" | "gemini";
 
@@ -86,7 +111,7 @@ export async function createLLMClient(
     model: resolvedModel,
     apiKey: resolvedApiKey,
     baseUrl: resolvedBaseUrl,
-    options: mergeOptions(optionOverrides),
+    options: resolveOptions(optionOverrides),
   };
   switch (selected) {
     case "anthropic": {

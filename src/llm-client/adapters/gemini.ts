@@ -1,6 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
 
-import { mergeOptions } from "../client.js";
 import type {
   AssistantMessageEvent,
   ContentBlock,
@@ -14,7 +13,7 @@ import type {
   Tool,
   ToolCall,
 } from "../types.js";
-import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
+import { timeoutMilliseconds } from "../../utils/timeout.js";
 
 // ── Message conversion ──
 
@@ -113,7 +112,7 @@ export class GeminiAdapter implements LLMClient {
     context: Context,
     options?: Partial<LLMOptions>,
   ): AsyncIterable<AssistantMessageEvent> {
-    const opts = mergeOptions(this.config.options, options);
+    const opts: LLMOptions = { ...this.config.options, ...options };
     const converted = messagesForGemini(context.messages);
 
     const started = performance.now();
