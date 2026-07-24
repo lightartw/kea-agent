@@ -13,13 +13,11 @@ export class Agent {
   private readonly history: Message[];
   private active = false;
 
-  /** Settable system prompt — hooks can append to it via context return. */
-  systemPrompt = "";
-
   constructor(
     private readonly client: LLMClient,
     private readonly registry: ToolRegistry,
     initialMessages: readonly Message[] = [],
+    private systemPrompt = "",
     private readonly hooks?: HookRegistry,
   ) {
     this.history = [...initialMessages];

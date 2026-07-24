@@ -25,7 +25,7 @@ class TestHook implements Hook<PreToolUseEvent> {
 
 const event: PreToolUseEvent = {
   type: "pre_tool_use",
-  call: { id: "call-1", name: "test", arguments: {} },
+  call: { type: "toolCall", id: "call-1", name: "test", arguments: {} },
 };
 
 test("HookRegistry runs hooks in order and stops at the first block", async () => {

@@ -25,9 +25,7 @@ const client: LLMClient = {
 };
 
 test("Agent owns conversation history across prompts", async () => {
-  const agent = new Agent(client, new ToolRegistry(), [
-    { role: "system", content: "system" },
-  ]);
+  const agent = new Agent(client, new ToolRegistry(), [], "system prompt");
 
   const events = [];
   for await (const event of agent.prompt("hi")) events.push(event.type);
@@ -35,6 +33,6 @@ test("Agent owns conversation history across prompts", async () => {
   assert.deepEqual(events, ["text_delta", "turn_end"]);
   assert.deepEqual(
     agent.messages.map((message) => message.role),
-    ["system", "user", "assistant"],
+    ["user", "assistant"],
   );
 });

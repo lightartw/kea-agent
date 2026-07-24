@@ -5,7 +5,7 @@ import { createToolRegistry } from "../../../src/harness/tools/factory.js";
 
 test("createToolRegistry installs built-in tools", () => {
   assert.deepEqual(
-    createToolRegistry(process.cwd()).schemas().map((schema) => schema.function.name),
+    createToolRegistry(process.cwd()).schemas().map((schema) => schema.name),
     ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write"],
   );
 });

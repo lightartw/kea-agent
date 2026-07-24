@@ -16,7 +16,7 @@ async function execute(
   hook.requestPermission = requestPermission;
   return hook.execute({
     type: "pre_tool_use",
-    call: { id: "call-1", name, arguments: arguments_ },
+    call: { type: "toolCall", id: "call-1", name, arguments: arguments_ },
   });
 }
 
@@ -100,6 +100,7 @@ test("PermissionHook registers through the common hook interface", async () => {
   const result = await registry.trigger({
     type: "pre_tool_use",
     call: {
+      type: "toolCall",
       id: "call-1",
       name: "bash",
       arguments: { command: "pwd" },

@@ -82,10 +82,10 @@ export async function asyncMain(): Promise<void> {
     // 4. Agent — created once, holds history across turns. Like Pi's Agent
     //    class, it is stateful but persistence-agnostic.
     const history = await sessionStore.load();
-    const messages = history.length === 0
-      ? [{ role: "system" as const, content: formatSystemPrompt(CODING_SYSTEM_PROMPT, { cwd: project.workDir, date: new Date() }) }]
-      : [...history];
-    const agent = new Agent(client, toolRegistry, messages, hooks);
+    const systemPrompt = history.length === 0
+      ? formatSystemPrompt(CODING_SYSTEM_PROMPT, { cwd: project.workDir, date: new Date() })
+      : "";
+    const agent = new Agent(client, toolRegistry, history, systemPrompt, hooks);
 
     // 5. Harness — persistence layer around Agent. Like Pi's AgentSession,
     //    it holds a single Agent instance.

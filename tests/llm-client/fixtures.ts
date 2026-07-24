@@ -4,7 +4,6 @@ import type {
   LLMResponse,
   Message,
 } from "../../src/llm-client/types.js";
-import type { ToolSchema } from "../../src/llm-client/types.js";
 
 export const baseConfig: LLMConfig = {
   model: "test-model",
@@ -16,14 +15,12 @@ export const baseConfig: LLMConfig = {
 export const userMessages: Message[] = [{ role: "user", content: "hello" }];
 
 export const commonHistory: Message[] = [
-  { role: "system", content: "system one" },
-  { role: "system", content: "system two" },
   { role: "user", content: "run pwd" },
   {
     role: "assistant",
     content: null,
     toolCalls: [
-      { id: "call-1", name: "bash", arguments: { command: "pwd" } },
+      { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } },
     ],
   },
   {
@@ -33,20 +30,6 @@ export const commonHistory: Message[] = [
     content: "/tmp",
   },
 ];
-
-export const bashSchema: ToolSchema = {
-  type: "function",
-  function: {
-    name: "bash",
-    description: "Run a shell command.",
-    parameters: {
-      type: "object",
-      properties: { command: { type: "string" } },
-      required: ["command"],
-      additionalProperties: false,
-    },
-  },
-};
 
 export const textResponse: LLMResponse = {
   model: "test-model",

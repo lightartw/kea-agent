@@ -9,12 +9,12 @@ import {
   type HookResult,
   type PreToolUseEvent,
 } from "../../../src/agent/hooks/types.js";
-import { Tool } from "../../../src/agent/tools/types.js";
+import { AgentTool } from "../../../src/agent/tools/types.js";
 import { ToolRegistry } from "../../../src/agent/tools/registry.js";
 
 const parameters = Type.Object({ value: Type.String() });
 
-class EchoTool extends Tool<typeof parameters> {
+class EchoTool extends AgentTool<typeof parameters> {
   constructor(name = "echo") {
     super(name, "Echo text.", parameters);
   }
@@ -29,18 +29,18 @@ test("Registry registers, unregisters, and exports schemas", () => {
   registry.register(new EchoTool("first"));
   registry.register(new EchoTool("second"));
   registry.unregister("first");
-  assert.deepEqual(registry.schemas().map((schema) => schema.function.name), ["second"]);
+  assert.deepEqual(registry.schemas().map((schema) => schema.name), ["second"]);
 });
 
 test("Registry executes valid calls and reports invalid calls", async () => {
   const registry = new ToolRegistry();
   registry.register(new EchoTool());
-  assert.deepEqual(await registry.execute({ id: "1", name: "echo", arguments: { value: "ok" } }), {
+  assert.deepEqual(await registry.execute({ type: "toolCall", id: "1", name: "echo", arguments: { value: "ok" } }), {
     content: "ok",
     isError: false,
   });
   assert.equal(
-    (await registry.execute({ id: "2", name: "echo", arguments: {} })).isError,
+    (await registry.execute({ type: "toolCall", id: "2", name: "echo", arguments: {} })).isError,
     true,
   );
 });
@@ -54,7 +54,7 @@ test("Registry applies its global timeout", async () => {
   const registry = new ToolRegistry(0.001);
   registry.register(new HangingTool());
   assert.equal(
-    (await registry.execute({ id: "1", name: "echo", arguments: { value: "x" } })).isError,
+    (await registry.execute({ type: "toolCall", id: "1", name: "echo", arguments: { value: "x" } })).isError,
     true,
   );
 });
@@ -83,12 +83,12 @@ test("Registry validates before hooks and never executes a blocked call", async 
   registry.register(new ObservedTool());
 
   assert.equal(
-    (await registry.execute({ id: "invalid", name: "echo", arguments: {} })).isError,
+    (await registry.execute({ type: "toolCall", id: "invalid", name: "echo", arguments: {} })).isError,
     true,
   );
   assert.equal(hookCalls, 0);
 
-  const blocked = await registry.execute({ id: "valid", name: "echo", arguments: { value: "x" } });
+  const blocked = await registry.execute({ type: "toolCall", id: "valid", name: "echo", arguments: { value: "x" } });
   assert.deepEqual(blocked, { content: "Error: blocked by test", isError: true });
   assert.equal(hookCalls, 1);
   assert.equal(executions, 0);
@@ -115,7 +115,7 @@ test("Registry fails closed when a pre-tool hook throws", async () => {
   const registry = new ToolRegistry(120, hooks);
   registry.register(new ObservedTool());
 
-  const result = await registry.execute({ id: "1", name: "echo", arguments: { value: "x" } });
+  const result = await registry.execute({ type: "toolCall", id: "1", name: "echo", arguments: { value: "x" } });
   assert.equal(result.isError, true);
   assert.match(result.content, /hook 'broken' failed/);
   assert.equal(executions, 0);

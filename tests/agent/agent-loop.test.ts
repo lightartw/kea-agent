@@ -6,12 +6,13 @@ import { Type } from "typebox";
 import { runAgentTurn } from "../../src/agent/agent-loop.js";
 import type { AgentEvent } from "../../src/agent/types.js";
 import type {
+  Context,
   LLMClient,
   LLMResponse,
   LLMStreamEvent,
   Message,
 } from "../../src/llm-client/types.js";
-import { Tool } from "../../src/agent/tools/types.js";
+import { AgentTool } from "../../src/agent/tools/types.js";
 import { ToolRegistry } from "../../src/agent/tools/registry.js";
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });
@@ -32,17 +33,17 @@ function response(
 
 function clientWithStreams(
   streams: readonly (readonly LLMStreamEvent[])[],
-  beforeStream?: (messages: readonly Message[], index: number) => void,
+  beforeStream?: (context: Context, index: number) => void,
 ): LLMClient {
   let index = 0;
   return {
     async invoke() {
       return response("unused");
     },
-    async *stream(messages) {
+    async *stream(context) {
       const current = index;
       index += 1;
-      beforeStream?.(messages, current);
+      beforeStream?.(context, current);
       for (const event of streams[current] ?? []) yield event;
     },
   };
@@ -66,7 +67,7 @@ test("runAgentTurn streams text and stores one complete assistant message", asyn
   ]]);
 
   const events = await collect(
-    runAgentTurn(history, client, new ToolRegistry()),
+    runAgentTurn(history, "", client, new ToolRegistry()),
   );
 
   assert.deepEqual(events, [
@@ -79,7 +80,7 @@ test("runAgentTurn streams text and stores one complete assistant message", asyn
 
 test("runAgentTurn waits for response_done and executes tools sequentially", async () => {
   const observed: string[] = [];
-  class OrderedTool extends Tool<typeof emptyParameters> {
+  class OrderedTool extends AgentTool<typeof emptyParameters> {
     constructor(name: string) {
       super(name, `Run ${name}.`, emptyParameters);
     }
@@ -92,15 +93,15 @@ test("runAgentTurn waits for response_done and executes tools sequentially", asy
   registry.register(new OrderedTool("first"));
   registry.register(new OrderedTool("second"));
   const firstResponse = response(null, [
-    { id: "c1", name: "first", arguments: {} },
-    { id: "c2", name: "second", arguments: {} },
+    { type: "toolCall" as const, id: "c1", name: "first", arguments: {} },
+    { type: "toolCall" as const, id: "c2", name: "second", arguments: {} },
   ]);
   const finalResponse = response("finished");
   const client: LLMClient = {
     async invoke() {
       return response("unused");
     },
-    async *stream(_messages, _tools) {
+    async *stream(_context, _options) {
       if (observed.length === 0) {
         observed.push("response_done");
         yield { type: "response_done", response: firstResponse };
@@ -112,7 +113,7 @@ test("runAgentTurn waits for response_done and executes tools sequentially", asy
   };
   const history: Message[] = [{ role: "user", content: "run" }];
 
-  const events = await collect(runAgentTurn(history, client, registry));
+  const events = await collect(runAgentTurn(history, "", client, registry));
 
   assert.deepEqual(observed, ["response_done", "first", "second"]);
   assert.deepEqual(events.map((event) => event.type), [
@@ -130,7 +131,7 @@ test("runAgentTurn waits for response_done and executes tools sequentially", asy
 });
 
 test("tool results are in history before the next model stream", async () => {
-  class NoopTool extends Tool<typeof emptyParameters> {
+  class NoopTool extends AgentTool<typeof emptyParameters> {
     constructor() {
       super("noop", "Run noop.", emptyParameters);
     }
@@ -146,18 +147,18 @@ test("tool results are in history before the next model stream", async () => {
       [{
         type: "response_done",
         response: response(null, [
-          { id: "c1", name: "noop", arguments: {} },
+          { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} },
         ]),
       }],
       [{ type: "response_done", response: response(null) }],
     ],
-    (messages, index) => {
-      if (index === 1) secondHistory = [...messages];
+    (context, index) => {
+      if (index === 1) secondHistory = [...context.messages];
     },
   );
   const history: Message[] = [{ role: "user", content: "run" }];
 
-  await collect(runAgentTurn(history, client, registry));
+  await collect(runAgentTurn(history, "", client, registry));
 
   assert.deepEqual(secondHistory?.at(-1), {
     role: "tool",
@@ -169,7 +170,7 @@ test("tool results are in history before the next model stream", async () => {
 });
 
 test("Registry failures are emitted and returned to the model", async () => {
-  const missingCall = { id: "c1", name: "missing", arguments: {} };
+  const missingCall = { type: "toolCall" as const, id: "c1", name: "missing", arguments: {} };
   const client = clientWithStreams([
     [{ type: "response_done", response: response(null, [missingCall]) }],
     [{ type: "response_done", response: response("recovered") }],
@@ -177,7 +178,7 @@ test("Registry failures are emitted and returned to the model", async () => {
   const history: Message[] = [{ role: "user", content: "run" }];
 
   const events = await collect(
-    runAgentTurn(history, client, new ToolRegistry()),
+    runAgentTurn(history, "", client, new ToolRegistry()),
   );
 
   const toolEnd = events.find((event) => event.type === "tool_end");

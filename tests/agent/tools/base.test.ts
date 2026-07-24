@@ -3,11 +3,11 @@ import test from "node:test";
 
 import { Type, type Static } from "typebox";
 
-import { Tool } from "../../../src/agent/tools/types.js";
+import { AgentTool } from "../../../src/agent/tools/types.js";
 
 const parameters = Type.Object({ value: Type.String() });
 
-class EchoTool extends Tool<typeof parameters> {
+class EchoTool extends AgentTool<typeof parameters> {
   constructor() {
     super("echo", "Echo text.", parameters);
   }
@@ -17,9 +17,9 @@ class EchoTool extends Tool<typeof parameters> {
   }
 }
 
-test("Tool exports its function schema", () => {
-  assert.deepEqual(new EchoTool().toSchema(), {
-    type: "function",
-    function: { name: "echo", description: "Echo text.", parameters },
-  });
+test("Tool exposes name, description, and parameters", () => {
+  const tool = new EchoTool();
+  assert.equal(tool.name, "echo");
+  assert.equal(tool.description, "Echo text.");
+  assert.equal(tool.parameters, parameters);
 });

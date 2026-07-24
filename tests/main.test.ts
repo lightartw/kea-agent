@@ -29,7 +29,7 @@ test("renderAgentEvent writes text deltas without repeating turn content", () =>
 test("renderAgentEvent clearly separates tool calls and result previews", () => {
   const logs: string[] = [];
   const log = (text: string): void => { logs.push(text); };
-  const call = { id: "c1", name: "bash", arguments: { command: "pwd" } };
+  const call = { type: "toolCall" as const, id: "c1", name: "bash", arguments: { command: "pwd" } };
 
   renderAgentEvent({ type: "tool_start", call }, () => undefined, log);
   renderAgentEvent(
@@ -48,7 +48,7 @@ test("renderAgentEvent clearly separates tool calls and result previews", () => 
 
 test("renderAgentEvent labels failed tools as errors", () => {
   const logs: string[] = [];
-  const call = { id: "c1", name: "bash", arguments: { command: "bad" } };
+  const call = { type: "toolCall" as const, id: "c1", name: "bash", arguments: { command: "bad" } };
 
   renderAgentEvent(
     {
