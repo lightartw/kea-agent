@@ -1,7 +1,8 @@
 import type {
+  AssistantMessage,
+  ContentBlock,
   LLMClient,
   LLMConfig,
-  LLMResponse,
   Message,
 } from "../../src/llm-client/types.js";
 
@@ -18,10 +19,12 @@ export const commonHistory: Message[] = [
   { role: "user", content: "run pwd" },
   {
     role: "assistant",
-    content: null,
-    toolCalls: [
+    content: [
       { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } },
     ],
+    model: "test-model",
+    stopReason: "toolUse",
+    latencyMs: 0,
   },
   {
     role: "tool",
@@ -31,22 +34,27 @@ export const commonHistory: Message[] = [
   },
 ];
 
-export const textResponse: LLMResponse = {
-  model: "test-model",
-  content: "ok",
-  toolCalls: [],
-  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-  latencyMs: 0,
-  finishReason: "stop",
-};
+export function makeAssistantMessage(
+  content: ContentBlock[],
+  overrides: Partial<Pick<AssistantMessage, "model" | "stopReason" | "latencyMs">> = {},
+): AssistantMessage {
+  return {
+    role: "assistant",
+    content,
+    model: overrides.model ?? "test-model",
+    stopReason: overrides.stopReason ?? "stop",
+    latencyMs: overrides.latencyMs ?? 0,
+  };
+}
+
+export const textMessage: AssistantMessage = makeAssistantMessage([
+  { type: "text", text: "ok" },
+]);
 
 export const fakeClient: LLMClient = {
-  async invoke() {
-    return textResponse;
-  },
   async *stream() {
     yield { type: "text_delta", text: "ok" };
-    yield { type: "response_done", response: textResponse };
+    yield { type: "done", message: textMessage };
   },
 };
 

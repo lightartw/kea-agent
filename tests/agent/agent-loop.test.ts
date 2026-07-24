@@ -6,10 +6,11 @@ import { Type } from "typebox";
 import { runAgentTurn } from "../../src/agent/agent-loop.js";
 import type { AgentEvent } from "../../src/agent/types.js";
 import type {
+  AssistantMessage,
+  AssistantMessageEvent,
+  ContentBlock,
   Context,
   LLMClient,
-  LLMResponse,
-  LLMStreamEvent,
   Message,
 } from "../../src/llm-client/types.js";
 import { AgentTool } from "../../src/agent/tools/types.js";
@@ -17,29 +18,32 @@ import { ToolRegistry } from "../../src/agent/tools/registry.js";
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 
-function response(
-  content: string | null,
-  toolCalls: LLMResponse["toolCalls"] = [],
-): LLMResponse {
+function assistantMsg(
+  text: string,
+  extraContent: ContentBlock[] = [],
+): AssistantMessage {
+  const content: ContentBlock[] = [];
+  if (text.length > 0) {
+    content.push({ type: "text", text });
+  }
+  content.push(...extraContent);
+  const hasToolCalls = extraContent.some((block) => block.type === "toolCall");
   return {
-    model: "test-model",
+    role: "assistant",
     content,
-    toolCalls,
+    model: "test-model",
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    stopReason: hasToolCalls ? "toolUse" : "stop",
     latencyMs: 0,
-    finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
   };
 }
 
 function clientWithStreams(
-  streams: readonly (readonly LLMStreamEvent[])[],
+  streams: readonly (readonly AssistantMessageEvent[])[],
   beforeStream?: (context: Context, index: number) => void,
 ): LLMClient {
   let index = 0;
   return {
-    async invoke() {
-      return response("unused");
-    },
     async *stream(context) {
       const current = index;
       index += 1;
@@ -58,12 +62,12 @@ async function collect(
 }
 
 test("runAgentTurn streams text and stores one complete assistant message", async () => {
-  const final = response("hello");
+  const final = assistantMsg("hello");
   const history: Message[] = [{ role: "user", content: "hi" }];
   const client = clientWithStreams([[
     { type: "text_delta", text: "hel" },
     { type: "text_delta", text: "lo" },
-    { type: "response_done", response: final },
+    { type: "done", message: final },
   ]]);
 
   const events = await collect(
@@ -73,12 +77,12 @@ test("runAgentTurn streams text and stores one complete assistant message", asyn
   assert.deepEqual(events, [
     { type: "text_delta", text: "hel" },
     { type: "text_delta", text: "lo" },
-    { type: "turn_end", response: final },
+    { type: "turn_end", message: final },
   ]);
-  assert.deepEqual(history.at(-1), { role: "assistant", content: "hello" });
+  assert.deepEqual(history.at(-1), final);
 });
 
-test("runAgentTurn waits for response_done and executes tools sequentially", async () => {
+test("runAgentTurn streams and executes tools sequentially", async () => {
   const observed: string[] = [];
   class OrderedTool extends AgentTool<typeof emptyParameters> {
     constructor(name: string) {
@@ -92,22 +96,21 @@ test("runAgentTurn waits for response_done and executes tools sequentially", asy
   const registry = new ToolRegistry();
   registry.register(new OrderedTool("first"));
   registry.register(new OrderedTool("second"));
-  const firstResponse = response(null, [
-    { type: "toolCall" as const, id: "c1", name: "first", arguments: {} },
-    { type: "toolCall" as const, id: "c2", name: "second", arguments: {} },
-  ]);
-  const finalResponse = response("finished");
+  const tc1 = { type: "toolCall" as const, id: "c1", name: "first", arguments: {} };
+  const tc2 = { type: "toolCall" as const, id: "c2", name: "second", arguments: {} };
+  const finalMsg = assistantMsg("finished");
   const client: LLMClient = {
-    async invoke() {
-      return response("unused");
-    },
     async *stream(_context, _options) {
       if (observed.length === 0) {
-        observed.push("response_done");
-        yield { type: "response_done", response: firstResponse };
+        observed.push("done");
+        yield { type: "toolcall_start", id: "c1", name: "first" };
+        yield { type: "toolcall_end", toolCall: tc1 };
+        yield { type: "toolcall_start", id: "c2", name: "second" };
+        yield { type: "toolcall_end", toolCall: tc2 };
+        yield { type: "done", message: assistantMsg("", [tc1, tc2]) };
       } else {
         yield { type: "text_delta", text: "finished" };
-        yield { type: "response_done", response: finalResponse };
+        yield { type: "done", message: finalMsg };
       }
     },
   };
@@ -115,8 +118,12 @@ test("runAgentTurn waits for response_done and executes tools sequentially", asy
 
   const events = await collect(runAgentTurn(history, "", client, registry));
 
-  assert.deepEqual(observed, ["response_done", "first", "second"]);
+  assert.deepEqual(observed, ["done", "first", "second"]);
   assert.deepEqual(events.map((event) => event.type), [
+    "toolcall_start",
+    "toolcall_end",
+    "toolcall_start",
+    "toolcall_end",
     "tool_start",
     "tool_end",
     "tool_start",
@@ -124,6 +131,10 @@ test("runAgentTurn waits for response_done and executes tools sequentially", asy
     "text_delta",
     "turn_end",
   ]);
+  assert.deepEqual(
+    events.at(-1),
+    { type: "turn_end", message: finalMsg },
+  );
   assert.deepEqual(
     history.map((message) => message.role),
     ["user", "assistant", "tool", "tool", "assistant"],
@@ -141,16 +152,16 @@ test("tool results are in history before the next model stream", async () => {
   }
   const registry = new ToolRegistry();
   registry.register(new NoopTool());
+  const tc = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
   let secondHistory: readonly Message[] | undefined;
   const client = clientWithStreams(
     [
-      [{
-        type: "response_done",
-        response: response(null, [
-          { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} },
-        ]),
-      }],
-      [{ type: "response_done", response: response(null) }],
+      [
+        { type: "toolcall_start", id: "c1", name: "noop" },
+        { type: "toolcall_end", toolCall: tc },
+        { type: "done", message: assistantMsg("", [tc]) },
+      ],
+      [{ type: "done", message: assistantMsg("") }],
     ],
     (context, index) => {
       if (index === 1) secondHistory = [...context.messages];
@@ -166,14 +177,18 @@ test("tool results are in history before the next model stream", async () => {
     name: "noop",
     content: "ok",
   });
-  assert.deepEqual(history.at(-1), { role: "assistant", content: "" });
+  assert.deepEqual(history.at(-1), assistantMsg(""));
 });
 
 test("Registry failures are emitted and returned to the model", async () => {
   const missingCall = { type: "toolCall" as const, id: "c1", name: "missing", arguments: {} };
   const client = clientWithStreams([
-    [{ type: "response_done", response: response(null, [missingCall]) }],
-    [{ type: "response_done", response: response("recovered") }],
+    [
+      { type: "toolcall_start", id: "c1", name: "missing" },
+      { type: "toolcall_end", toolCall: missingCall },
+      { type: "done", message: assistantMsg("", [missingCall]) },
+    ],
+    [{ type: "done", message: assistantMsg("recovered") }],
   ]);
   const history: Message[] = [{ role: "user", content: "run" }];
 

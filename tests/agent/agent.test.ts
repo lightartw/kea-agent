@@ -2,25 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Agent } from "../../src/agent/agent.js";
-import type { LLMClient, LLMResponse } from "../../src/llm-client/types.js";
+import type { AssistantMessage, LLMClient } from "../../src/llm-client/types.js";
 import { ToolRegistry } from "../../src/agent/tools/registry.js";
 
-const response: LLMResponse = {
+const assistantMsg: AssistantMessage = {
+  role: "assistant",
+  content: [{ type: "text", text: "hello" }],
   model: "test-model",
-  content: "hello",
-  toolCalls: [],
   usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+  stopReason: "stop",
   latencyMs: 0,
-  finishReason: "stop",
 };
 
 const client: LLMClient = {
-  async invoke() {
-    return response;
-  },
   async *stream() {
-    yield { type: "text_delta", text: "hello" } as const;
-    yield { type: "response_done", response } as const;
+    yield { type: "text_delta", text: "hello" };
+    yield { type: "done", message: assistantMsg };
   },
 };
 

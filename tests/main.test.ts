@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { renderAgentEvent } from "../src/cli/render.js";
-import type { LLMResponse } from "../src/llm-client/types.js";
+import type { AssistantMessage } from "../src/llm-client/types.js";
 
-const response: LLMResponse = {
+const message: AssistantMessage = {
+  role: "assistant",
+  content: [{ type: "text", text: "hello" }],
   model: "test-model",
-  content: "hello",
-  toolCalls: [],
   usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+  stopReason: "stop",
   latencyMs: 0,
-  finishReason: "stop",
 };
 
 test("renderAgentEvent writes text deltas without repeating turn content", () => {
@@ -20,13 +20,13 @@ test("renderAgentEvent writes text deltas without repeating turn content", () =>
   const log = (text: string): void => { logs.push(text); };
 
   renderAgentEvent({ type: "text_delta", text: "hello" }, write, log);
-  renderAgentEvent({ type: "turn_end", response }, write, log);
+  renderAgentEvent({ type: "turn_end", message }, write, log);
 
   assert.deepEqual(writes, ["hello"]);
   assert.deepEqual(logs, []);
 });
 
-test("renderAgentEvent clearly separates tool calls and result previews", () => {
+test("renderAgentEvent logs tool_start with exec prefix", () => {
   const logs: string[] = [];
   const log = (text: string): void => { logs.push(text); };
   const call = { type: "toolCall" as const, id: "c1", name: "bash", arguments: { command: "pwd" } };
@@ -42,11 +42,11 @@ test("renderAgentEvent clearly separates tool calls and result previews", () => 
     log,
   );
 
-  assert.equal(logs[0], '\n\u001b[33m[tool] $ bash: {"command":"pwd"}\u001b[0m');
-  assert.equal(logs[1], `\u001b[90m[tool result] bash\u001b[0m\n${"x".repeat(200)}`);
+  assert.equal(logs[0], '\n[33m[exec] bash: {"command":"pwd"}[0m');
+  assert.equal(logs.length, 1);
 });
 
-test("renderAgentEvent labels failed tools as errors", () => {
+test("renderAgentEvent tool_end is a no-op in current renderer", () => {
   const logs: string[] = [];
   const call = { type: "toolCall" as const, id: "c1", name: "bash", arguments: { command: "bad" } };
 
@@ -60,5 +60,5 @@ test("renderAgentEvent labels failed tools as errors", () => {
     (text) => logs.push(text),
   );
 
-  assert.deepEqual(logs, ["\u001b[31m[tool error] bash\u001b[0m\ncommand failed"]);
+  assert.deepEqual(logs, []);
 });

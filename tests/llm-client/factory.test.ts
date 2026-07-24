@@ -24,7 +24,6 @@ test("automatic detection creates the selected client", async () => {
     },
   );
 
-  assert.equal(typeof client.invoke, "function");
   assert.equal(typeof client.stream, "function");
 });
 
@@ -44,7 +43,7 @@ test("explicit provider and values override environment detection", async () => 
     },
   );
 
-  assert.equal(typeof client.invoke, "function");
+  assert.equal(typeof client.stream, "function");
 });
 
 test("an explicit null base URL disables the environment override", async () => {
