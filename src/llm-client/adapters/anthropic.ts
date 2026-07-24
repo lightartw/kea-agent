@@ -142,6 +142,7 @@ export class AnthropicAdapter implements LLMClient {
                 name: block.name,
                 arguments: Object.keys(block.input ?? {}).length ? JSON.stringify(block.input) : "",
               });
+              yield { type: "toolcall_start", id: block.id, name: block.name };
             } else if (block.type === "thinking") {
               pending.set(event.index, { kind: "thinking", thinking: block.thinking ?? "" });
             } else {
