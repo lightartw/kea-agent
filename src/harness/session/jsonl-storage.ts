@@ -19,7 +19,9 @@ export async function readJsonl(path: string): Promise<Message[]> {
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
     for await (const line of rl) {
       if (line.trim()) {
-        messages.push(JSON.parse(line) as Message);
+        const raw = JSON.parse(line) as { role: string };
+        if (raw.role === "system") continue; // skip legacy system messages
+        messages.push(raw as Message);
       }
     }
   } catch (error) {

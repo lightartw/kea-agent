@@ -1,4 +1,5 @@
 import type {
+  Context,
   LLMClient,
   LLMResponse,
   Message,
@@ -14,6 +15,7 @@ import type { ToolRegistry } from "./tools/registry.js";
  */
 export async function* runAgentTurn(
   messages: Message[],
+  systemPrompt: string,
   client: LLMClient,
   registry: ToolRegistry,
   hooks?: HookRegistry,
@@ -27,8 +29,15 @@ export async function* runAgentTurn(
       }
     }
 
+    // Build Context
+    const ctx: Context = {
+      ...(systemPrompt ? { systemPrompt } : {}),
+      messages,
+      tools: registry.schemas(),
+    } as Context;
+
     let response: LLMResponse | undefined;
-    for await (const event of client.stream(messages, registry.schemas())) {
+    for await (const event of client.stream(ctx)) {
       if (event.type === "text_delta") {
         yield event;
       } else {

@@ -30,9 +30,9 @@ export class SessionRepo {
     const messages: Message[] = [];
     // Write a header line so the file exists.
     await appendJsonl(path, {
-      role: "system",
+      role: "user",
       content: `session:${id}`,
-    } as Message);
+    });
     return {
       append: async (message: Message) => {
         messages.push(message);

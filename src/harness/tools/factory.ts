@@ -1,5 +1,5 @@
 import type { HookRegistry } from "../../agent/hooks/registry.js";
-import type { Tool } from "../../agent/tools/types.js";
+import type { AgentTool } from "../../agent/tools/types.js";
 import { ToolRegistry } from "../../agent/tools/registry.js";
 import { wrapToolDefinition } from "./adapter.js";
 import { createBashToolDefinition } from "./bash.js";
@@ -11,7 +11,7 @@ import {
 import { createGlobDefinition } from "./glob.js";
 import { createTodoWriteDefinition } from "./todo-write.js";
 
-type ToolFactory = (workspace: string) => Tool;
+type ToolFactory = (workspace: string) => AgentTool;
 
 const BUILTIN_FACTORIES: readonly ToolFactory[] = [
   (workspace) => wrapToolDefinition(createBashToolDefinition(workspace)),

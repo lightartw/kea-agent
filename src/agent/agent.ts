@@ -13,6 +13,9 @@ export class Agent {
   private readonly history: Message[];
   private active = false;
 
+  /** Settable system prompt — hooks can append to it via context return. */
+  systemPrompt = "";
+
   constructor(
     private readonly client: LLMClient,
     private readonly registry: ToolRegistry,
@@ -41,11 +44,11 @@ export class Agent {
         });
         if (result?.block === true) return;
         if (result?.context !== undefined) {
-          this.history.push({ role: "system", content: result.context });
+          this.systemPrompt += (this.systemPrompt ? "\n" : "") + result.context;
         }
       }
       this.history.push({ role: "user", content: input });
-      yield* runAgentTurn(this.history, this.client, this.registry, this.hooks);
+      yield* runAgentTurn(this.history, this.systemPrompt, this.client, this.registry, this.hooks);
     } finally {
       this.active = false;
     }

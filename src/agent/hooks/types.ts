@@ -1,5 +1,5 @@
-import type { Message } from "../../llm-client/types.js";
-import type { ToolCall, ToolResult } from "../tools/types.js";
+import type { Message, ToolCall } from "../../llm-client/types.js";
+import type { ToolResult } from "../tools/types.js";
 
 /**
  * Hook lifecycle:

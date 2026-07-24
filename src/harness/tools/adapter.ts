@@ -1,6 +1,6 @@
 import type { Static, TObject } from "typebox";
 
-import { Tool } from "../../agent/tools/types.js";
+import { AgentTool } from "../../agent/tools/types.js";
 import type { ToolDefinition } from "./types.js";
 
 /**
@@ -8,7 +8,7 @@ import type { ToolDefinition } from "./types.js";
  * execution to a ToolDefinition. Schema generation and validation stay on the
  * Tool base class; the adapter only bridges execute().
  */
-class AdapterTool<T extends TObject> extends Tool<T> {
+class AdapterTool<T extends TObject> extends AgentTool<T> {
   constructor(private readonly def: ToolDefinition<T>) {
     super(def.name, def.description, def.parameters);
   }
@@ -27,6 +27,6 @@ class AdapterTool<T extends TObject> extends Tool<T> {
  */
 export function wrapToolDefinition<T extends TObject>(
   definition: ToolDefinition<T>,
-): Tool<T> {
+): AgentTool<T> {
   return new AdapterTool(definition);
 }
