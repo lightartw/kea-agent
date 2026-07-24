@@ -1,15 +1,17 @@
-/** The OpenAI-style definition sent to every LLM provider. */
-export interface ToolSchema {
-  readonly type: "function";
-  readonly function: {
-    readonly name: string;
-    readonly description: string;
-    readonly parameters: Record<string, unknown>;
-  };
+import type { TObject } from "typebox";
+
+// ── LLM-facing tool definition (thin, no execute) ──
+
+export interface Tool {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: TObject;
 }
 
-/** A model request for the registry to run one tool. */
+// ── Wire-format tool call ──
+
 export interface ToolCall {
+  readonly type: "toolCall";
   readonly id: string;
   readonly name: string;
   readonly arguments: Record<string, unknown>;
@@ -17,8 +19,10 @@ export interface ToolCall {
 
 export type FinishReason = "stop" | "length" | "tool_calls" | null;
 
+// ── Conversation messages (no system role) ──
+
 export interface Message {
-  readonly role: "system" | "user" | "assistant" | "tool";
+  readonly role: "user" | "assistant" | "tool";
   readonly content: string | null;
   readonly toolCalls?: readonly ToolCall[];
   readonly toolCallId?: string;
@@ -59,16 +63,24 @@ export interface LLMConfig {
   readonly options: LLMOptions;
 }
 
+// ── Request context (replaces separate params) ──
+
+export interface Context {
+  readonly systemPrompt?: string;
+  readonly messages: readonly Message[];
+  readonly tools?: readonly Tool[];
+}
+
+// ── LLM client interface ──
+
 export interface LLMClient {
   invoke(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
+    context: Context,
     options?: Partial<LLMOptions>,
   ): Promise<LLMResponse>;
 
   stream(
-    messages: readonly Message[],
-    tools?: readonly ToolSchema[],
+    context: Context,
     options?: Partial<LLMOptions>,
   ): AsyncIterable<LLMStreamEvent>;
 }
