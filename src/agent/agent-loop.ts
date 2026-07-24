@@ -1,8 +1,8 @@
 import type {
   Context,
   LLMClient,
-  LLMResponse,
   Message,
+  ToolCall,
 } from "../llm-client/types.js";
 import type { HookRegistry } from "./hooks/registry.js";
 import type { AgentEvent } from "./types.js";
@@ -21,7 +21,7 @@ export async function* runAgentTurn(
   hooks?: HookRegistry,
 ): AsyncIterable<AgentEvent> {
   while (true) {
-    // ④ pre_turn — before LLM stream, hooks can inject context.
+    // pre_turn — before LLM stream, hooks can inject context.
     if (hooks !== undefined) {
       const result = await hooks.trigger({ type: "pre_turn" });
       if (result?.context !== undefined) {
@@ -36,53 +36,64 @@ export async function* runAgentTurn(
       tools: registry.schemas(),
     };
 
-    let response: LLMResponse | undefined;
+    const toolCalls: ToolCall[] = [];
+
+    // Stream consumption loop
     for await (const event of client.stream(ctx)) {
-      if (event.type === "text_delta") {
-        yield event;
-      } else {
-        response = event.response;
-      }
-    }
-
-    if (response === undefined) {
-      throw new Error("LLM stream ended without response_done");
-    }
-
-    const assistantMessage: Message =
-      response.toolCalls.length > 0
-        ? {
-            role: "assistant",
-            content: response.content,
-            toolCalls: response.toolCalls,
+      switch (event.type) {
+        case "text_delta":
+          yield { type: "text_delta", text: event.text };
+          break;
+        case "thinking_delta":
+          yield { type: "thinking_delta", thinking: event.thinking };
+          break;
+        case "toolcall_start":
+          yield { type: "toolcall_start", id: event.id, name: event.name };
+          break;
+        case "toolcall_delta":
+          yield { type: "toolcall_delta", id: event.id, argumentsDelta: event.argumentsDelta };
+          break;
+        case "toolcall_end":
+          toolCalls.push(event.toolCall);
+          yield { type: "toolcall_end", toolCall: event.toolCall };
+          break;
+        case "done": {
+          const message = event.message;
+          messages.push(message); // AssistantMessage goes directly into history
+          if (toolCalls.length === 0) {
+            // stop hook
+            if (hooks !== undefined) {
+              const result = await hooks.trigger({
+                type: "stop",
+                messages: [...messages],
+              });
+              if (result?.messages !== undefined) {
+                messages.length = 0;
+                messages.push(...result.messages);
+              }
+              if (result?.forceContinue !== undefined) {
+                messages.push({
+                  role: "user",
+                  content: result.forceContinue,
+                });
+                continue;
+              }
+            }
+            yield { type: "turn_end", message };
+            return;
           }
-        : { role: "assistant", content: response.content ?? "" };
-    messages.push(assistantMessage);
-
-    if (response.toolCalls.length === 0) {
-      // ⑤ Stop — before turn_end
-      if (hooks !== undefined) {
-        const result = await hooks.trigger({
-          type: "stop",
-          messages: [...messages],
-        });
-        if (result?.messages !== undefined) {
-          messages.length = 0;
-          messages.push(...result.messages);
+          break; // fall through to tool execution
         }
-        if (result?.forceContinue !== undefined) {
-          messages.push({
-            role: "user",
-            content: result.forceContinue,
-          });
-          continue;
+        case "error": {
+          messages.push(event.message);
+          yield { type: "turn_end", message: event.message };
+          return;
         }
       }
-      yield { type: "turn_end", response };
-      return;
     }
 
-    for (const call of response.toolCalls) {
+    // Execute tools
+    for (const call of toolCalls) {
       yield { type: "tool_start", call };
       const result = await registry.execute(call);
       messages.push({
