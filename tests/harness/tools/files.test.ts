@@ -4,12 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import {
-  createEditFileDefinition,
-  createReadFileDefinition,
-  createWriteFileDefinition,
-} from "../../../src/harness/tools/files.js";
-import { createGlobDefinition } from "../../../src/harness/tools/glob.js";
+import { ReadFileTool, WriteFileTool, EditFileTool } from "../../../src/harness/tools/files.js";
+import { GlobTool } from "../../../src/harness/tools/glob.js";
 
 function signal(): AbortSignal {
   return new AbortController().signal;
@@ -18,9 +14,9 @@ function signal(): AbortSignal {
 test("file tools stay in the workspace and edit content", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "kea-tools-"));
   try {
-    const write = createWriteFileDefinition(workspace);
-    const read = createReadFileDefinition(workspace);
-    const edit = createEditFileDefinition(workspace);
+    const write = new WriteFileTool(workspace);
+    const read = new ReadFileTool(workspace);
+    const edit = new EditFileTool(workspace);
 
     assert.equal(
       await write.execute({ path: "nested/example.txt", content: "first\nsecond\nthird" }, signal()),
@@ -47,8 +43,8 @@ test("file tools stay in the workspace and edit content", async () => {
 test("GlobTool returns workspace-relative matches", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "kea-tools-"));
   try {
-    await createWriteFileDefinition(workspace).execute({ path: "nested/example.txt", content: "ok" }, signal());
-    assert.equal(await createGlobDefinition(workspace).execute({ pattern: "**/*.txt" }, signal()), "nested/example.txt");
+    await new WriteFileTool(workspace).execute({ path: "nested/example.txt", content: "ok" }, signal());
+    assert.equal(await new GlobTool(workspace).execute({ pattern: "**/*.txt" }, signal()), "nested/example.txt");
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

@@ -1,19 +1,17 @@
 import { GoogleGenAI } from "@google/genai";
 
+import type { Adapter, ResolvedOptions } from "../factory.js";
 import type {
   AssistantMessageEvent,
   ContentBlock,
   Context,
   Message,
   StopReason,
-  StreamOptions,
   TextBlock,
   Tool,
   ToolCall,
 } from "../types.js";
 import { mergeSignals } from "../../utils/timeout.js";
-
-const DEFAULT_OPTIONS: StreamOptions = { timeout: 120, maxTokens: 8000 };
 
 // ── Message conversion ──
 
@@ -49,7 +47,7 @@ function messagesForGemini(messages: readonly Message[]) {
 function configForGemini(
   system: string | undefined,
   tools: readonly Tool[] | undefined,
-  options: StreamOptions,
+  options: ResolvedOptions,
   signal: AbortSignal,
 ): Record<string, unknown> {
   return {
@@ -92,7 +90,7 @@ function extractUsage(response: any) {
 
 // ── Adapter ──
 
-export class GeminiAdapter {
+export class GeminiAdapter implements Adapter {
   private readonly sdk: GoogleGenAI;
 
   constructor(apiKey: string, baseUrl?: string | null) {
@@ -105,9 +103,8 @@ export class GeminiAdapter {
   async *stream(
     model: string,
     context: Context,
-    options?: Partial<StreamOptions>,
+    options: ResolvedOptions,
   ): AsyncIterable<AssistantMessageEvent> {
-    const opts: StreamOptions = { ...DEFAULT_OPTIONS, ...options };
     const converted = messagesForGemini(context.messages);
 
     const started = performance.now();
@@ -124,8 +121,8 @@ export class GeminiAdapter {
         config: configForGemini(
           context.systemPrompt,
           context.tools,
-          opts,
-          mergeSignals(opts.timeout, opts.signal),
+          options,
+          mergeSignals(options.timeout, options.signal),
         ) as any,
       });
 

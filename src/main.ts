@@ -18,9 +18,11 @@ export async function asyncMain(): Promise<void> {
   loadDotenv({ override: true });
   const cli = new CliFrontend();
   try {
+    const { stream, defaultModel } = createStreamFn();
     const harness = await createHarness({
       project: resolveProject(process.cwd()),
-      streamFn: createStreamFn(),
+      streamFn: stream,
+      model: defaultModel,
     });
     await cli.run(harness);
   } finally {

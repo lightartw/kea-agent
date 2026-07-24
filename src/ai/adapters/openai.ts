@@ -1,19 +1,17 @@
 import OpenAI from "openai";
 
+import type { Adapter, ResolvedOptions } from "../factory.js";
 import type {
   AssistantMessageEvent,
   ContentBlock,
   Context,
   Message,
   StopReason,
-  StreamOptions,
   TextBlock,
   ThinkingBlock,
   Tool,
   ToolCall,
 } from "../types.js";
-
-const DEFAULT_OPTIONS: StreamOptions = { timeout: 120, maxTokens: 8000 };
 
 // ── Message conversion ──
 
@@ -64,7 +62,7 @@ function mapStopReason(reason: string | null | undefined): StopReason {
 
 // ── Adapter ──
 
-export class OpenAIAdapter {
+export class OpenAIAdapter implements Adapter {
   private readonly sdk: OpenAI;
 
   constructor(apiKey: string, baseUrl?: string | null) {
@@ -74,9 +72,8 @@ export class OpenAIAdapter {
   async *stream(
     model: string,
     context: Context,
-    options?: Partial<StreamOptions>,
+    options: ResolvedOptions,
   ): AsyncIterable<AssistantMessageEvent> {
-    const opts: StreamOptions = { ...DEFAULT_OPTIONS, ...options };
     const apiMessages: Record<string, unknown>[] = context.systemPrompt
       ? [{ role: "system" as const, content: context.systemPrompt }, ...messagesForOpenAI(context.messages)]
       : messagesForOpenAI(context.messages);
@@ -99,12 +96,12 @@ export class OpenAIAdapter {
           ...(context.tools === undefined ? {} : { tools: toolsForOpenAI(context.tools) }),
           stream: true,
           stream_options: { include_usage: true },
-          max_tokens: opts.maxTokens,
-          ...(opts.temperature === undefined ? {} : { temperature: opts.temperature }),
-          ...(opts.topP === undefined ? {} : { top_p: opts.topP }),
-          ...(opts.stop === undefined ? {} : { stop: [...opts.stop] }),
+          max_tokens: options.maxTokens,
+          ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+          ...(options.topP === undefined ? {} : { top_p: options.topP }),
+          ...(options.stop === undefined ? {} : { stop: [...options.stop] }),
         },
-        { timeout: Math.ceil(opts.timeout * 1000), signal: opts.signal },
+        { timeout: Math.ceil(options.timeout * 1000), signal: options.signal },
       );
 
       for await (const chunk of sdkStream as any) {

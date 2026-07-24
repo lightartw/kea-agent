@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-import type { BashOperations } from "./types.js";
+import type { BashOperations } from "./bash.js";
 
 type Shell = {
   command: string;

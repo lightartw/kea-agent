@@ -1,74 +1,88 @@
 # agent
 
-Agent kernel. Stateful wrapper + pure loop + generic tool/hook infrastructure.
+Agent 内核。有状态包装器 + 纯函数循环 + 通用 tool/hook 基础设施。
 
-Knows nothing about concrete tools (bash, files) or presentation (CLI, TUI).
+不知道任何具体工具（bash、files）或展示层（CLI、TUI）。
 
-## Exports
+## Agent
 
 ### `Agent` — [agent.ts](agent.ts)
 
-Stateful wrapper. Owns conversation history. StreamFn, model, and systemPrompt
-are mutable — harness changes them across turns without rebuilding the Agent.
+有状态包装器。持有对话历史。streamFn、model、systemPrompt 可被 harness 跨 turn 修改。
 
 ```ts
 import { Agent } from "./agent/agent.js";
 
 const agent = new Agent(streamFn, model, registry, [], "You are helpful.", hooks);
 
-agent.state         // AgentState — { messages, systemPrompt, isRunning, errorMessage? }
+agent.state         // AgentState
 agent.messages      // readonly Message[]
 agent.isRunning     // boolean
 
-// Mutable config (harness changes these across turns)
-agent.streamFn      // StreamFn — set to switch provider
-agent.model         // ModelConfig — set to switch model
-agent.systemPrompt  // string — set to rebuild prompt
+// 可变配置（harness 跨 turn 修改）
+agent.streamFn      // StreamFn
+agent.model         // ModelConfig
+agent.systemPrompt  // string
 
-agent.prompt("hi")  // AsyncIterable<AgentEvent> — one user turn through the loop
-agent.abort()       // cancel current run (ESC key → HTTP cancel + loop exit)
-agent.reset()       // clear history + error state
+agent.prompt("hi")  // AsyncIterable<AgentEvent>
+agent.abort()       // 取消当前 run
+agent.reset()       // abort + 清空历史
 ```
+
+`prompt()` 不处理 hook——全部交给 `runAgentLoop`，只从 `agent_end` 同步 error state。
 
 ### `runAgentLoop` — [agent-loop.ts](agent-loop.ts)
 
-Pure function. Mutates `messages` in-place, yields typed events. Usable directly in tests.
+纯 async generator。原地修改 `messages`。管理全部 5 个 hook 生命周期。可不依赖 Agent 直接测试。
 
 ```ts
 import { runAgentLoop } from "./agent/agent-loop.js";
 
 async function* runAgentLoop(
-  messages: Message[],         // mutated in-place
+  messages: Message[],         // 原地修改
   systemPrompt: string,
-  streamFn: StreamFn,          // (model, ctx, opts?) => AsyncIterable<AssistantMessageEvent>
-  model: ModelConfig,          // { provider, model } — routing key per turn
+  input: string,               // 用户原始输入——loop 负责推入 user message
+  streamFn: StreamFn,
+  model: ModelConfig,
   registry: ToolRegistry,
   hooks?: HookRegistry,
-  signal?: AbortSignal,        // agent.abort() propagates through here
+  signal?: AbortSignal,
 ): AsyncIterable<AgentEvent>
+```
+
+生命周期：
+
+```text
+agent_start
+  → user_prompt_submit hook（可 block；异常视为 block）
+  → 推入 user message
+  → turn_start
+  → pre_turn hook（可注入 context 作 user message；异常被 swallow）
+  → stream LLM
+  → turn_end
+  → [pre_tool_use → execute → post_tool_use]*  （每个 tool call）
+  → [stop hook]  （无 tool call 时；异常被 swallow）
+  → loop back if more tool calls / forceContinue
+agent_end
 ```
 
 ### `AgentEvent` — [types.ts](types.ts)
 
-11 discriminated event types. No optional fields.
+11 种 discriminated event。无可选字段。
 
 ```ts
 type AgentEvent =
-  // Run lifecycle
   | { type: "agent_start" }
-  | { type: "agent_end";   messages: readonly Message[] }
-  // Turn lifecycle
+  | { type: "agent_end";      messages: readonly Message[] }
   | { type: "turn_start" }
-  | { type: "turn_end";    message: AssistantMessage }
-  // Streaming
-  | { type: "text_delta";      text: string }
-  | { type: "thinking_delta";  thinking: string }
-  | { type: "toolcall_start";  id: string; name: string }
-  | { type: "toolcall_delta";  id: string; argumentsDelta: string }
-  | { type: "toolcall_end";    toolCall: ToolCall }
-  // Tool execution
-  | { type: "tool_start";      call: ToolCall }
-  | { type: "tool_end";        call: ToolCall; result: ToolResult }
+  | { type: "turn_end";       message: AssistantMessage }
+  | { type: "text_delta";     text: string }
+  | { type: "thinking_delta"; thinking: string }
+  | { type: "toolcall_start"; id: string; name: string }
+  | { type: "toolcall_delta"; id: string; argumentsDelta: string }
+  | { type: "toolcall_end";   toolCall: ToolCall }
+  | { type: "tool_start";     call: ToolCall }
+  | { type: "tool_end";       call: ToolCall; result: ToolResult }
 ```
 
 ### `AgentState` — [types.ts](types.ts)
@@ -82,85 +96,101 @@ interface AgentState {
 }
 ```
 
+## Tool
+
 ### `AgentTool<T>` — [tools/types.ts](tools/types.ts)
 
-Abstract base class for all tools. Implements `Tool` from ai, adds `validate()` and `execute()`.
+抽象基类。实现 ai 层的 `Tool`，增加 `validate()` 和 `execute()`。
 
 ```ts
 abstract class AgentTool<T extends TObject = TObject> implements Tool {
   readonly name: string;
   readonly description: string;
   readonly parameters: T;
-  validate(args: unknown): string | undefined;                    // TypeBox check
+  validate(args: unknown): string | undefined;                    // TypeBox 校验
   abstract execute(args: Static<T>, signal: AbortSignal): Promise<string>;
 }
 ```
 
 ### `ToolRegistry` — [tools/registry.ts](tools/registry.ts)
 
-Stores `AgentTool` instances. Validates arguments. Runs pre/post-tool hooks.
+验证并执行 tool call。不知道 hook。
 
 ```ts
 class ToolRegistry {
-  constructor(timeout?: number, hooks?: HookRegistry);
+  constructor(timeout?: number);
   register(tool: AgentTool): void;
   unregister(name: string): void;
-  schemas(): Tool[];          // AgentTool implements Tool
+  schemas(): Tool[];          // LLM-facing 的 schema
+  all(): AgentTool[];         // 完整 AgentTool 实例
   execute(call: ToolCall): Promise<ToolResult>;
 }
 ```
 
-### Hook system — [hooks/](hooks/)
+流程：resolve tool → validate arguments → run with timeout → return result。
+`pre_tool_use` / `post_tool_use` 由 `runAgentLoop` 触发，不在 registry 内。
 
-5 lifecycle events, chain semantics (first non-void return stops the chain).
+## Hook
+
+### Hook 系统 — [hooks/](hooks/)
+
+5 个生命周期事件。全部在 `runAgentLoop` 内触发。链式语义：第一个非 void 返回值停止链。
 
 ```ts
 type HookEventUnion =
-  | UserPromptSubmitEvent   // Agent.prompt() — { type, prompt }
-  | PreToolUseEvent         // ToolRegistry.execute() — { type, call }
-  | PostToolUseEvent        // ToolRegistry.execute() — { type, call, result }
-  | PreTurnEvent            // runAgentLoop() — { type }
-  | StopEvent               // runAgentLoop() — { type, messages }
+  | UserPromptSubmitEvent   // { type: "user_prompt_submit", prompt }
+  | PreTurnEvent            // { type: "pre_turn" }
+  | PreToolUseEvent         // { type: "pre_tool_use", call }
+  | PostToolUseEvent        // { type: "post_tool_use", call, result }
+  | StopEvent               // { type: "stop", messages }
+```
 
+### `HookResult` — [hooks/types.ts](hooks/types.ts)
+
+```ts
 interface HookResult {
-  block?: boolean;          // deny (user_prompt_submit, pre_tool_use)
+  block?: boolean;          // 拒绝（user_prompt_submit, pre_tool_use）
   reason?: string;
-  messages?: readonly Message[];  // replace history (stop)
-  context?: string;         // inject context (user_prompt_submit, pre_turn)
-  forceContinue?: string;   // keep looping (stop)
+  messages?: readonly Message[];  // 替换历史（stop）
+  context?: string;         // 注入为 user message（pre_turn）
+  forceContinue?: string;   // 推入 user message 并继续循环（stop）
 }
+```
 
-interface Hook<TEvent> {
+### `Hook<TEvent>` — [hooks/types.ts](hooks/types.ts)
+
+```ts
+interface Hook<TEvent extends HookEvent = HookEvent> {
   name: string;
   eventType: TEvent["type"];
   execute(event: TEvent): HookResult | void | Promise<HookResult | void>;
 }
+```
 
+### `HookRegistry` — [hooks/registry.ts](hooks/registry.ts)
+
+```ts
 class HookRegistry {
   register(hook: Hook): void;
   get<T>(name: string): T | undefined;
+  values(): IterableIterator<Hook>;
   trigger<TEvent>(event: TEvent): Promise<HookResult | undefined>;
 }
 ```
 
-## Usage
+## 用法
 
-Minimal:
+最小 Agent：
 
 ```ts
-import { createStreamFn } from "./ai/factory.js";
-import { Agent } from "./agent/agent.js";
-import { ToolRegistry } from "./agent/tools/registry.js";
-
-const stream = createStreamFn();
-const agent = new Agent(stream, { provider: "anthropic", model: "claude-sonnet-5" }, new ToolRegistry(), [], "You are helpful.");
+const agent = new Agent(streamFn, { provider: "anthropic", model: "claude-sonnet-5" }, new ToolRegistry(), [], "You are helpful.");
 
 for await (const event of agent.prompt("What is 2+2?")) {
   if (event.type === "text_delta") process.stdout.write(event.text);
 }
 ```
 
-With tool + hook:
+带 tool + hook：
 
 ```ts
 class EchoTool extends AgentTool<typeof Type.Object({ msg: Type.String() })> {
@@ -171,29 +201,29 @@ class EchoTool extends AgentTool<typeof Type.Object({ msg: Type.String() })> {
 const hooks = new HookRegistry();
 hooks.register(new PermissionHook());
 
-const registry = new ToolRegistry(120, hooks);
+const registry = new ToolRegistry();
 registry.register(new EchoTool());
 
 const agent = new Agent(stream, { provider: "anthropic", model: "claude-sonnet-5" }, registry, [], "You are helpful.", hooks);
 for await (const event of agent.prompt("echo 'hi'")) { /* render */ }
 ```
 
-Testing with `runAgentLoop` directly (no Agent needed):
+直接测试 `runAgentLoop`：
 
 ```ts
-const history: Message[] = [{ role: "user", content: "hi" }];
+const history: Message[] = [];
 const streamFn: StreamFn = async function* () { yield { type: "done", message }; };
 
-for await (const event of runAgentLoop(history, "", streamFn, { provider: "t", model: "m" }, new ToolRegistry())) {
+for await (const event of runAgentLoop(history, "", "hi", streamFn, { provider: "t", model: "m" }, new ToolRegistry())) {
   // assert on events
 }
 ```
 
-## Dependencies
+## 依赖
 
-Imports from ai:
+从 ai 导入：
 
-- **Data types** (global, any package can import): `Message`, `AssistantMessage`, `ToolCall`, `Tool`
-- **Transport types** (agent-loop boundary): `StreamFn`, `ModelConfig`, `Context`
+- **全局数据**：`Message`、`AssistantMessage`、`Tool`、`ToolCall`、`ModelConfig`
+- **传输**：`StreamFn`、`Context`
 
-Never re-exports ai types. Consumers import `Tool` or `ToolCall` from ai directly.
+不重导出 ai 类型。消费者直接从 ai 导入 `Tool` 或 `ToolCall`。

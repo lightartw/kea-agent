@@ -1,33 +1,17 @@
-import type { HookRegistry } from "../../agent/hooks/registry.js";
-import type { AgentTool } from "../../agent/tools/types.js";
 import { ToolRegistry } from "../../agent/tools/registry.js";
-import { wrapToolDefinition } from "./adapter.js";
-import { createBashToolDefinition } from "./bash.js";
-import {
-  createEditFileDefinition,
-  createReadFileDefinition,
-  createWriteFileDefinition,
-} from "./files.js";
-import { createGlobDefinition } from "./glob.js";
-import { createTodoWriteDefinition } from "./todo-write.js";
+import { BashTool } from "./bash.js";
+import { ReadFileTool, WriteFileTool, EditFileTool } from "./files.js";
+import { GlobTool } from "./glob.js";
+import { TodoWriteTool } from "./todo-write.js";
 
-type ToolFactory = (workspace: string) => AgentTool;
-
-const BUILTIN_FACTORIES: readonly ToolFactory[] = [
-  (workspace) => wrapToolDefinition(createBashToolDefinition(workspace)),
-  (workspace) => wrapToolDefinition(createReadFileDefinition(workspace)),
-  (workspace) => wrapToolDefinition(createWriteFileDefinition(workspace)),
-  (workspace) => wrapToolDefinition(createEditFileDefinition(workspace)),
-  (workspace) => wrapToolDefinition(createGlobDefinition(workspace)),
-  (_workspace) => wrapToolDefinition(createTodoWriteDefinition()),
-];
-
-/** Build the explicit default tool set for one workspace and hook pipeline. */
-export function createToolRegistry(
-  cwd = process.cwd(),
-  hooks?: HookRegistry,
-): ToolRegistry {
-  const registry = new ToolRegistry(120, hooks);
-  for (const create of BUILTIN_FACTORIES) registry.register(create(cwd));
+/** Build the default tool set for one workspace. */
+export function createToolRegistry(cwd = process.cwd()): ToolRegistry {
+  const registry = new ToolRegistry();
+  registry.register(new BashTool(cwd));
+  registry.register(new ReadFileTool(cwd));
+  registry.register(new WriteFileTool(cwd));
+  registry.register(new EditFileTool(cwd));
+  registry.register(new GlobTool(cwd));
+  registry.register(new TodoWriteTool());
   return registry;
 }

@@ -1,25 +1,13 @@
-/**
- * todo_write tool — planning only, no filesystem side effects.
- *
- * Related code (reminder mechanism via hooks, not agent-loop):
- *   hooks/todo-reminder.ts   — 3 hooks sharing a roundsSinceTodo counter
- *   hooks/factory.ts         — registers the 3 hooks
- *   agent/hooks/types.ts     — PreTurnEvent (fires before each LLM call)
- *   agent/agent-loop.ts      — triggers pre_turn hook
- *   tools/factory.ts         — registers this tool in BUILTIN_FACTORIES
- */
-
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import type { ToolDefinition } from "./types.js";
+import { AgentTool } from "../../agent/tools/types.js";
 
 export interface TodoItem {
   readonly content: string;
   readonly status: "pending" | "in_progress" | "completed";
 }
 
-/** In-process task list shared across the session. */
 let currentTodos: readonly TodoItem[] = [];
 
 export function getCurrentTodos(): readonly TodoItem[] {
@@ -49,26 +37,26 @@ const parameters = Type.Object(
   { additionalProperties: false },
 );
 
-export function createTodoWriteDefinition(): ToolDefinition<
-  typeof parameters
-> {
-  return {
-    name: "todo_write",
-    description:
+export class TodoWriteTool extends AgentTool<typeof parameters> {
+  constructor() {
+    super(
+      "todo_write",
       "Create and manage a task list for the current session. " +
-      "Use this to plan your work before starting, track progress, " +
-      "and keep one task in_progress at a time. Send the full list " +
-      "each call — it replaces the previous one.",
-    parameters,
-    async execute(arguments_: Static<typeof parameters>) {
-      currentTodos = arguments_.todos;
-      const lines = ["\n## Current Tasks"];
-      for (const t of currentTodos) {
-        const icon = TODO_ICONS[t.status] ?? " ";
-        lines.push(`  [${icon}] ${t.content}`);
-      }
-      const formatted = lines.join("\n");
-      return `${formatted}\n\nUpdated ${currentTodos.length} tasks`;
-    },
-  };
+        "Use this to plan your work before starting, track progress, " +
+        "and keep one task in_progress at a time. Send the full list " +
+        "each call — it replaces the previous one.",
+      parameters,
+    );
+  }
+
+  async execute(arguments_: Static<typeof parameters>, _signal: AbortSignal): Promise<string> {
+    currentTodos = arguments_.todos;
+    const lines = ["\n## Current Tasks"];
+    for (const t of currentTodos) {
+      const icon = TODO_ICONS[t.status] ?? " ";
+      lines.push(`  [${icon}] ${t.content}`);
+    }
+    const formatted = lines.join("\n");
+    return `${formatted}\n\nUpdated ${currentTodos.length} tasks`;
+  }
 }

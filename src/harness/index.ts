@@ -1,6 +1,6 @@
 export { AgentHarness, createHarness } from "./agent-harness.js";
 export type { HarnessConfig, CreateHarnessConfig } from "./agent-harness.js";
-export type { SessionStore } from "./types.js";
+export { Session } from "./session/session.js";
 export type { SystemPromptBuilder, SystemPromptContext } from "./system-prompt.js";
 export { CODING_SYSTEM_PROMPT, formatSystemPrompt, defaultSystemPrompt } from "./system-prompt.js";
 export { createHookRegistry } from "./hooks/factory.js";

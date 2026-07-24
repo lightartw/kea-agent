@@ -3,28 +3,24 @@ import type { GeminiAdapter } from "./adapters/gemini.js";
 import type { OpenAIAdapter } from "./adapters/openai.js";
 import type { AssistantMessageEvent, Context, ModelConfig, StreamFn, StreamOptions } from "./types.js";
 
-interface Adapter {
-  stream(model: string, context: Context, options?: Partial<StreamOptions>): AsyncIterable<AssistantMessageEvent>;
+const DEFAULT_TIMEOUT = 120;
+const DEFAULT_MAX_TOKENS = 8000;
+
+export interface ResolvedOptions {
+  timeout: number;
+  maxTokens: number;
+  temperature?: number;
+  topP?: number;
+  stop?: readonly string[];
+  signal?: AbortSignal;
 }
 
-// ── Model detection ──
+function resolveOptions(options?: Partial<StreamOptions>): ResolvedOptions {
+  return { timeout: DEFAULT_TIMEOUT, maxTokens: DEFAULT_MAX_TOKENS, ...options };
+}
 
-/** Auto-detect the default model from environment variables. */
-export function detectModel(env?: Environment): ModelConfig {
-  const e = env ?? process.env;
-  const providers = [
-    { provider: "anthropic", key: "ANTHROPIC_API_KEY" },
-    { provider: "openai", key: "OPENAI_API_KEY" },
-    { provider: "gemini", key: "GEMINI_API_KEY" },
-  ] as const;
-  const configured = providers.filter((p) => e[p.key]);
-  if (configured.length === 0)
-    throw new Error("No LLM provider configured; set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY");
-  if (configured.length > 1)
-    throw new Error(`Multiple LLM providers configured: ${configured.map((p) => p.provider).join(", ")}`);
-  const model = e["MODEL_ID"];
-  if (!model) throw new Error("Missing model; set MODEL_ID");
-  return { provider: configured[0]!.provider, model };
+export interface Adapter {
+  stream(model: string, context: Context, options: ResolvedOptions): AsyncIterable<AssistantMessageEvent>;
 }
 
 // ── Provider registry ──
@@ -78,21 +74,24 @@ export type Environment = Readonly<Record<string, string | undefined>>;
 
 export function createStreamFn(
   options?: { providers?: ProviderConfig[]; env?: Environment },
-): StreamFn {
+): { stream: StreamFn; defaultModel: ModelConfig } {
   const env = options?.env ?? process.env;
   const allProviders = [...BUILTIN_PROVIDERS, ...(options?.providers ?? [])];
 
-  // Resolve active providers (those with configured API keys)
+  const configured = allProviders.filter((p) => env[p.envApiKey]);
+  if (configured.length === 0)
+    throw new Error("No LLM provider configured; set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY");
+  if (configured.length > 1)
+    throw new Error(`Multiple LLM providers configured: ${configured.map((p) => p.id).join(", ")}`);
+  const modelId = env["MODEL_ID"];
+  if (!modelId) throw new Error("Missing model; set MODEL_ID");
+
   const configs = new Map<string, { createAdapter: ProviderConfig["createAdapter"]; apiKey: string; baseUrl?: string | null }>();
-  for (const p of allProviders) {
-    const apiKey = env[p.envApiKey];
-    if (apiKey) {
-      const baseUrl = env[p.envBaseUrl ?? ""] ?? p.defaultBaseUrl ?? null;
-      configs.set(p.id, { createAdapter: p.createAdapter, apiKey, baseUrl });
-    }
+  for (const p of configured) {
+    const baseUrl = env[p.envBaseUrl ?? ""] ?? p.defaultBaseUrl ?? null;
+    configs.set(p.id, { createAdapter: p.createAdapter, apiKey: env[p.envApiKey]!, baseUrl });
   }
 
-  // Lazy adapter pool
   const adapters = new Map<string, Adapter>();
 
   function getAdapter(provider: string): Adapter {
@@ -106,12 +105,14 @@ export function createStreamFn(
     return adapter;
   }
 
-  return async function* stream(
+  const stream: StreamFn = async function* (
     model: ModelConfig,
     context: Context,
     options?: Partial<StreamOptions>,
   ): AsyncIterable<AssistantMessageEvent> {
     const adapter = getAdapter(model.provider);
-    yield* adapter.stream(model.model, context, options);
+    yield* adapter.stream(model.model, context, resolveOptions(options));
   };
+
+  return { stream, defaultModel: { provider: configured[0]!.id, model: modelId } };
 }

@@ -1,12 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 
+import type { Adapter, ResolvedOptions } from "../factory.js";
 import type {
   AssistantMessageEvent,
   ContentBlock,
   Context,
   Message,
   StopReason,
-  StreamOptions,
   TextBlock,
   ThinkingBlock,
   Tool,
@@ -14,8 +14,6 @@ import type {
   TokenUsage,
 } from "../types.js";
 import { mergeSignals } from "../../utils/timeout.js";
-
-const DEFAULT_OPTIONS: StreamOptions = { timeout: 120, maxTokens: 8000 };
 
 // ── Message conversion ──
 
@@ -72,7 +70,7 @@ function makeUsage(raw: Record<string, unknown> = {}): TokenUsage {
 
 // ── Adapter ──
 
-export class AnthropicAdapter {
+export class AnthropicAdapter implements Adapter {
   private readonly sdk: Anthropic;
 
   constructor(apiKey: string, baseUrl?: string | null) {
@@ -82,11 +80,10 @@ export class AnthropicAdapter {
   async *stream(
     model: string,
     context: Context,
-    options?: Partial<StreamOptions>,
+    options: ResolvedOptions,
   ): AsyncIterable<AssistantMessageEvent> {
-    const opts: StreamOptions = { ...DEFAULT_OPTIONS, ...options };
     const converted = messagesForAnthropic(context.messages);
-    const signal = mergeSignals(opts.timeout, opts.signal);
+    const signal = mergeSignals(options.timeout, options.signal);
 
     type PendingBlock =
       | { kind: "text"; text: string }
@@ -108,12 +105,12 @@ export class AnthropicAdapter {
           ...(context.systemPrompt === undefined ? {} : { system: context.systemPrompt }),
           ...(context.tools === undefined ? {} : { tools: toolsForAnthropic(context.tools) as any }),
           stream: true,
-          max_tokens: opts.maxTokens,
-          ...(opts.temperature === undefined ? {} : { temperature: opts.temperature }),
-          ...(opts.topP === undefined ? {} : { top_p: opts.topP }),
-          ...(opts.stop === undefined ? {} : { stop_sequences: opts.stop }),
+          max_tokens: options.maxTokens,
+          ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+          ...(options.topP === undefined ? {} : { top_p: options.topP }),
+          ...(options.stop === undefined ? {} : { stop_sequences: options.stop }),
         } as any,
-        { timeout: Math.ceil(opts.timeout * 1000), signal },
+        { timeout: Math.ceil(options.timeout * 1000), signal },
       );
 
       for await (const event of sdkStream as any) {

@@ -4,7 +4,6 @@ export * from "./agent/types.js";
 export * from "./agent/hooks/index.js";
 export * from "./agent/tools/index.js";
 export * from "./harness/agent-harness.js";
-export * from "./harness/types.js";
 export * from "./harness/index.js";
 export * from "./ai/index.js";
 export * from "./utils/timeout.js";

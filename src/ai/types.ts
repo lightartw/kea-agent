@@ -90,8 +90,8 @@ export type AssistantMessageEvent =
 // ── Options ──
 
 export interface StreamOptions {
-  readonly timeout: number;
-  readonly maxTokens: number;
+  readonly timeout?: number;
+  readonly maxTokens?: number;
   readonly temperature?: number;
   readonly topP?: number;
   readonly stop?: readonly string[];

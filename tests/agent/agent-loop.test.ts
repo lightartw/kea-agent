@@ -14,6 +14,8 @@ import type {
   ModelConfig,
   StreamFn,
 } from "../../src/ai/types.js";
+import { HookRegistry } from "../../src/agent/hooks/registry.js";
+import type { Hook, HookResult, PreToolUseEvent } from "../../src/agent/hooks/types.js";
 import { AgentTool } from "../../src/agent/tools/types.js";
 import { ToolRegistry } from "../../src/agent/tools/registry.js";
 
@@ -63,7 +65,7 @@ async function collect(
 
 test("runAgentLoop streams text and stores one complete assistant message", async () => {
   const final = assistantMsg("hello");
-  const history: Message[] = [{ role: "user", content: "hi" }];
+  const history: Message[] = [];
   const streamFn = streamFnWithEvents([[
     { type: "text_delta", text: "hel" },
     { type: "text_delta", text: "lo" },
@@ -71,7 +73,7 @@ test("runAgentLoop streams text and stores one complete assistant message", asyn
   ]]);
 
   const events = await collect(
-    runAgentLoop(history, "", streamFn, testModel, new ToolRegistry()),
+    runAgentLoop(history, "", "hi", streamFn, testModel, new ToolRegistry()),
   );
 
   assert.deepEqual(events, [
@@ -115,9 +117,9 @@ test("runAgentLoop streams and executes tools sequentially", async () => {
       yield { type: "done", message: finalMsg };
     }
   };
-  const history: Message[] = [{ role: "user", content: "run" }];
+  const history: Message[] = [];
 
-  const events = await collect(runAgentLoop(history, "", streamFn, testModel, registry));
+  const events = await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry));
 
   assert.deepEqual(observed, ["done", "first", "second"]);
   assert.deepEqual(events.map((event) => event.type), [
@@ -173,9 +175,9 @@ test("tool results are in history before the next model stream", async () => {
       if (index === 1) secondHistory = [...context.messages];
     },
   );
-  const history: Message[] = [{ role: "user", content: "run" }];
+  const history: Message[] = [];
 
-  await collect(runAgentLoop(history, "", streamFn, testModel, registry));
+  await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry));
 
   assert.deepEqual(secondHistory?.at(-1), {
     role: "tool",
@@ -196,10 +198,10 @@ test("Registry failures are emitted and returned to the model", async () => {
     ],
     [{ type: "done", message: assistantMsg("recovered") }],
   ]);
-  const history: Message[] = [{ role: "user", content: "run" }];
+  const history: Message[] = [];
 
   const events = await collect(
-    runAgentLoop(history, "", streamFn, testModel, new ToolRegistry()),
+    runAgentLoop(history, "", "run", streamFn, testModel, new ToolRegistry()),
   );
 
   const toolEnd = events.find((event) => event.type === "tool_end");
@@ -208,4 +210,75 @@ test("Registry failures are emitted and returned to the model", async () => {
   assert.equal(toolEnd.result.isError, true);
   assert.equal(toolEnd.result.content, "Error: Unknown tool 'missing'");
   assert.equal(history[2]?.content, "Error: Unknown tool 'missing'");
+});
+
+test("pre_tool_use hook blocks tool execution and returns error", async () => {
+  class BlockHook implements Hook<PreToolUseEvent> {
+    readonly name = "block";
+    readonly eventType = "pre_tool_use";
+    async execute(): Promise<HookResult> {
+      return { block: true, reason: "blocked by test" };
+    }
+  }
+  const hooks = new HookRegistry();
+  hooks.register(new BlockHook());
+
+  class ObservedTool extends AgentTool<typeof emptyParameters> {
+    ran = false;
+    constructor() { super("noop", "Run noop.", emptyParameters); }
+    async execute() { this.ran = true; return "ok"; }
+  }
+  const tool = new ObservedTool();
+  const registry = new ToolRegistry();
+  registry.register(tool);
+  const tc = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
+  const streamFn = streamFnWithEvents([
+    [
+      { type: "toolcall_start", id: "c1", name: "noop" },
+      { type: "toolcall_end", toolCall: tc },
+      { type: "done", message: assistantMsg("", [tc]) },
+    ],
+    [{ type: "done", message: assistantMsg("") }],
+  ]);
+  const history: Message[] = [];
+
+  await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry, hooks));
+
+  assert.equal(tool.ran, false);
+  assert.equal(history[2]?.content, "Error: blocked by test");
+});
+
+test("pre_tool_use hook failure blocks tool execution", async () => {
+  class BrokenHook implements Hook<PreToolUseEvent> {
+    readonly name = "broken";
+    readonly eventType = "pre_tool_use";
+    async execute() { throw new Error("boom"); }
+  }
+  const hooks = new HookRegistry();
+  hooks.register(new BrokenHook());
+
+  class ObservedTool extends AgentTool<typeof emptyParameters> {
+    ran = false;
+    constructor() { super("noop", "Run noop.", emptyParameters); }
+    async execute() { this.ran = true; return "ok"; }
+  }
+  const tool = new ObservedTool();
+  const registry = new ToolRegistry();
+  registry.register(tool);
+  const tc = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
+  const streamFn = streamFnWithEvents([
+    [
+      { type: "toolcall_start", id: "c1", name: "noop" },
+      { type: "toolcall_end", toolCall: tc },
+      { type: "done", message: assistantMsg("", [tc]) },
+    ],
+    [{ type: "done", message: assistantMsg("") }],
+  ]);
+  const history: Message[] = [];
+
+  await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry, hooks));
+
+  assert.equal(tool.ran, false);
+  const content = history[2]?.role === "tool" ? history[2].content : "";
+  assert.match(content, /hook 'broken' failed/);
 });

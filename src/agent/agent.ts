@@ -74,8 +74,9 @@ export class Agent {
     this.activeRun?.abortController.abort();
   }
 
-  /** Clear conversation history and error state. */
+  /** Cancel current run and clear conversation history. */
   reset(): void {
+    this.abort();
     this.history = [];
     this.errorMessage = undefined;
   }
@@ -94,35 +95,23 @@ export class Agent {
     this.errorMessage = undefined;
 
     try {
-      // ① UserPromptSubmit
-      if (this.hooks !== undefined) {
-        const result = await this.hooks.trigger({
-          type: "user_prompt_submit",
-          prompt: input,
-        });
-        if (result?.block === true) return;
-        if (result?.context !== undefined) {
-          this._systemPrompt += (this._systemPrompt ? "\n" : "") + result.context;
-        }
-      }
-
-      this.history.push({ role: "user", content: input });
-
-      // Yield events, capturing error state from the loop
       for await (const event of runAgentLoop(
         this.history,
         this._systemPrompt,
+        input,
         this._streamFn,
         this._model,
         this.registry,
         this.hooks,
         abortController.signal,
       )) {
-        // Track error state from the final message
         if (event.type === "agent_end") {
-          const lastMsg = event.messages[event.messages.length - 1];
-          if (lastMsg?.role === "assistant" && lastMsg.errorMessage) {
-            this.errorMessage = lastMsg.errorMessage;
+          for (const msg of event.messages) {
+            if (msg.role === "assistant" && msg.errorMessage) {
+              this.errorMessage = msg.errorMessage;
+            } else if (msg.role === "tool" && msg.isError) {
+              this.errorMessage = msg.content;
+            }
           }
         }
         yield event;

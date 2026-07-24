@@ -1,156 +1,183 @@
 # ai
 
-AI transport layer. Stateless, stream-only. Provider routing is transparent to callers.
+LLM transport. Stateless. Pure data types + one function.
 
-## Core idea
-
-One function signature for all LLM calls. The caller never knows which provider
-or adapter is handling the request.
-
-```ts
-import type { StreamFn } from "./ai/types.js";
-
-// StreamFn = (model, context, options?) => AsyncIterable<AssistantMessageEvent>
-```
-
-Model is a request parameter, not a constructor parameter. Same adapter handles
-any model on its provider. Switch provider by changing `model.provider` —
-the factory's internal pool routes to the correct adapter.
+Knows nothing about tools, hooks, sessions, or presentation.
 
 ## Exports
 
-### Global data types (any package can import)
+### `createStreamFn` — [factory.ts](factory.ts)
+
+Returns `{ stream, defaultModel }`. Reads provider config from env, returns a `StreamFn`
+that routes by `model.provider` through a lazy adapter pool.
 
 ```ts
-Tool              // { name, description, parameters: TObject }
-ToolCall          // { type: "toolCall", id, name, arguments }
+import { createStreamFn } from "./ai/factory.js";
+
+const { stream, defaultModel } = createStreamFn();
+// defaultModel: { provider: "anthropic", model: "claude-sonnet-5" }
+
+for await (const event of stream(defaultModel, ctx)) {
+  // text_delta | thinking_delta | toolcall_start | toolcall_delta | toolcall_end | done | error
+}
+```
+
+One `StreamFn` handles all providers. Switch model by changing `model.provider`.
+
+Custom provider:
+
+```ts
+const { stream } = createStreamFn({
+  providers: [{ id: "deepseek", envApiKey: "DEEPSEEK_API_KEY",
+    defaultBaseUrl: "https://api.deepseek.com/v1",
+    createAdapter: (key, url) => new OpenAIAdapter(key, url) }],
+});
+```
+
+### `StreamFn` — [types.ts](types.ts)
+
+```ts
+type StreamFn = (
+  model: ModelConfig,
+  context: Context,
+  options?: Partial<StreamOptions>,
+) => AsyncIterable<AssistantMessageEvent>;
+```
+
+### Global data types — [types.ts](types.ts)
+
+Imported by `agent`, `harness`, and `cli`. Pure data, no behavior.
+
+```ts
+ModelConfig       // { provider: string, model: string }
+StreamOptions     // { timeout?, maxTokens?, temperature?, topP?, stop?, signal? }
+
+// Messages — discriminated by role
 Message           // UserMessage | AssistantMessage | ToolResultMessage
 UserMessage       // { role: "user", content: string }
-AssistantMessage  // { role: "assistant", content: ContentBlock[], model, stopReason, ... }
+AssistantMessage  // { role: "assistant", content: ContentBlock[], model, stopReason, usage?, errorMessage?, latencyMs }
 ToolResultMessage // { role: "tool", toolCallId, name, content, isError? }
+
+// Content blocks
+ContentBlock      // TextBlock | ThinkingBlock | ToolCall
+TextBlock         // { type: "text", text: string }
+ThinkingBlock     // { type: "thinking", thinking: string, signature?: string }
+
+// Tool types
+Tool              // { name, description, parameters: TObject }
+ToolCall          // { type: "toolCall", id, name, arguments }
+
+StopReason        // "stop" | "length" | "toolUse" | "error" | "aborted"
+TokenUsage        // { inputTokens, outputTokens, totalTokens }
 ```
 
-These are pure data — they describe what the model said and what tools it called.
-No behavior, no transport details.
+### Transport types — [types.ts](types.ts)
 
-### Transport types (agent-loop boundary)
+Only `agent` uses these directly.
 
 ```ts
-ModelConfig       // { provider: string, model: string }  — routing key for each request
-StreamFn          // (model, context, options?) => AsyncIterable<AssistantMessageEvent>
-StreamOptions     // { timeout, maxTokens, temperature?, topP?, stop?, signal? }
-Context           // { systemPrompt?, messages, tools? }
-AssistantMessageEvent  // 7 discriminated events: text_delta, thinking_delta, toolcall_*, done, error
+AssistantMessageEvent  // 7-variant discriminated union
+Context                // { systemPrompt?, messages: readonly Message[], tools?: readonly Tool[] }
 ```
 
-### Factory
+`AssistantMessageEvent`:
 
 ```ts
-createStreamFn(options?) → StreamFn
+| { type: "text_delta";     text: string }
+| { type: "thinking_delta"; thinking: string }
+| { type: "toolcall_start"; id: string; name: string }
+| { type: "toolcall_delta"; id: string; argumentsDelta: string }
+| { type: "toolcall_end";   toolCall: ToolCall }
+| { type: "done";           message: AssistantMessage }
+| { type: "error";          message: AssistantMessage }  // stopReason "error" | "aborted"
 ```
 
-Auto-detects configured providers from environment variables. Returns a `StreamFn`
-closure that pools adapters lazily.
-
-```ts
-const stream = createStreamFn();
-// stream({ provider: "anthropic", model: "claude-sonnet-5" }, ctx);
-// stream({ provider: "anthropic", model: "claude-opus-4-8" }, ctx);  // same adapter
-// stream({ provider: "openai", model: "gpt-4o" }, ctx);              // different adapter
-```
+`done` and `error` are terminal events carrying the completed `AssistantMessage`.
 
 ## Usage
 
+Minimal:
+
 ```ts
-import { createStreamFn } from "./ai/index.js";
-import type { Context, ModelConfig, AssistantMessageEvent } from "./ai/types.js";
+import { createStreamFn } from "./ai/factory.js";
+import type { Context, ModelConfig } from "./ai/types.js";
 
-const stream = createStreamFn();
-
-const model: ModelConfig = { provider: "anthropic", model: "claude-sonnet-5" };
+const { stream, defaultModel } = createStreamFn();
 const ctx: Context = {
-  systemPrompt: "You are a helpful assistant.",
+  systemPrompt: "You are helpful.",
   messages: [{ role: "user", content: "Hello" }],
 };
 
-for await (const event of stream(model, ctx)) {
-  switch (event.type) {
-    case "text_delta":       break; // white text
-    case "thinking_delta":   break; // grey reasoning
-    case "toolcall_start":   break; // yellow tool name
-    case "toolcall_delta":   break; // stream arguments
-    case "toolcall_end":     break; // complete ToolCall
-    case "done":             break; // event.message is AssistantMessage
-    case "error":            break; // event.message.stopReason === "error"
-  }
+for await (const event of stream(defaultModel, ctx)) {
+  if (event.type === "text_delta") process.stdout.write(event.text);
 }
 ```
 
-## Custom providers
-
-Register additional providers at factory time. OpenAPI-compatible APIs
-(Kimi, DeepSeek, GLM) reuse `OpenAIAdapter` with a different baseUrl.
+With tools:
 
 ```ts
-import { createStreamFn } from "./ai/index.js";
-import { OpenAIAdapter } from "./ai/adapters/openai.js";
-
-const stream = createStreamFn({
-  providers: [{
-    id: "kimi",
-    envApiKey: "KIMI_API_KEY",
-    defaultBaseUrl: "https://api.moonshot.cn/v1",
-    createAdapter: (apiKey, baseUrl) => new OpenAIAdapter(apiKey, baseUrl),
-  }],
-  env: process.env,
-});
-
-stream({ provider: "kimi", model: "moonshot-v1-8k" }, ctx);
+const ctx: Context = {
+  systemPrompt: "You have tools.",
+  messages: [...],
+  tools: [{ name: "read", description: "Read a file", parameters: Type.Object({ path: Type.String() }) }],
+};
 ```
 
-## Adapter contract
+## Internals
 
-Adapters are stateless. Constructor takes auth, `stream()` takes model.
+Types not exported from index but used by adapters.
+
+### `Adapter` — [factory.ts](factory.ts)
+
+Adapter interface. Adapters implement this, not exported from index.
 
 ```ts
 interface Adapter {
-  stream(model: string, context: Context, options?: Partial<StreamOptions>): AsyncIterable<AssistantMessageEvent>;
+  stream(model: string, context: Context, options: ResolvedOptions): AsyncIterable<AssistantMessageEvent>;
 }
 ```
 
-Constructor signature by provider:
+### `ResolvedOptions` — [factory.ts](factory.ts)
+
+Options after defaults are filled. `timeout` and `maxTokens` are always present.
+
 ```ts
-new AnthropicAdapter(apiKey: string, baseUrl?: string | null)
-new OpenAIAdapter(apiKey: string, baseUrl?: string | null)
-new GeminiAdapter(apiKey: string, baseUrl?: string | null)
+interface ResolvedOptions {
+  timeout: number;     // default 120
+  maxTokens: number;   // default 8000
+  temperature?: number;
+  topP?: number;
+  stop?: readonly string[];
+  signal?: AbortSignal;
+}
 ```
 
-## Design rationale
+### `ProviderConfig` — [factory.ts](factory.ts)
 
-**Why `StreamFn` instead of `LLMClient` class.** A function is the interface.
-Pi uses `StreamFn = (model, ctx, options) => stream`. No class wrapping needed —
-the caller sees a function signature, the factory returns a closure. Adding
-providers is adding entries to a registry, not changing an interface.
+Provider registration descriptor. Not exported from index.
 
-**Why model is a request parameter, not a constructor parameter.** Every major
-SDK (OpenAI, Anthropic, Google, Vercel AI) puts model on the request, not the
-client. A client represents a provider connection (auth + endpoint). Switching
-models on the same provider should not require a new client.
+```ts
+interface ProviderConfig {
+  id: string;           // matched by model.provider
+  envApiKey: string;    // env var holding the API key
+  envBaseUrl?: string;  // optional custom base URL env var
+  defaultBaseUrl?: string;
+  createAdapter: (apiKey: string, baseUrl?: string | null) => Adapter;
+}
+```
 
-**Why provider routing is in the factory, not in agent.** Agent sees `StreamFn` —
-a single function. It never knows about providers, adapters, or API keys.
-Switching from Claude to GPT is changing `model.provider` on the next call.
-The factory's internal `Map<provider, Adapter>` handles the rest.
+### Adapters — [adapters/](adapters/)
 
-**Why adapters are not exported from index.** They are internal implementation
-details. Other modules import types from `ai/types.js`, call `createStreamFn()`,
-and interact only with `StreamFn`. Custom providers import adapters directly
-from `ai/adapters/`.
+Three adapters implement `Adapter`:
 
-## Internal (not exported from index)
+- `AnthropicAdapter` — Anthropic Messages streaming
+- `OpenAIAdapter` — OpenAI Chat Completions streaming, compatible with DeepSeek, Kimi, etc.
+- `GeminiAdapter` — Google Gemini generateContent streaming
 
-`ProviderConfig` — registry entry for one provider. Exported from factory for
-custom registration but not re-exported from index.
+Each wraps a provider SDK. Defaults (`timeout: 120`, `maxTokens: 8000`) are applied by
+factory before the adapter receives them — adapters never set their own defaults.
 
-Adapters are not exported from index. Import them directly only when registering
-a custom provider that reuses an existing adapter implementation.
+## Dependencies
+
+No imports from other Kea packages (`agent`, `harness`, `cli`). Only external SDKs:
+`@anthropic-ai/sdk`, `openai`, `@google/genai`, and `typebox`.
