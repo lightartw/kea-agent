@@ -1,19 +1,21 @@
 # llm-client
 
-Thin LLM transport layer. Knows nothing about agent-level concepts — no execute, no validate, no hooks. Just types for talking to LLM providers.
+Thin LLM transport layer. Stream-only. Knows nothing about agent concepts — no execute, no validate, no hooks.
 
-## Public API (7 names)
-
-`index.ts` exports exactly these:
+## Public API (15 type exports + 1 function)
 
 ```ts
-export type { Context, LLMClient, LLMResponse, Message, Tool, ToolCall } from "./types.js";
+export type {
+  AssistantMessage, AssistantMessageEvent, ContentBlock, Context,
+  LLMClient, Message, StopReason, TextBlock, ThinkingBlock,
+  Tool, ToolCall, TokenUsage, ToolResultMessage, UserMessage,
+} from "./types.js";
 export { createLLMClient } from "./factory.js";
 ```
 
-### Types
+### Core types
 
-**`Tool`** — LLM-facing tool definition. Pure data, no methods.
+**`Tool`** — LLM-facing tool definition (name + schema). Pure data.
 ```ts
 interface Tool {
   readonly name: string;
@@ -21,9 +23,9 @@ interface Tool {
   readonly parameters: TObject;  // TypeBox schema
 }
 ```
-The agent layer extends this via `AgentTool implements Tool`, adding `validate()` + `execute()`.
+Agent layer extends via `AgentTool implements Tool`, adding `validate()` + `execute()`.
 
-**`ToolCall`** — The model's request to run one tool.
+**`ToolCall`** — Model requests to run one tool.
 ```ts
 interface ToolCall {
   readonly type: "toolCall";
@@ -33,18 +35,45 @@ interface ToolCall {
 }
 ```
 
-**`Message`** — One turn in the conversation. No `"system"` role (system prompt lives in `Context`).
+**`ContentBlock`** — One element inside an assistant message. Order = LLM output order.
 ```ts
-interface Message {
-  readonly role: "user" | "assistant" | "tool";
-  readonly content: string | null;
-  readonly toolCalls?: readonly ToolCall[];
-  readonly toolCallId?: string;
-  readonly name?: string;
-}
+type ContentBlock = TextBlock | ThinkingBlock | ToolCall;
+
+interface TextBlock     { type: "text";      text: string }
+interface ThinkingBlock { type: "thinking";  thinking: string; signature?: string }
+```
+`ToolCall` itself is a `ContentBlock` variant.
+
+**`Message`** — Discriminated union. No optional fields — each role has its own type.
+```ts
+type Message = UserMessage | AssistantMessage | ToolResultMessage;
+
+interface UserMessage       { role: "user";       content: string }
+interface ToolResultMessage { role: "tool";        toolCallId: string; name: string; content: string; isError?: boolean }
+interface AssistantMessage  { role: "assistant";   content: ContentBlock[]; model: string; usage?: TokenUsage; stopReason: StopReason; errorMessage?: string; latencyMs: number }
 ```
 
-**`Context`** — Everything needed for one LLM request.
+**`AssistantMessageEvent`** — Adapter stream yields 7 event types.
+```ts
+type AssistantMessageEvent =
+  | { type: "text_delta";       text: string }
+  | { type: "thinking_delta";   thinking: string }
+  | { type: "toolcall_start";   id: string; name: string }
+  | { type: "toolcall_delta";   id: string; argumentsDelta: string }
+  | { type: "toolcall_end";     toolCall: ToolCall }
+  | { type: "done";             message: AssistantMessage }    // terminal
+  | { type: "error";            message: AssistantMessage };   // terminal
+```
+
+Event lifecycle per streamed response:
+```
+thinking_delta*                                         (zero or more)
+text_delta*                                             (zero or more)
+(toolcall_start → toolcall_delta* → toolcall_end)*     (zero or more per tool)
+done | error                                            (exactly one)
+```
+
+**`Context`** — One LLM request.
 ```ts
 interface Context {
   readonly systemPrompt?: string;
@@ -53,37 +82,29 @@ interface Context {
 }
 ```
 
-**`LLMClient`** — Provider-agnostic interface.
+**`LLMClient`** — Stream-only. No `invoke()` — consume `done` for non-streaming.
 ```ts
 interface LLMClient {
-  invoke(context: Context, options?: Partial<LLMOptions>): Promise<LLMResponse>;
-  stream(context: Context, options?: Partial<LLMOptions>): AsyncIterable<LLMStreamEvent>;
+  stream(context: Context, options?: Partial<LLMOptions>): AsyncIterable<AssistantMessageEvent>;
 }
 ```
 
-**`LLMResponse`** — Normalized response from any provider.
+**`StopReason`** — How the stream ended.
 ```ts
-interface LLMResponse {
-  readonly model: string;
-  readonly content: string | null;
-  readonly toolCalls: readonly ToolCall[];
-  readonly usage: TokenUsage;
-  readonly latencyMs: number;
-  readonly finishReason: FinishReason;
-}
+type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 ```
 
 ### Factory
 
-**`createLLMClient(options?, env?)`** — Auto-detects provider from env (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`), returns a ready-to-use `LLMClient`.
+**`createLLMClient(options?, env?)`** — Auto-detects provider from env (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`).
 
 ## Usage
 
 ```ts
 import { createLLMClient } from "./llm-client/index.js";
-import type { Context, Message } from "./llm-client/types.js";
+import type { Context, AssistantMessage } from "./llm-client/types.js";
 
-const client = await createLLMClient({ model: "claude-sonnet-4-5" });
+const client = await createLLMClient();
 
 const ctx: Context = {
   systemPrompt: "You are a helpful assistant.",
@@ -91,41 +112,22 @@ const ctx: Context = {
 };
 
 for await (const event of client.stream(ctx)) {
-  if (event.type === "text_delta") console.log(event.text);
+  switch (event.type) {
+    case "text_delta":       /* white  */ break;
+    case "thinking_delta":   /* grey   */ break;
+    case "toolcall_start":   /* yellow */ break;
+    case "toolcall_delta":   /* stream args */ break;
+    case "toolcall_end":     /* complete */ break;
+    case "done":             /* final message = event.message */ break;
+    case "error":            /* event.message.stopReason === "error" */ break;
+  }
 }
 ```
 
 ## Internal (not exported)
 
-These exist in `types.ts` but are NOT in `index.ts`. You can still `import type` them from `./types.js` when needed.
-
-**`LLMOptions`** — Passed as `Partial<LLMOptions>` to `createLLMClient()` and to `client.stream()` / `client.invoke()` for per-call overrides.
-
-```ts
-interface LLMOptions {
-  readonly timeout: number;       // seconds, default 120
-  readonly maxTokens: number;     // default 8000
-  readonly temperature?: number;
-  readonly topP?: number;
-  readonly stop?: readonly string[];
-}
-```
-
-**`LLMConfig`** — Resolved by the factory from env + options. Used to construct concrete adapters.
-
-```ts
-interface LLMConfig {
-  readonly model: string;
-  readonly apiKey: string;
-  readonly baseUrl: string | null;
-  readonly options: LLMOptions;
-}
-```
-
-**Other internal types:**
-
 | Type | Consumed via |
 |---|---|
-| `FinishReason` | `LLMResponse.finishReason` |
-| `TokenUsage` | `LLMResponse.usage` |
-| `LLMStreamEvent` | `for await` type inference from `stream()` return type |
+| `LLMOptions` | `Partial<LLMOptions>` in `stream()` and `createLLMClient()` |
+| `LLMConfig` | Factory internal — resolved from env + options |
+| `TokenUsage` | Exported for type annotation, but only carried inside `AssistantMessage.usage` |

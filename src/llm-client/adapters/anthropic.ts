@@ -2,7 +2,6 @@ import Anthropic from "@anthropic-ai/sdk";
 
 import { mergeOptions } from "../client.js";
 import type {
-  AssistantMessage,
   AssistantMessageEvent,
   ContentBlock,
   Context,

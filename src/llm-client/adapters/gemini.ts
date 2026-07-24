@@ -11,7 +11,6 @@ import type {
   Message,
   StopReason,
   TextBlock,
-  ThinkingBlock,
   Tool,
   ToolCall,
 } from "../types.js";
