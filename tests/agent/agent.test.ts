@@ -27,7 +27,13 @@ test("Agent owns conversation history across prompts", async () => {
   const events = [];
   for await (const event of agent.prompt("hi")) events.push(event.type);
 
-  assert.deepEqual(events, ["text_delta", "turn_end"]);
+  assert.deepEqual(events, [
+    "agent_start",
+    "turn_start",
+    "text_delta",
+    "turn_end",
+    "agent_end",
+  ]);
   assert.deepEqual(
     agent.messages.map((message) => message.role),
     ["user", "assistant"],

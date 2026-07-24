@@ -88,6 +88,7 @@ export interface LLMOptions {
   readonly temperature?: number;
   readonly topP?: number;
   readonly stop?: readonly string[];
+  readonly signal?: AbortSignal;
 }
 
 export interface LLMConfig {

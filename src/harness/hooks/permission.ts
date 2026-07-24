@@ -1,5 +1,5 @@
 import { blockedBashFragment } from "../tools/bash.js";
-import type { ToolCall } from "../../agent/tools/types.js";
+import type { ToolCall } from "../../llm-client/types.js";
 import type { Hook, HookResult, PreToolUseEvent } from "../../agent/hooks/types.js";
 
 /** Information a presentation adapter needs to ask for one approval. */

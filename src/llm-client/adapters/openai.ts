@@ -112,7 +112,7 @@ export class OpenAIAdapter implements LLMClient {
           ...(opts.topP === undefined ? {} : { top_p: opts.topP }),
           ...(opts.stop === undefined ? {} : { stop: [...opts.stop] }),
         },
-        { timeout: timeoutMilliseconds(opts.timeout) },
+        { timeout: timeoutMilliseconds(opts.timeout), signal: opts.signal },
       );
 
       for await (const chunk of sdkStream as any) {

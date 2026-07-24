@@ -22,4 +22,9 @@ export class AgentHarness {
       await this.sessionStore.append(this.agent.messages[i]!);
     }
   }
+
+  /** Cancel the current prompt (ESC key). Delegates to Agent.abort(). */
+  abort(): void {
+    this.agent.abort();
+  }
 }

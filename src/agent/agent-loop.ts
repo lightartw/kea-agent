@@ -9,20 +9,33 @@ import type { AgentEvent } from "./types.js";
 import type { ToolRegistry } from "./tools/registry.js";
 
 /**
- * Pure function: run one LLM turn over the given message array.
+ * Pure function: run the agent loop over the given message array.
  * Mutates `messages` in place so Agent owns the history while the loop
  * only appends assistant + tool messages.
+ *
+ * Lifecycle: agent_start → (turn_start → stream → [tools] → turn_end)* → agent_end
  */
-export async function* runAgentTurn(
+export async function* runAgentLoop(
   messages: Message[],
   systemPrompt: string,
   client: LLMClient,
   registry: ToolRegistry,
   hooks?: HookRegistry,
+  signal?: AbortSignal,
 ): AsyncIterable<AgentEvent> {
+  yield { type: "agent_start" };
+
   while (true) {
-    // pre_turn — before LLM stream, hooks can inject context.
-    if (hooks !== undefined) {
+    // Aborted between turns — exit cleanly
+    if (signal?.aborted) {
+      yield { type: "agent_end", messages: [...messages] };
+      return;
+    }
+
+    yield { type: "turn_start" };
+
+    // pre_turn — before LLM stream, hooks can inject context
+    if (hooks !== undefined && !signal?.aborted) {
       const result = await hooks.trigger({ type: "pre_turn" });
       if (result?.context !== undefined) {
         messages.push({ role: "user", content: result.context });
@@ -37,9 +50,10 @@ export async function* runAgentTurn(
     };
 
     const toolCalls: ToolCall[] = [];
+    let forceContinue = false;
 
-    // Stream consumption loop
-    for await (const event of client.stream(ctx)) {
+    // Stream consumption — signal propagates to the HTTP request via LLMOptions
+    for await (const event of client.stream(ctx, signal === undefined ? {} : { signal })) {
       switch (event.type) {
         case "text_delta":
           yield { type: "text_delta", text: event.text };
@@ -59,10 +73,11 @@ export async function* runAgentTurn(
           break;
         case "done": {
           const message = event.message;
-          messages.push(message); // AssistantMessage goes directly into history
+          messages.push(message);
+
           if (toolCalls.length === 0) {
             // stop hook
-            if (hooks !== undefined) {
+            if (hooks !== undefined && !signal?.aborted) {
               const result = await hooks.trigger({
                 type: "stop",
                 messages: [...messages],
@@ -76,23 +91,37 @@ export async function* runAgentTurn(
                   role: "user",
                   content: result.forceContinue,
                 });
-                continue;
+                yield { type: "turn_end", message };
+                forceContinue = true;
+                break;
               }
             }
             yield { type: "turn_end", message };
+            yield { type: "agent_end", messages: [...messages] };
             return;
           }
+          yield { type: "turn_end", message };
           break; // fall through to tool execution
         }
         case "error": {
           messages.push(event.message);
           yield { type: "turn_end", message: event.message };
+          yield { type: "agent_end", messages: [...messages] };
           return;
         }
       }
     }
 
-    // Execute tools
+    // forceContinue skips tool execution and goes back to turn_start
+    if (forceContinue) continue;
+
+    // Aborted during streaming — skip tool execution, exit cleanly
+    if (signal?.aborted) {
+      yield { type: "agent_end", messages: [...messages] };
+      return;
+    }
+
+    // Execute tools sequentially
     for (const call of toolCalls) {
       yield { type: "tool_start", call };
       const result = await registry.execute(call);
@@ -103,6 +132,8 @@ export async function* runAgentTurn(
         content: result.content,
       });
       yield { type: "tool_end", call, result };
+      // Aborted mid-batch — stop executing remaining tools
+      if (signal?.aborted) break;
     }
   }
 }

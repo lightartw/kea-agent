@@ -16,6 +16,16 @@ export function timeoutMilliseconds(timeoutSeconds: number): number {
   return milliseconds;
 }
 
+/** Merge a mandatory timeout signal with an optional caller-provided abort signal. */
+export function mergeSignals(
+  timeoutSeconds: number,
+  callerSignal?: AbortSignal,
+): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMilliseconds(timeoutSeconds));
+  if (callerSignal === undefined) return timeoutSignal;
+  return AbortSignal.any([timeoutSignal, callerSignal]);
+}
+
 export async function runWithTimeout<T>(
   timeoutSeconds: number,
   operation: (signal: AbortSignal) => Promise<T>,

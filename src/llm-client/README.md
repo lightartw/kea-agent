@@ -2,101 +2,58 @@
 
 Thin LLM transport layer. Stream-only. Knows nothing about agent concepts — no execute, no validate, no hooks.
 
-## Public API (15 type exports + 1 function)
+## Type tiers
+
+llm-client exports two categories of types. Know which is which so you don't import transport internals from the wrong layer.
+
+### Tier 1 — Global data types
+
+Used by **every** package (`agent`, `harness`, `cli`, `session`). These are just data — they describe what the model said and what tools it called. Any module can import them.
+
+| Type | Description |
+| --- | --- |
+| `Message` | Discriminated union: `UserMessage \| AssistantMessage \| ToolResultMessage` |
+| `UserMessage` | `{ role: "user", content: string }` |
+| `AssistantMessage` | `{ role: "assistant", content: ContentBlock[], model, usage?, stopReason, errorMessage?, latencyMs }` |
+| `ToolResultMessage` | `{ role: "tool", toolCallId, name, content, isError? }` |
+| `Tool` | Thin tool schema: `{ name, description, parameters: TObject }` |
+| `ToolCall` | Model's tool request: `{ type: "toolCall", id, name, arguments }` |
+
+### Tier 2 — Transport types
+
+Used only by **llm-client adapters** and **agent-loop**. Harness and CLI should never import these directly — they get events through `AgentEvent` instead.
+
+| Type | Who uses it |
+| --- | --- |
+| `LLMClient` | Factory creates it, `agent-loop` calls `stream()` |
+| `Context` | Built by `agent-loop`, consumed by adapter `stream()` |
+| `AssistantMessageEvent` | 7 events yielded by adapters, consumed by `agent-loop` → translated to `AgentEvent` |
+| `ContentBlock` | Internal to `AssistantMessage.content` — exported because `AssistantMessage` references it |
+| `TextBlock` | `{ type: "text", text }` |
+| `ThinkingBlock` | `{ type: "thinking", thinking, signature? }` |
+| `LLMOptions` | Timeout, maxTokens, etc. Configured via factory, overridden per-call |
+| `LLMConfig` | Factory internal — model + apiKey + baseUrl + options |
+| `StopReason` | `"stop" \| "length" \| "toolUse" \| "error" \| "aborted"` |
+| `TokenUsage` | `{ inputTokens, outputTokens, totalTokens }` — carried inside `AssistantMessage.usage` |
+
+## Public API
 
 ```ts
+// Tier 1 — global data types
 export type {
-  AssistantMessage, AssistantMessageEvent, ContentBlock, Context,
-  LLMClient, Message, StopReason, TextBlock, ThinkingBlock,
-  Tool, ToolCall, TokenUsage, ToolResultMessage, UserMessage,
+  Message, UserMessage, AssistantMessage, ToolResultMessage,
+  Tool, ToolCall,
 } from "./types.js";
+
+// Tier 2 — transport types (needed by agent-loop and factory consumers)
+export type {
+  LLMClient, Context, AssistantMessageEvent,
+  ContentBlock, TextBlock, ThinkingBlock,
+  StopReason, TokenUsage,
+} from "./types.js";
+
 export { createLLMClient } from "./factory.js";
 ```
-
-### Core types
-
-**`Tool`** — LLM-facing tool definition (name + schema). Pure data.
-```ts
-interface Tool {
-  readonly name: string;
-  readonly description: string;
-  readonly parameters: TObject;  // TypeBox schema
-}
-```
-Agent layer extends via `AgentTool implements Tool`, adding `validate()` + `execute()`.
-
-**`ToolCall`** — Model requests to run one tool.
-```ts
-interface ToolCall {
-  readonly type: "toolCall";
-  readonly id: string;
-  readonly name: string;
-  readonly arguments: Record<string, unknown>;
-}
-```
-
-**`ContentBlock`** — One element inside an assistant message. Order = LLM output order.
-```ts
-type ContentBlock = TextBlock | ThinkingBlock | ToolCall;
-
-interface TextBlock     { type: "text";      text: string }
-interface ThinkingBlock { type: "thinking";  thinking: string; signature?: string }
-```
-`ToolCall` itself is a `ContentBlock` variant.
-
-**`Message`** — Discriminated union. No optional fields — each role has its own type.
-```ts
-type Message = UserMessage | AssistantMessage | ToolResultMessage;
-
-interface UserMessage       { role: "user";       content: string }
-interface ToolResultMessage { role: "tool";        toolCallId: string; name: string; content: string; isError?: boolean }
-interface AssistantMessage  { role: "assistant";   content: ContentBlock[]; model: string; usage?: TokenUsage; stopReason: StopReason; errorMessage?: string; latencyMs: number }
-```
-
-**`AssistantMessageEvent`** — Adapter stream yields 7 event types.
-```ts
-type AssistantMessageEvent =
-  | { type: "text_delta";       text: string }
-  | { type: "thinking_delta";   thinking: string }
-  | { type: "toolcall_start";   id: string; name: string }
-  | { type: "toolcall_delta";   id: string; argumentsDelta: string }
-  | { type: "toolcall_end";     toolCall: ToolCall }
-  | { type: "done";             message: AssistantMessage }    // terminal
-  | { type: "error";            message: AssistantMessage };   // terminal
-```
-
-Event lifecycle per streamed response:
-```
-thinking_delta*                                         (zero or more)
-text_delta*                                             (zero or more)
-(toolcall_start → toolcall_delta* → toolcall_end)*     (zero or more per tool)
-done | error                                            (exactly one)
-```
-
-**`Context`** — One LLM request.
-```ts
-interface Context {
-  readonly systemPrompt?: string;
-  readonly messages: readonly Message[];
-  readonly tools?: readonly Tool[];
-}
-```
-
-**`LLMClient`** — Stream-only. No `invoke()` — consume `done` for non-streaming.
-```ts
-interface LLMClient {
-  stream(context: Context, options?: Partial<LLMOptions>): AsyncIterable<AssistantMessageEvent>;
-}
-```
-
-**`StopReason`** — How the stream ended.
-```ts
-type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
-```
-
-### Factory
-
-**`createLLMClient(options?, env?)`** — Auto-detects provider from env (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`).
 
 ## Usage
 
@@ -113,21 +70,21 @@ const ctx: Context = {
 
 for await (const event of client.stream(ctx)) {
   switch (event.type) {
-    case "text_delta":       /* white  */ break;
-    case "thinking_delta":   /* grey   */ break;
-    case "toolcall_start":   /* yellow */ break;
-    case "toolcall_delta":   /* stream args */ break;
-    case "toolcall_end":     /* complete */ break;
-    case "done":             /* final message = event.message */ break;
-    case "error":            /* event.message.stopReason === "error" */ break;
+    case "text_delta":       break; // white  text
+    case "thinking_delta":   break; // grey   reasoning
+    case "toolcall_start":   break; // yellow tool name
+    case "toolcall_delta":   break; // stream arguments
+    case "toolcall_end":     break; // complete ToolCall
+    case "done":             break; // event.message is AssistantMessage
+    case "error":            break; // event.message.stopReason === "error"
   }
 }
 ```
 
-## Internal (not exported)
+## Internal
 
-| Type | Consumed via |
+| Type | Where |
 |---|---|
 | `LLMOptions` | `Partial<LLMOptions>` in `stream()` and `createLLMClient()` |
 | `LLMConfig` | Factory internal — resolved from env + options |
-| `TokenUsage` | Exported for type annotation, but only carried inside `AssistantMessage.usage` |
+| `resolveOptions` | Exported only for testing — merges defaults with user overrides |

@@ -15,7 +15,7 @@ import type {
   ToolCall,
   TokenUsage,
 } from "../types.js";
-import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
+import { mergeSignals, runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
 
 // ── Message conversion ──
 
@@ -93,7 +93,7 @@ export class AnthropicAdapter implements LLMClient {
   ): AsyncIterable<AssistantMessageEvent> {
     const opts: LLMOptions = { ...this.config.options, ...options };
     const converted = messagesForAnthropic(context.messages);
-    const signal = AbortSignal.timeout(timeoutMilliseconds(opts.timeout));
+    const signal = mergeSignals(opts.timeout, opts.signal);
 
     type PendingBlock =
       | { kind: "text"; text: string }

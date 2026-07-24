@@ -6,8 +6,8 @@ import type { ToolResult } from "../tools/types.js";
  *   1. user_prompt_submit → Agent.prompt()
  *   2. pre_tool_use       → ToolRegistry.execute()
  *   3. post_tool_use      → ToolRegistry.execute()
- *   4. pre_turn           → agent-loop.ts: runAgentTurn()  (before LLM stream)
- *   5. stop               → agent-loop.ts: runAgentTurn()  (no tool calls)
+ *   4. pre_turn           → agent-loop.ts: runAgentLoop()  (before LLM stream)
+ *   5. stop               → agent-loop.ts: runAgentLoop()  (no tool calls)
  *
  * trigger_hooks runs hooks in order, stops at the first non-undefined result.
  */

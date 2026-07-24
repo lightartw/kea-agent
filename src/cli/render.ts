@@ -31,7 +31,10 @@ export function renderAgentEvent(
       // result preview
       break;
     case "turn_end":
-      // finish
+    case "turn_start":
+    case "agent_start":
+    case "agent_end":
+      // Lifecycle events — no terminal output needed
       break;
   }
 }

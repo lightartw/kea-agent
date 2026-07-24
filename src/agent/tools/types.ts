@@ -1,7 +1,7 @@
 import type { Static, TObject } from "typebox";
 import { Compile, type Validator } from "typebox/compile";
 
-import type { Tool, ToolCall } from "../../llm-client/types.js";
+import type { Tool } from "../../llm-client/types.js";
 
 /** The registry's result, returned to both the model and the terminal. */
 export interface ToolResult {
@@ -33,5 +33,3 @@ export abstract class AgentTool<TParameters extends TObject = TObject> implement
   ): Promise<string>;
 }
 
-// Re-export for consumers that only import from agent/tools
-export type { Tool, ToolCall };

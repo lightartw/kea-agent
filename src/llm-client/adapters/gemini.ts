@@ -13,7 +13,7 @@ import type {
   Tool,
   ToolCall,
 } from "../types.js";
-import { timeoutMilliseconds } from "../../utils/timeout.js";
+import { mergeSignals } from "../../utils/timeout.js";
 
 // ── Message conversion ──
 
@@ -130,7 +130,7 @@ export class GeminiAdapter implements LLMClient {
           context.systemPrompt,
           context.tools,
           opts,
-          AbortSignal.timeout(timeoutMilliseconds(opts.timeout)),
+          mergeSignals(opts.timeout, opts.signal),
         ) as any,
       });
 

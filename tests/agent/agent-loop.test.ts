@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { Type } from "typebox";
 
-import { runAgentTurn } from "../../src/agent/agent-loop.js";
+import { runAgentLoop } from "../../src/agent/agent-loop.js";
 import type { AgentEvent } from "../../src/agent/types.js";
 import type {
   AssistantMessage,
@@ -61,7 +61,7 @@ async function collect(
   return events;
 }
 
-test("runAgentTurn streams text and stores one complete assistant message", async () => {
+test("runAgentLoop streams text and stores one complete assistant message", async () => {
   const final = assistantMsg("hello");
   const history: Message[] = [{ role: "user", content: "hi" }];
   const client = clientWithStreams([[
@@ -71,18 +71,21 @@ test("runAgentTurn streams text and stores one complete assistant message", asyn
   ]]);
 
   const events = await collect(
-    runAgentTurn(history, "", client, new ToolRegistry()),
+    runAgentLoop(history, "", client, new ToolRegistry()),
   );
 
   assert.deepEqual(events, [
+    { type: "agent_start" },
+    { type: "turn_start" },
     { type: "text_delta", text: "hel" },
     { type: "text_delta", text: "lo" },
     { type: "turn_end", message: final },
+    { type: "agent_end", messages: [...history] },
   ]);
   assert.deepEqual(history.at(-1), final);
 });
 
-test("runAgentTurn streams and executes tools sequentially", async () => {
+test("runAgentLoop streams and executes tools sequentially", async () => {
   const observed: string[] = [];
   class OrderedTool extends AgentTool<typeof emptyParameters> {
     constructor(name: string) {
@@ -116,24 +119,29 @@ test("runAgentTurn streams and executes tools sequentially", async () => {
   };
   const history: Message[] = [{ role: "user", content: "run" }];
 
-  const events = await collect(runAgentTurn(history, "", client, registry));
+  const events = await collect(runAgentLoop(history, "", client, registry));
 
   assert.deepEqual(observed, ["done", "first", "second"]);
   assert.deepEqual(events.map((event) => event.type), [
+    "agent_start",
+    "turn_start",
     "toolcall_start",
     "toolcall_end",
     "toolcall_start",
     "toolcall_end",
+    "turn_end",
     "tool_start",
     "tool_end",
     "tool_start",
     "tool_end",
+    "turn_start",
     "text_delta",
     "turn_end",
+    "agent_end",
   ]);
   assert.deepEqual(
     events.at(-1),
-    { type: "turn_end", message: finalMsg },
+    { type: "agent_end", messages: [...history] },
   );
   assert.deepEqual(
     history.map((message) => message.role),
@@ -169,7 +177,7 @@ test("tool results are in history before the next model stream", async () => {
   );
   const history: Message[] = [{ role: "user", content: "run" }];
 
-  await collect(runAgentTurn(history, "", client, registry));
+  await collect(runAgentLoop(history, "", client, registry));
 
   assert.deepEqual(secondHistory?.at(-1), {
     role: "tool",
@@ -193,7 +201,7 @@ test("Registry failures are emitted and returned to the model", async () => {
   const history: Message[] = [{ role: "user", content: "run" }];
 
   const events = await collect(
-    runAgentTurn(history, "", client, new ToolRegistry()),
+    runAgentLoop(history, "", client, new ToolRegistry()),
   );
 
   const toolEnd = events.find((event) => event.type === "tool_end");

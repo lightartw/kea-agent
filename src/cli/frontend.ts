@@ -5,8 +5,8 @@ import type { AgentHarness } from "../harness/agent-harness.js";
 import type { PermissionRequest } from "../harness/hooks/permission.js";
 import { renderAgentEvent } from "./render.js";
 
-const CYAN = "[36m";
-const RESET = "[0m";
+const CYAN = "\x1b[36m";
+const RESET = "\x1b[0m";
 
 /** The readline presentation adapter; core modules never import this class. */
 export class CliFrontend {
@@ -21,7 +21,7 @@ export class CliFrontend {
 
   /** Show one approval request. EOF and Ctrl+C are denials, not approvals. */
   async requestPermission(request: PermissionRequest): Promise<boolean> {
-    console.log(`\n[33m[permission] ${request.reason}[0m`);
+    console.log(`\n\x1b[33m[permission] ${request.reason}\x1b[0m`);
     console.log(`  ${request.call.name}: ${JSON.stringify(request.call.arguments)}`);
     try {
       const answer = await this.readline.question("  Allow? [y/N] ");
@@ -34,7 +34,7 @@ export class CliFrontend {
   /** Keep accepting user turns while AgentHarness owns conversation state. */
   async run(harness: AgentHarness): Promise<void> {
     console.log("Agent Loop");
-    console.log("输入问题，回车发送。输入 q 退出。\n");
+    console.log("Press Enter to send. ESC to abort streaming. 'q' to quit.\n");
     while (true) {
       let query: string;
       try {
@@ -44,12 +44,36 @@ export class CliFrontend {
       }
       if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
 
-      for await (const event of harness.prompt(query)) {
-        renderAgentEvent(
-          event,
-          (text) => process.stdout.write(text),
-          (text) => console.log(text),
-        );
+      // Enable ESC detection during streaming. In raw mode, ^C also becomes
+      // a regular byte so we forward it to SIGINT ourselves.
+      let onData: ((buf: Buffer) => void) | undefined;
+      if (process.stdin.isTTY) {
+        onData = (buf: Buffer): void => {
+          if (buf[0] === 0x1b) {
+            // ESC — abort the current prompt
+            harness.abort();
+          } else if (buf[0] === 0x03) {
+            // ^C — forward as SIGINT signal
+            process.kill(process.pid, "SIGINT");
+          }
+        };
+        process.stdin.setRawMode(true);
+        process.stdin.on("data", onData);
+      }
+
+      try {
+        for await (const event of harness.prompt(query)) {
+          renderAgentEvent(
+            event,
+            (text) => process.stdout.write(text),
+            (text) => console.log(text),
+          );
+        }
+      } finally {
+        if (onData !== undefined) {
+          process.stdin.removeListener("data", onData);
+          process.stdin.setRawMode(false);
+        }
       }
       console.log();
     }

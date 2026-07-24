@@ -1,7 +1,7 @@
 import type { HookRegistry } from "../hooks/registry.js";
 import { runWithTimeout, timeoutMilliseconds } from "../../utils/timeout.js";
-import { AgentTool, type ToolCall, type ToolResult } from "./types.js";
-import type { Tool } from "../../llm-client/types.js";
+import { AgentTool, type ToolResult } from "./types.js";
+import type { Tool, ToolCall } from "../../llm-client/types.js";
 
 const ERROR_PREFIX = "Error: ";
 
