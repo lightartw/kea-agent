@@ -1,203 +1,310 @@
-import { appendFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { createInterface } from "node:readline";
-import type { Message, ModelConfig } from "../../ai/types.js";
+import { join } from "node:path";
+import type { AgentMessage } from "../../agent/types.js";
+import type { ModelConfig } from "../../ai/types.js";
+import {
+  type SessionContext,
+  type SessionEntry,
+  type SessionMessageEntry,
+  type SessionModelChangeEntry,
+  SessionError,
+} from "./types.js";
 
-// ── Entry types ──
-
-interface EntryBase {
-  id: string;
-  parentId: string | null;
-}
-
-interface MessageEntry extends EntryBase {
-  type: "message";
-  message: Message;
-}
-
-interface ModelChangeEntry extends EntryBase {
-  type: "model_change";
-  provider: string;
-  modelId: string;
-}
-
-type Entry = MessageEntry | ModelChangeEntry;
-
-// ── Helpers ──
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+const STOP_REASONS = new Set(["stop", "length", "toolUse", "error", "aborted"]);
 
 function newId(): string {
   return randomUUID().slice(0, 12);
 }
 
-async function readEntries(filePath: string): Promise<Entry[]> {
-  const entries: Entry[] = [];
-  try {
-    const rl = createInterface({
-      input: createReadStream(filePath, "utf8"),
-      crlfDelay: Infinity,
-    });
-    for await (const line of rl) {
-      if (!line.trim()) continue;
-      const raw = JSON.parse(line) as Record<string, unknown>;
-      if (raw.type === "message" || raw.type === "model_change") {
-        entries.push(raw as unknown as Entry);
-      }
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-  return entries;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// ── Session ──
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
 
-/**
- * Append-only conversation tree backed by a JSONL file.
- *
- * Each entry has an id and parentId. The leaf pointer tracks the current
- * position; appending creates a child of the leaf. buildContext() walks
- * from leaf to root to reconstruct messages and the current model.
- *
- * Two modes:
- *   Session.create(dir)    — persistent, file in <dir>/sessions/<id>.jsonl
- *   Session.open(dir, id)  — open existing session
- *   Session.inMemory()     — no file I/O, data lives only in memory
- */
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isContentBlock(value: unknown): boolean {
+  if (!isRecord(value) || !isString(value.type)) return false;
+
+  switch (value.type) {
+    case "text":
+      return isString(value.text);
+    case "thinking":
+      return isString(value.thinking) &&
+        (value.signature === undefined || isString(value.signature));
+    case "toolCall":
+      return isString(value.id) && isString(value.name) && isRecord(value.arguments);
+    default:
+      return false;
+  }
+}
+
+function isAgentMessage(value: unknown): value is AgentMessage {
+  if (!isRecord(value) || !isString(value.role)) return false;
+
+  switch (value.role) {
+    case "user":
+      return isString(value.content);
+    case "tool":
+      return isString(value.toolCallId) && isString(value.name) &&
+        isString(value.content) &&
+        (value.isError === undefined || typeof value.isError === "boolean");
+    case "assistant": {
+      if (!Array.isArray(value.content) || !value.content.every(isContentBlock) ||
+        !isString(value.model) || !isString(value.stopReason) ||
+        !STOP_REASONS.has(value.stopReason) || !isFiniteNumber(value.latencyMs) ||
+        (value.errorMessage !== undefined && !isString(value.errorMessage))) {
+        return false;
+      }
+
+      if (value.usage === undefined) return true;
+      return isRecord(value.usage) && isFiniteNumber(value.usage.inputTokens) &&
+        isFiniteNumber(value.usage.outputTokens) && isFiniteNumber(value.usage.totalTokens);
+    }
+    default:
+      return false;
+  }
+}
+
+function invalidEntry(message: string): never {
+  throw new SessionError("invalid_entry", message);
+}
+
+function parseEntry(raw: unknown): SessionEntry {
+  if (!isRecord(raw) || !isString(raw.id) || !SESSION_ID_PATTERN.test(raw.id) ||
+    (raw.parentId !== null && (!isString(raw.parentId) || !SESSION_ID_PATTERN.test(raw.parentId))) ||
+    !isString(raw.type)) {
+    return invalidEntry("Session entry has invalid metadata");
+  }
+
+  if (raw.type === "message") {
+    if (!isAgentMessage(raw.message)) {
+      return invalidEntry("Session message entry has an invalid message");
+    }
+    return {
+      type: "message",
+      id: raw.id,
+      parentId: raw.parentId,
+      message: raw.message,
+    };
+  }
+
+  if (raw.type === "model_change") {
+    if (!isString(raw.provider) || !isString(raw.modelId)) {
+      return invalidEntry("Session model change entry has invalid model fields");
+    }
+    return {
+      type: "model_change",
+      id: raw.id,
+      parentId: raw.parentId,
+      provider: raw.provider,
+      modelId: raw.modelId,
+    };
+  }
+
+  return invalidEntry("Session entry has an unknown type");
+}
+
+function validateTree(entries: readonly SessionEntry[]): void {
+  const byId = new Set<string>();
+  let rootCount = 0;
+
+  for (const entry of entries) {
+    if (byId.has(entry.id)) {
+      invalidEntry("Session contains duplicate entry IDs");
+    }
+    if (entry.parentId === null) {
+      rootCount += 1;
+    } else if (!byId.has(entry.parentId)) {
+      invalidEntry("Session entry references a missing parent");
+    }
+    byId.add(entry.id);
+  }
+
+  if (rootCount !== 1) {
+    invalidEntry("Session entries must form one rooted tree");
+  }
+}
+
+function sessionPath(storageDir: string, sessionId: string): string {
+  if (!SESSION_ID_PATTERN.test(sessionId)) {
+    throw new SessionError("invalid_session", "Session ID is invalid");
+  }
+  return join(storageDir, "sessions", `${sessionId}.jsonl`);
+}
+
+function asStorageError(message: string, error: unknown): SessionError {
+  return new SessionError("storage", message, { cause: error });
+}
+
 export class Session {
-  private entries: Entry[] = [];
-  private byId = new Map<string, Entry>();
+  private entries: SessionEntry[] = [];
+  private byId = new Map<string, SessionEntry>();
   private leafId: string | null = null;
-
-  // Persistence state
-  private persistPath: string | null;
   private flushed = false;
 
-  private constructor(readonly id: string, storageDir?: string) {
-    if (storageDir !== undefined) {
-      this.persistPath = join(storageDir, "sessions", `${id}.jsonl`);
-    } else {
-      this.persistPath = null;
-    }
-  }
+  private constructor(
+    readonly id: string,
+    private readonly persistPath: string | null,
+  ) {}
 
-  // ── Factories ──
-
-  /** Create a new session backed by a JSONL file. */
   static async create(storageDir: string): Promise<Session> {
-    const dir = join(storageDir, "sessions");
-    await mkdir(dir, { recursive: true });
-    const ts = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-    const id = `${ts}_${randomUUID().slice(0, 8)}`;
-    return new Session(id, storageDir);
+    try {
+      await mkdir(join(storageDir, "sessions"), { recursive: true });
+    } catch (error) {
+      throw asStorageError("Could not create session storage", error);
+    }
+
+    const timestamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+    const id = `${timestamp}_${randomUUID().slice(0, 8)}`;
+    return new Session(id, sessionPath(storageDir, id));
   }
 
-  /** Open an existing session by id. */
   static async open(storageDir: string, sessionId: string): Promise<Session> {
-    const session = new Session(sessionId, storageDir);
-    const path = session.persistPath!;
-    const loaded = await readEntries(path);
-
-    // File exists but is empty — create hook can pre-populate
-    if (loaded.length === 0 && session.persistPath) {
-      session.flushed = true;
-      return session;
+    const path = sessionPath(storageDir, sessionId);
+    let contents: string;
+    try {
+      contents = await readFile(path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new SessionError("not_found", `Session ${sessionId} was not found`, {
+          cause: error,
+        });
+      }
+      throw asStorageError("Could not read session storage", error);
     }
 
-    for (const entry of loaded) {
-      session.entries.push(entry);
-      session.byId.set(entry.id, entry);
-      session.leafId = entry.id;
+    if (contents.trim() === "") {
+      throw new SessionError("invalid_session", "Session file is empty");
     }
-    session.flushed = loaded.length > 0;
+
+    const entries: SessionEntry[] = [];
+    for (const line of contents.split(/\r?\n/)) {
+      if (line.trim() === "") continue;
+      let raw: unknown;
+      try {
+        raw = JSON.parse(line);
+      } catch (error) {
+        throw new SessionError("invalid_session", "Session file contains invalid JSON", {
+          cause: error,
+        });
+      }
+      entries.push(parseEntry(raw));
+    }
+
+    validateTree(entries);
+
+    const session = new Session(sessionId, path);
+    for (const entry of entries) {
+      session.push(entry);
+    }
+    session.flushed = true;
     return session;
   }
 
-  /** Create an in-memory session that never touches disk. */
   static inMemory(): Session {
-    return new Session(randomUUID().slice(0, 12));
+    return new Session(newId(), null);
   }
 
-  // ── Append ──
-
-  private async persist(entry: Entry): Promise<void> {
-    if (this.persistPath === null) return;
-
-    const hasAssistant = this.entries.some(
-      (e) => e.type === "message" && e.message.role === "assistant",
-    );
-
-    if (!hasAssistant) {
-      // Buffer in memory until the first assistant message arrives.
-      // This avoids creating empty session files for abandoned prompts.
-      this.flushed = false;
-      return;
-    }
-
-    if (!this.flushed) {
-      // First assistant — create the file and flush all buffered entries.
-      const lines = this.entries.map((e) => `${JSON.stringify(e)}\n`).join("");
-      await appendFile(this.persistPath, lines, "utf8");
-      this.flushed = true;
-    } else {
-      await appendFile(this.persistPath, `${JSON.stringify(entry)}\n`, "utf8");
-    }
-  }
-
-  private push(entry: Entry): void {
+  private push(entry: SessionEntry): void {
     this.entries.push(entry);
     this.byId.set(entry.id, entry);
     this.leafId = entry.id;
   }
 
-  async appendMessage(message: Message): Promise<void> {
-    const entry: MessageEntry = {
-      type: "message", id: newId(), parentId: this.leafId, message,
-    };
-    this.push(entry);
-    await this.persist(entry);
+  private rollback(entry: SessionEntry, previousLeafId: string | null): void {
+    const popped = this.entries.pop();
+    if (popped !== entry) {
+      throw new Error("Session append rollback lost the appended entry");
+    }
+    this.byId.delete(entry.id);
+    this.leafId = previousLeafId;
   }
 
-  async appendModelChange(provider: string, modelId: string): Promise<void> {
-    const entry: ModelChangeEntry = {
-      type: "model_change", id: newId(), parentId: this.leafId, provider, modelId,
-    };
-    this.push(entry);
-    await this.persist(entry);
+  private async persist(entry: SessionEntry): Promise<void> {
+    if (this.persistPath === null) return;
+
+    const hasAssistant = this.entries.some(
+      (candidate) => candidate.type === "message" && candidate.message.role === "assistant",
+    );
+    if (!hasAssistant) return;
+
+    try {
+      if (!this.flushed) {
+        const allLines = this.entries.map((candidate) => `${JSON.stringify(candidate)}\n`).join("");
+        await writeFile(this.persistPath, allLines, { encoding: "utf8", flag: "wx" });
+        this.flushed = true;
+      } else {
+        await appendFile(this.persistPath, `${JSON.stringify(entry)}\n`, "utf8");
+      }
+    } catch (error) {
+      throw asStorageError("Could not persist session entry", error);
+    }
   }
 
-  // ── Query ──
+  private async append(entry: SessionEntry): Promise<void> {
+    const previousLeafId = this.leafId;
+    this.push(entry);
+    try {
+      await this.persist(entry);
+    } catch (error) {
+      this.rollback(entry, previousLeafId);
+      throw error;
+    }
+  }
 
-  private branch(): Entry[] {
-    const path: Entry[] = [];
-    let cursor: string | null = this.leafId;
+  async appendMessage(message: AgentMessage): Promise<void> {
+    await this.append({
+      type: "message",
+      id: newId(),
+      parentId: this.leafId,
+      message,
+    } satisfies SessionMessageEntry);
+  }
+
+  async appendModelChange(model: ModelConfig): Promise<void> {
+    await this.append({
+      type: "model_change",
+      id: newId(),
+      parentId: this.leafId,
+      provider: model.provider,
+      modelId: model.model,
+    } satisfies SessionModelChangeEntry);
+  }
+
+  private branch(): SessionEntry[] {
+    const branch: SessionEntry[] = [];
+    let cursor = this.leafId;
     while (cursor !== null) {
       const entry = this.byId.get(cursor);
-      if (!entry) break;
-      path.push(entry);
+      if (entry === undefined) {
+        throw new SessionError("invalid_entry", "Session leaf points to a missing entry");
+      }
+      branch.push(entry);
       cursor = entry.parentId;
     }
-    return path.reverse();
+    return branch.reverse();
   }
 
-  /** Rebuild messages and current model by walking from leaf to root. */
-  buildContext(): { messages: Message[]; model: ModelConfig | null } {
-    const messages: Message[] = [];
+  buildContext(): SessionContext {
+    const messages: AgentMessage[] = [];
     let model: ModelConfig | null = null;
 
     for (const entry of this.branch()) {
       if (entry.type === "message") {
         messages.push(entry.message);
-      } else if (entry.type === "model_change") {
+      } else {
         model = { provider: entry.provider, model: entry.modelId };
       }
     }
 
     return { messages, model };
-  }
-
-  messages(): Message[] {
-    return this.buildContext().messages;
   }
 }

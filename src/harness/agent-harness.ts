@@ -122,7 +122,7 @@ export class AgentHarness {
   }
 
   async switchModel(config: ModelConfig): Promise<void> {
-    this.session.appendModelChange(config.provider, config.model);
+    await this.session.appendModelChange(config);
     this.agent.model = config;
     this.agent.systemPrompt = this.buildPrompt({
       model: config,
