@@ -9,6 +9,7 @@ export {
 } from "./system-prompt.js";
 export { Session } from "./session/session.js";
 export { SessionError } from "./session/types.js";
+export { SessionManager } from "./session/manager.js";
 export { createToolRegistry } from "./tools/factory.js";
 export { BashTool } from "./tools/bash.js";
 export { LocalBashOperations } from "./tools/bash-ops.js";

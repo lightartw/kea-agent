@@ -1,6 +1,5 @@
 import { AgentHarness } from "./agent-harness.js";
 import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
-import { Session } from "./session/session.js";
 import { defaultSystemPrompt } from "./system-prompt.js";
 import { createToolRegistry } from "./tools/factory.js";
 import type {
@@ -18,9 +17,8 @@ function resolveSystemPrompt(
 export async function createHarness(
   config: CreateHarnessConfig,
 ): Promise<AgentHarness> {
-  const session =
-    config.session ??
-    await Session.create(config.project.storageDir);
+  if (!config.session) throw new Error("session is required");
+  const session = config.session;
 
   return new AgentHarness({
     session,
