@@ -8,12 +8,6 @@ export interface TodoItem {
   readonly status: "pending" | "in_progress" | "completed";
 }
 
-let currentTodos: readonly TodoItem[] = [];
-
-export function getCurrentTodos(): readonly TodoItem[] {
-  return currentTodos;
-}
-
 const TODO_ICONS: Record<TodoItem["status"], string> = {
   pending: " ",
   in_progress: "▸",
@@ -38,6 +32,8 @@ const parameters = Type.Object(
 );
 
 export class TodoWriteTool extends AgentTool<typeof parameters> {
+  private todos: readonly TodoItem[] = [];
+
   constructor() {
     super(
       "todo_write",
@@ -50,13 +46,16 @@ export class TodoWriteTool extends AgentTool<typeof parameters> {
   }
 
   async execute(arguments_: Static<typeof parameters>, _signal: AbortSignal): Promise<AgentToolResult> {
-    currentTodos = arguments_.todos;
+    this.todos = arguments_.todos;
     const lines = ["\n## Current Tasks"];
-    for (const t of currentTodos) {
-      const icon = TODO_ICONS[t.status] ?? " ";
-      lines.push(`  [${icon}] ${t.content}`);
+    for (const todo of this.todos) {
+      const icon = TODO_ICONS[todo.status] ?? " ";
+      lines.push(`  [${icon}] ${todo.content}`);
     }
     const formatted = lines.join("\n");
-    return { content: `${formatted}\n\nUpdated ${currentTodos.length} tasks`, isError: false };
+    return {
+      content: `${formatted}\n\nUpdated ${this.todos.length} tasks`,
+      isError: false,
+    };
   }
 }

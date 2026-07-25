@@ -1,4 +1,4 @@
-import { blockedBashFragment } from "../tools/bash.js";
+import { blockedBashReason } from "../tools/bash.js";
 import type { HookResult, PreToolUseEvent } from "./types.js";
 
 /**
@@ -7,41 +7,14 @@ import type { HookResult, PreToolUseEvent } from "./types.js";
  * and the model can retry or adapt.
  */
 
-const FORBIDDEN_BASH_FRAGMENTS = [
-  "rm ",
-  "> /etc/",
-  "chmod 777",
-  "> /dev/",
-  "sudo ",
-  "shutdown",
-  "reboot",
-  "mkfs",
-  "dd ",
-] as const;
-
 function block(reason: string): HookResult {
   return { block: true, reason: `Permission denied: ${reason}` };
 }
 
 function checkBash(command: unknown): HookResult | undefined {
   if (typeof command !== "string") return block("invalid Bash command");
-
-  const forbidden = blockedBashFragment(command);
-  if (forbidden !== undefined) {
-    return block(`command contains forbidden fragment '${forbidden}'`);
-  }
-
-  for (const fragment of FORBIDDEN_BASH_FRAGMENTS) {
-    if (command.includes(fragment)) {
-      return block(
-        fragment === "rm "
-          ? "file deletion is not allowed"
-          : `command contains forbidden fragment '${fragment}'`,
-      );
-    }
-  }
-
-  return undefined;
+  const reason = blockedBashReason(command);
+  return reason === undefined ? undefined : block(reason);
 }
 
 /** Applies Kea's default approval policy immediately before tool execution. */

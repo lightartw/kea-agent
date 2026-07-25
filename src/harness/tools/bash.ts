@@ -10,20 +10,27 @@ export interface BashOperations {
   exec(command: string, cwd: string, signal: AbortSignal): Promise<string>;
 }
 
-const DANGEROUS_COMMAND_FRAGMENTS = [
+const FORBIDDEN_BASH_FRAGMENTS = [
+  "rm ",
   "rm -rf /",
   "sudo",
+  "chmod 777",
   "shutdown",
   "reboot",
   "mkfs",
-  "dd if=",
+  "dd ",
+  "> /etc/",
   "> /dev/",
 ] as const;
 
-export function blockedBashFragment(command: string): string | undefined {
-  return DANGEROUS_COMMAND_FRAGMENTS.find((fragment) =>
-    command.includes(fragment),
+export function blockedBashReason(command: string): string | undefined {
+  const fragment = FORBIDDEN_BASH_FRAGMENTS.find((candidate) =>
+    command.includes(candidate),
   );
+  if (fragment === undefined) return undefined;
+  return fragment === "rm "
+    ? "file deletion is not allowed"
+    : `command contains forbidden fragment '${fragment}'`;
 }
 
 const parameters = Type.Object(
@@ -49,8 +56,12 @@ export class BashTool extends AgentTool<typeof parameters> {
     signal: AbortSignal,
   ): Promise<AgentToolResult> {
     const { command } = arguments_;
-    if (blockedBashFragment(command) !== undefined) {
-      return { content: "Error: Dangerous command blocked", isError: true };
+    const reason = blockedBashReason(command);
+    if (reason !== undefined) {
+      return {
+        content: `Error: Permission denied: ${reason}`,
+        isError: true,
+      };
     }
     try {
       const content = await this.ops.exec(command, this.resolvedCwd, signal);
