@@ -144,6 +144,111 @@ test("failed first flush rolls back the assistant entry and leaf", async () => {
   await rm(storageDir, { recursive: true, force: true });
 });
 
+test("failed append after external session-file deletion rolls back the new entry", async () => {
+  const storageDir = await tempStorage();
+  try {
+    const session = await Session.create(storageDir);
+    const path = join(storageDir, "sessions", `${session.id}.jsonl`);
+    await session.appendMessage(user);
+    await session.appendMessage(assistant);
+    await rm(path);
+
+    await assert.rejects(
+      session.appendModelChange(modelB),
+      (error: unknown) => error instanceof SessionError && error.code === "storage",
+    );
+    await assertMissing(path);
+    assert.deepEqual(session.buildContext(), {
+      messages: [user, assistant],
+      model: null,
+    });
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
+test("append rejects invalid runtime entries without changing the session", async () => {
+  const invalidAppends: Array<{
+    readonly append: (session: Session) => Promise<void>;
+    readonly name: string;
+  }> = [
+    {
+      name: "NaN assistant latency",
+      append: (session) => session.appendMessage({ ...assistant, latencyMs: Number.NaN }),
+    },
+    {
+      name: "infinite assistant token count",
+      append: (session) => session.appendMessage({
+        ...assistant,
+        usage: { inputTokens: 1, outputTokens: Infinity, totalTokens: 2 },
+      }),
+    },
+    {
+      name: "non-string model ID",
+      append: (session) => session.appendModelChange({
+        provider: "test",
+        model: null as unknown as string,
+      }),
+    },
+  ];
+
+  for (const { append, name } of invalidAppends) {
+    await test(name, async () => {
+      const session = Session.inMemory();
+      await assert.rejects(
+        append(session),
+        (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
+      );
+      assert.deepEqual(session.buildContext(), { messages: [], model: null });
+    });
+  }
+});
+
+test("open rejects duplicate IDs, missing parents, and multiple roots", async () => {
+  const storageDir = await tempStorage();
+  const sessionsDir = join(storageDir, "sessions");
+  const invalidTrees: Array<{
+    readonly name: string;
+    readonly entries: readonly object[];
+  }> = [
+    {
+      name: "duplicate",
+      entries: [
+        { type: "message", id: "root", parentId: null, message: user },
+        { type: "message", id: "root", parentId: "root", message: assistant },
+      ],
+    },
+    {
+      name: "missing-parent",
+      entries: [
+        { type: "message", id: "child", parentId: "missing", message: user },
+      ],
+    },
+    {
+      name: "multiple-roots",
+      entries: [
+        { type: "message", id: "first", parentId: null, message: user },
+        { type: "message", id: "second", parentId: null, message: user },
+      ],
+    },
+  ];
+  try {
+    await mkdir(sessionsDir, { recursive: true });
+    for (const { name, entries } of invalidTrees) {
+      await writeFile(
+        join(sessionsDir, `${name}.jsonl`),
+        `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      );
+      await assert.rejects(
+        Session.open(storageDir, name),
+        (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
+      );
+    }
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
 test("buildContext returns a new messages array", async () => {
   const session = Session.inMemory();
   await session.appendMessage(user);

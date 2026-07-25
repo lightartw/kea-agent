@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AgentMessage } from "../../agent/types.js";
@@ -242,7 +242,26 @@ export class Session {
         await writeFile(this.persistPath, allLines, { encoding: "utf8", flag: "wx" });
         this.flushed = true;
       } else {
-        await appendFile(this.persistPath, `${JSON.stringify(entry)}\n`, "utf8");
+        const file = await open(this.persistPath, "r+");
+        try {
+          const { size } = await file.stat();
+          const contents = Buffer.from(`${JSON.stringify(entry)}\n`, "utf8");
+          let offset = 0;
+          while (offset < contents.length) {
+            const { bytesWritten } = await file.write(
+              contents,
+              offset,
+              contents.length - offset,
+              size + offset,
+            );
+            if (bytesWritten === 0) {
+              throw new Error("Session append wrote zero bytes");
+            }
+            offset += bytesWritten;
+          }
+        } finally {
+          await file.close();
+        }
       }
     } catch (error) {
       throw asStorageError("Could not persist session entry", error);
@@ -250,12 +269,13 @@ export class Session {
   }
 
   private async append(entry: SessionEntry): Promise<void> {
+    const validatedEntry = parseEntry(entry);
     const previousLeafId = this.leafId;
-    this.push(entry);
+    this.push(validatedEntry);
     try {
-      await this.persist(entry);
+      await this.persist(validatedEntry);
     } catch (error) {
-      this.rollback(entry, previousLeafId);
+      this.rollback(validatedEntry, previousLeafId);
       throw error;
     }
   }
