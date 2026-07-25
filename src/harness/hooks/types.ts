@@ -1,5 +1,5 @@
-import type { Message, ToolCall } from "../../ai/types.js";
-import type { AgentToolResult } from "../../agent/tools/types.js";
+import type { AgentToolCall, AgentToolResult } from "../../agent/tools/types.js";
+import type { AgentMessage } from "../../agent/types.js";
 
 /**
  * Hook lifecycle — all hooks run inside the agent loop via AgentLoopConfig:
@@ -25,18 +25,18 @@ export interface PreTurnEvent extends HookEvent {
 
 export interface PreToolUseEvent extends HookEvent {
   readonly type: "pre_tool_use";
-  readonly call: ToolCall;
+  readonly call: AgentToolCall;
 }
 
 export interface PostToolUseEvent extends HookEvent {
   readonly type: "post_tool_use";
-  readonly call: ToolCall;
+  readonly call: AgentToolCall;
   readonly result: AgentToolResult;
 }
 
 export interface StopEvent extends HookEvent {
   readonly type: "stop";
-  readonly messages: readonly Message[];
+  readonly messages: readonly AgentMessage[];
 }
 
 export type HookEventUnion =
@@ -49,7 +49,7 @@ export type HookEventUnion =
 export interface HookResult {
   readonly block?: boolean;
   readonly reason?: string;
-  readonly messages?: readonly Message[];
+  readonly messages?: readonly AgentMessage[];
   readonly context?: string;
   readonly forceContinue?: string;
 }

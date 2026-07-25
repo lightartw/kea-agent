@@ -1,11 +1,11 @@
 import { Agent } from "../agent/agent.js";
-import type { AgentEvent } from "../agent/types.js";
+import type { AgentEvent, AgentMessage } from "../agent/types.js";
 import type { AgentTool } from "../agent/tools/types.js";
 import { AgentToolRegistry } from "../agent/tools/registry.js";
 import type { AgentLoopConfig } from "../agent/types.js";
 import { HookRegistry } from "./hooks/registry.js";
 import type { Hook } from "./hooks/types.js";
-import type { Message, ModelConfig, StreamFn } from "../ai/types.js";
+import type { ModelConfig, StreamFn } from "../ai/types.js";
 import { Session } from "./session/session.js";
 import {
   CODING_SYSTEM_PROMPT,
@@ -23,8 +23,8 @@ export interface HarnessConfig {
   readonly cwd?: string;
 }
 
-/** Bridge HookRegistry to AgentLoopConfig for the agent loop. */
-function registryToLoopConfig(registry: HookRegistry): Omit<AgentLoopConfig, "model" | "convertToLlm"> {
+/** Convert HookRegistry callbacks to AgentLoopConfig hook fields. */
+function hooksToLoopConfig(registry: HookRegistry): Partial<AgentLoopConfig> {
   return {
     onUserPrompt: async (prompt) => {
       const r = await registry.trigger({ type: "user_prompt_submit", prompt });
@@ -46,7 +46,7 @@ function registryToLoopConfig(registry: HookRegistry): Omit<AgentLoopConfig, "mo
     },
     onStop: async (messages) => {
       const r = await registry.trigger({ type: "stop", messages });
-      return r as { messages?: readonly import("../ai/types.js").Message[]; forceContinue?: string } | undefined;
+      return r as { messages?: readonly AgentMessage[]; forceContinue?: string } | undefined;
     },
   };
 }
@@ -82,7 +82,7 @@ export class AgentHarness {
       config.toolRegistry,
       messages,
       systemPrompt,
-      registryToLoopConfig(config.hookRegistry),
+      hooksToLoopConfig(config.hookRegistry),
     );
   }
 
@@ -148,7 +148,7 @@ export class AgentHarness {
     return this.agent.isRunning;
   }
 
-  get messages(): readonly Message[] {
+  get messages(): readonly AgentMessage[] {
     return this.agent.messages;
   }
 
