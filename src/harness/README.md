@@ -1,41 +1,69 @@
-# Harness — Agent Runtime
+# Harness — Agent 运行时
 
-The Harness is the single-threaded runtime core that owns the Agent lifecycle. It internally consumes `AgentEvent`s, persists stable messages into a tree-backed `Session`, and publishes already-persisted events to awaited subscribers.
+Harness 是拥有 Agent 生命周期的单线程运行时核心。它在内部消费 `AgentEvent`，将稳定消息持久化到树形 `Session` 中，并将已持久化的事件发布给等待中的订阅者。
 
-## Minimal Usage
+## 最小用法
 
 ```ts
 import { createStreamFn } from "./ai/factory.js";
 import { createHarness } from "./harness/factory.js";
+import { SessionManager } from "./harness/session/manager.js";
 
 const { stream, defaultModel } = createStreamFn();
 
+const project = { workDir: process.cwd(), storageDir: ".kea/sessions" };
+const sessionManager = await SessionManager.create(project);
+const session = await sessionManager.createSession();
+
 const harness = await createHarness({
-  project: {
-    workDir: process.cwd(),
-    storageDir: ".kea/sessions",
-  },
+  project,
   streamFn: stream,
   model: defaultModel,
+  session,
 });
 
 harness.subscribe((event) => {
-  // render events (text_delta, tool_start, etc.)
+  // 渲染事件（text_delta、tool_start 等）
 });
 
 await harness.prompt("Write a hello-world program.");
 ```
 
-## Concept
+## 概念
 
-The Harness is split into two layers:
+Harness 分为三层：
 
-- **Generic runtime** (`AgentHarness`): owns the Agent, Session, and listeners. It consumes Agent events, persists messages, and publishes to subscribers. It never imports coding tools or the coding system prompt.
-- **Coding composition** (`createHarness`): the factory that wires up `AgentHarness` with the coding tool set, coding system prompt, and a filesystem-backed Session. This is the only file that imports concrete tools and `CODING_SYSTEM_PROMPT`.
+- **Session 管理层**（`SessionManager`）：管理一个 project 下多个 `Session` 文件的生命周期。负责 session 的创建、打开、列出和恢复。
+- **通用运行时**（`AgentHarness`）：持有 Agent、Session 和监听器。消费 Agent 事件、持久化消息并发布给订阅者。绝不导入具体 coding 工具或 coding system prompt。
+- **Coding 组合**（`createHarness`）：将 `AgentHarness` 与 coding 工具集、coding system prompt 组装在一起的工厂函数。这是唯一导入具体工具和 `CODING_SYSTEM_PROMPT` 的文件。`session` 由调用方传入（必传）。
+
+## `SessionManager`
+
+管理一个 project（`cwd` → `storageDir` 映射）下所有 session JSONL 文件的生命周期。
+
+### 工厂方法
+
+| 工厂方法 | 描述 |
+|----------|------|
+| `SessionManager.create(project: HarnessProject): Promise<SessionManager>` | 确保 `storageDir/sessions/` 目录存在，返回 manager 实例。 |
+
+### 方法
+
+| 方法 | 描述 |
+|------|------|
+| `createSession(): Promise<Session>` | 始终创建新 session。 |
+| `openSession(sessionId: string): Promise<Session>` | 按 ID（文件名去掉 `.jsonl`）打开已有 session。 |
+| `continueRecent(): Promise<Session>` | 打开最近修改的 session；若无则创建新 session。 |
+| `listSessions(): Promise<string[]>` | 返回所有 session ID，按修改时间倒序。 |
+
+### 行为细节
+
+- `listSessions()` 只识别匹配 `^[A-Za-z0-9_-]+\.jsonl$` 的文件，忽略隐藏文件和非法文件名。
+- `continueRecent()` 内部调用 `listSessions()` 取最新，空目录时 fallback 到 `createSession()`。
 
 ## `AgentHarness`
 
-The core class. Constructed with `HarnessConfig`:
+核心类。通过 `HarnessConfig` 构造：
 
 ```ts
 interface HarnessConfig {
@@ -48,81 +76,92 @@ interface HarnessConfig {
 }
 ```
 
-### Methods
+### 方法
 
-| Method | Description |
-|--------|-------------|
-| `prompt(input: string): Promise<void>` | Runs one agent turn. Persists messages into the Session and publishes Agent events to all subscribers. Resolves when the turn completes. |
-| `subscribe(listener: HarnessEventListener): Unsubscribe` | Registers a listener. Returns a function that removes it. |
-| `abort(): void` | Requests abort of the running prompt. No-op when idle. |
-| `switchModel(model: ModelConfig): Promise<void>` | Persists a model change and updates the current model. Only allowed when idle. |
-| `registerTool(tool: AgentTool): void` | Registers a tool for the next run. Only allowed when idle. |
-| `unregisterTool(name: string): void` | Removes a tool. Only allowed when idle. |
+| 方法 | 描述 |
+|------|------|
+| `prompt(input: string): Promise<void>` | 运行一次 agent 轮次。将消息持久化到 Session 并将 Agent 事件发布给所有订阅者。轮次完成后 resolve。 |
+| `subscribe(listener: HarnessEventListener): Unsubscribe` | 注册一个监听器。返回用于移除该监听器的函数。 |
+| `abort(): void` | 请求中止正在运行的 prompt。空闲时无操作。 |
+| `switchModel(model: ModelConfig): Promise<void>` | 持久化模型变更并更新当前模型。仅空闲时允许调用。 |
+| `registerTool(tool: AgentTool): void` | 为下一次运行注册工具。仅空闲时允许调用。 |
+| `unregisterTool(name: string): void` | 移除工具。仅空闲时允许调用。 |
 
-### Getters
+### Getter
 
-| Getter | Description |
-|--------|-------------|
-| `messages: readonly AgentMessage[]` | Current conversation history from the Agent. |
-| `model: ModelConfig` | Current model config. |
-| `isRunning: boolean` | Whether a prompt is in progress. |
+| Getter | 描述 |
+|--------|------|
+| `messages: readonly AgentMessage[]` | Agent 的当前对话历史。 |
+| `model: ModelConfig` | 当前模型配置。 |
+| `isRunning: boolean` | 是否有 prompt 正在运行。 |
 
-### Idle-only mutations
+### 空闲期变异约束
 
-`switchModel()`, `registerTool()`, and `unregisterTool()` throw if called while `isRunning` is `true`. `prompt()` is also rejected if called while running.
+当 `isRunning` 为 `true` 时，`switchModel()`、`registerTool()` 和 `unregisterTool()` 会抛出异常。运行时调用 `prompt()` 同样会被拒绝。
 
 ## `createHarness`
 
-The coding-agent composition root:
+Coding agent 的组合根：
 
 ```ts
 interface CreateHarnessConfig {
   readonly project: HarnessProject;
   readonly streamFn: StreamFn;
-  readonly model: ModelConfig;           // required
-  readonly session?: Session;            // reuse an existing session
+  readonly model: ModelConfig;           // 必填
+  readonly session: Session;             // 必填，由调用方通过 SessionManager 创建
   readonly systemPrompt?: string | SystemPromptBuilder;
 }
 
 interface HarnessProject {
-  readonly workDir: string;     // tool cwd + prompt variable
-  readonly storageDir: string;  // session JSONL directory
+  readonly workDir: string;     // 工具 cwd + prompt 变量
+  readonly storageDir: string;  // session JSONL 目录
 }
 ```
 
-- `model` is required. Provider/default-model selection is handled by `ai.createStreamFn()`.
-- If `session` is omitted, a new `Session.create(storageDir)` is used.
-- If `systemPrompt` is a string, it is wrapped via `defaultSystemPrompt()` with `{{cwd}}`/`{{date}}` substitution.
-- If `systemPrompt` is a function, it is used directly as a `SystemPromptBuilder`.
-- If `systemPrompt` is omitted, `CODING_SYSTEM_PROMPT` is the default.
+- `model` 为必填项。provider/default-model 的选择由 `ai.createStreamFn()` 处理。
+- `session` 为必填项。Session 的创建职责属于 `SessionManager`，`createHarness` 只负责组装。
+- 若 `systemPrompt` 为字符串，则通过 `defaultSystemPrompt()` 包装，支持 `{{cwd}}`/`{{date}}` 替换。
+- 若 `systemPrompt` 为函数，则直接作为 `SystemPromptBuilder` 使用。
+- 若省略 `systemPrompt`，则默认使用 `CODING_SYSTEM_PROMPT`。
+
+### 典型调用链
+
+```ts
+const project = { workDir: process.cwd(), storageDir: "~/.kea/projects/..." };
+const sessionManager = await SessionManager.create(project);
+const session = await sessionManager.createSession();
+const harness = await createHarness({ project, streamFn, model, session });
+```
 
 ## Session
 
-Tree-backed JSONL persistence with delayed first write.
+基于树的 JSONL 持久化，延迟首次写入。
 
-### Factories
+### 工厂方法
 
-| Factory | Description |
-|---------|-------------|
-| `Session.create(storageDir: string): Promise<Session>` | New session with a random ID. |
-| `Session.open(storageDir: string, sessionId: string): Promise<Session>` | Reopen a session from disk. |
-| `Session.inMemory(): Session` | Ephemeral session for testing. |
+| 工厂方法 | 描述 |
+|----------|------|
+| `Session.create(storageDir: string): Promise<Session>` | 创建具有随机 ID 的新 session。 |
+| `Session.open(storageDir: string, sessionId: string): Promise<Session>` | 从磁盘重新打开 session。 |
+| `Session.inMemory(): Session` | 用于测试的临时 session。 |
+
+> **注意：** 应用层通常通过 `SessionManager` 间接使用这些工厂方法，而非直接调用。`Session.inMemory()` 在测试中仍然直接使用。
 
 ### API
 
-| Method | Description |
-|--------|-------------|
-| `appendMessage(message: AgentMessage): Promise<void>` | Appends a message to the tree. Appends are serialized internally. |
-| `appendModelChange(model: ModelConfig): Promise<void>` | Records a model change entry. |
-| `buildContext(): SessionContext` | Returns `{ messages, model }` by following the current leaf parent chain. The returned array is a fresh copy. |
+| 方法 | 描述 |
+|------|------|
+| `appendMessage(message: AgentMessage): Promise<void>` | 将消息追加到树中。追加操作内部序列化。 |
+| `appendModelChange(model: ModelConfig): Promise<void>` | 记录模型变更条目。 |
+| `buildContext(): SessionContext` | 按当前叶节点父链返回 `{ messages, model }`。返回的数组是全新副本。 |
 
-### Persistence
+### 持久化
 
-- Messages are buffered in memory until the first assistant message is appended.
-- The first assistant message creates the JSONL file via `writeFile(path, lines, { flag: "wx" })`.
-- Subsequent appends use `appendFile()`.
-- On write failure, the entry and its tree links are rolled back.
-- `Session.open()` validates every line: ENOENT → `not_found`, empty/bad JSON → `invalid_session`, unknown/malformed entry → `invalid_entry`.
+- 消息在内存中缓冲，直到第一条 assistant 消息被追加。
+- 第一条 assistant 消息通过 `writeFile(path, lines, { flag: "wx" })` 创建 JSONL 文件。
+- 后续追加使用 `appendFile()`。
+- 写入失败时，条目及其树链接会被回滚。
+- `Session.open()` 校验每一行：ENOENT → `not_found`，空文件/JSON 语法错误 → `invalid_session`，未知/格式错误条目 → `invalid_entry`。
 
 ### SessionContext
 
@@ -158,65 +197,65 @@ interface SystemPromptContext {
 type SystemPromptBuilder = (ctx: SystemPromptContext) => string | Promise<string>;
 ```
 
-`SystemPromptBuilder` may be async. `AgentHarness` awaits it before each run.
+`SystemPromptBuilder` 可以是异步的。`AgentHarness` 在每次运行前 await 它。
 
-### Helpers
+### 辅助函数
 
-| Function | Description |
-|----------|-------------|
-| `formatSystemPrompt(content, options?)` | Replaces `{{cwd}}` and `{{date}}` placeholders. |
-| `defaultSystemPrompt(template)` | Wraps a template string into a `SystemPromptBuilder`. |
-| `CODING_SYSTEM_PROMPT` | The default coding agent prompt with `{{cwd}}` and `{{date}}`. |
+| 函数 | 描述 |
+|------|------|
+| `formatSystemPrompt(content, options?)` | 替换 `{{cwd}}` 和 `{{date}}` 占位符。 |
+| `defaultSystemPrompt(template)` | 将模板字符串包装为 `SystemPromptBuilder`。 |
+| `CODING_SYSTEM_PROMPT` | 带有 `{{cwd}}` 和 `{{date}}` 的默认 coding agent prompt。 |
 
-## Tools
+## 工具
 
 ### `createToolRegistry(cwd: string): AgentToolRegistry`
 
-Creates a registry with the default tool set in registration order:
+按注册顺序创建包含默认工具集的 registry：
 
-1. `BashTool(cwd)` — shell command execution
-2. `ReadFileTool(cwd)` — read files
-3. `WriteFileTool(cwd)` — create/overwrite files
-4. `EditFileTool(cwd)` — exact string replacement
-5. `GlobTool(cwd)` — file pattern matching
-6. `TodoWriteTool()` — task list management
+1. `BashTool(cwd)` — shell 命令执行
+2. `ReadFileTool(cwd)` — 读取文件
+3. `WriteFileTool(cwd)` — 创建/覆写文件
+4. `EditFileTool(cwd)` — 精确字符串替换
+5. `GlobTool(cwd)` — 文件通配符匹配
+6. `TodoWriteTool()` — 任务列表管理
 
 ### `BashTool`
 
-- Owns the single authoritative Bash safety policy.
-- Blocks commands containing forbidden fragments: `rm `, `rm -rf /`, `sudo`, `chmod 777`, `shutdown`, `reboot`, `mkfs`, `dd `, `> /etc/`, `> /dev/`.
-- Returns `{ content: "Error: Permission denied: <reason>", isError: true }` for blocked commands.
-- The policy check runs before invoking the execution backend.
-- `BashOperations` interface allows swapping the backend (default: `LocalBashOperations`).
+- 拥有唯一的权威 Bash 安全策略。
+- 阻止包含禁止片段的命令：`rm `、`rm -rf /`、`sudo`、`chmod 777`、`shutdown`、`reboot`、`mkfs`、`dd `、`> /etc/`、`> /dev/`。
+- 对被阻止的命令返回 `{ content: "Error: Permission denied: <reason>", isError: true }`。
+- 策略检查在调用执行后端之前运行。
+- `BashOperations` 接口允许替换后端（默认：`LocalBashOperations`）。
 
 ### `TodoWriteTool`
 
-- Todo state is per-instance. Two `TodoWriteTool` instances have independent state.
-- No global accessor. State is inspected only through the tool's own `execute()`.
+- Todo 状态为实例私有。两个 `TodoWriteTool` 实例的状态相互独立。
+- 无全局访问器。状态仅通过工具自身的 `execute()` 访问。
 
-### Other tools
+### 其他工具
 
-- `ReadFileTool`, `WriteFileTool`, `EditFileTool` — file operations scoped to the workspace.
-- `GlobTool` — returns workspace-relative matches.
+- `ReadFileTool`、`WriteFileTool`、`EditFileTool` — 限定在工作区内的文件操作。
+- `GlobTool` — 返回相对于工作区的匹配结果。
 
-## Package Boundary
+## 包边界
 
-### Imports (from AI/Agent layer)
+### 导入（来自 AI/Agent 层）
 
 ```ts
-// Types consumed from the Agent layer
+// 从 Agent 层消费的类型
 import type { AgentEvent, AgentMessage } from "../agent/types.js";
 import type { AgentTool, AgentToolResult } from "../agent/tools/types.js";
 import { AgentToolRegistry } from "../agent/tools/registry.js";
 
-// Types consumed from the AI layer
+// 从 AI 层消费的类型
 import type { ModelConfig, StreamFn } from "../ai/types.js";
 ```
 
-### Exports (to CLI)
+### 导出（面向 CLI）
 
 ```ts
-// Classes
+// 类
 export { AgentHarness } from "./agent-harness.js";
 export { BashTool } from "./tools/bash.js";
 export { LocalBashOperations } from "./tools/bash-ops.js";
@@ -225,8 +264,9 @@ export { GlobTool } from "./tools/glob.js";
 export { TodoWriteTool } from "./tools/todo-write.js";
 export { Session } from "./session/session.js";
 export { SessionError } from "./session/types.js";
+export { SessionManager } from "./session/manager.js";
 
-// Factories
+// 工厂函数
 export { createHarness } from "./factory.js";
 export { createToolRegistry } from "./tools/factory.js";
 
@@ -234,7 +274,7 @@ export { createToolRegistry } from "./tools/factory.js";
 export { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
 export { defaultSystemPrompt, formatSystemPrompt } from "./system-prompt.js";
 
-// Types
+// 类型
 export type { CreateHarnessConfig, HarnessConfig, HarnessEventListener,
   HarnessProject, SystemPromptBuilder, SystemPromptContext,
   Unsubscribe } from "./types.js";
@@ -243,14 +283,14 @@ export type { BashOperations } from "./tools/bash.js";
 export type { TodoItem } from "./tools/todo-write.js";
 ```
 
-## Non-Capabilities
+## 明确不提供的功能
 
-The Harness explicitly does **not** provide:
+Harness 明确**不**提供：
 
-- Hooks or plugins — the Hook subsystem was removed.
-- EventBus — subscribers are direct listeners on the Harness instance.
-- Retry, compaction, branching APIs.
-- Skills or prompt templates beyond `SystemPromptBuilder`.
-- Queues — session appends are internally serialized but not exposed.
+- Hook 或插件 — Hook 子系统已移除。
+- EventBus — 订阅者是 Harness 实例上的直接监听器。
+- 重试、压缩、分支 API。
+- 除 `SystemPromptBuilder` 之外的 skills 或 prompt 模板。
+- 队列 — session 追加操作内部序列化但不对外暴露。
 
-The Harness runtime files (`agent-harness.ts`, `types.ts`, `system-prompt.ts`, `session/`) never import concrete coding tools or `CODING_SYSTEM_PROMPT`. Only `factory.ts` composes those defaults.
+Harness 运行时文件（`agent-harness.ts`、`types.ts`、`system-prompt.ts`、`session/`）绝不导入具体 coding 工具或 `CODING_SYSTEM_PROMPT`。仅 `factory.ts` 组合这些默认值。
