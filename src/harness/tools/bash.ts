@@ -23,7 +23,7 @@ const FORBIDDEN_BASH_FRAGMENTS = [
   "> /dev/",
 ] as const;
 
-export function blockedBashReason(command: string): string | undefined {
+function blockedBashReason(command: string): string | undefined {
   const fragment = FORBIDDEN_BASH_FRAGMENTS.find((candidate) =>
     command.includes(candidate),
   );

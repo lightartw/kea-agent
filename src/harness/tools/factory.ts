@@ -5,7 +5,7 @@ import { GlobTool } from "./glob.js";
 import { TodoWriteTool } from "./todo-write.js";
 
 /** Build the default tool set for one workspace. */
-export function createToolRegistry(cwd = process.cwd()): AgentToolRegistry {
+export function createToolRegistry(cwd: string): AgentToolRegistry {
   const registry = new AgentToolRegistry();
   registry.register(new BashTool(cwd));
   registry.register(new ReadFileTool(cwd));

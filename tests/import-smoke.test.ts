@@ -2,6 +2,56 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
+import {
+  AgentHarness,
+  BashTool,
+  CODING_SYSTEM_PROMPT,
+  EditFileTool,
+  GlobTool,
+  LocalBashOperations,
+  ReadFileTool,
+  Session,
+  SessionError,
+  TodoWriteTool,
+  WriteFileTool,
+  createHarness,
+  createToolRegistry,
+  defaultSystemPrompt,
+  formatSystemPrompt,
+} from "../src/harness/index.js";
+
+import type {
+  BashOperations,
+  CreateHarnessConfig,
+  HarnessConfig,
+  HarnessEventListener,
+  HarnessProject,
+  SessionContext,
+  SessionErrorCode,
+  SystemPromptBuilder,
+  SystemPromptContext,
+  TodoItem,
+  Unsubscribe,
+} from "../src/harness/index.js";
+
+void [
+  AgentHarness,
+  BashTool,
+  CODING_SYSTEM_PROMPT,
+  EditFileTool,
+  GlobTool,
+  LocalBashOperations,
+  ReadFileTool,
+  Session,
+  SessionError,
+  TodoWriteTool,
+  WriteFileTool,
+  createHarness,
+  createToolRegistry,
+  defaultSystemPrompt,
+  formatSystemPrompt,
+];
+
 test("public core imports without credentials or side effects", () => {
   const environment = { ...process.env };
   delete environment.ANTHROPIC_API_KEY;
