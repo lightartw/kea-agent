@@ -4,52 +4,62 @@ import test from "node:test";
 
 import {
   AgentHarness,
+  Session,
+  SessionError,
+  SessionManager,
+  defaultSystemPrompt,
+  formatSystemPrompt,
+} from "../src/agent/harness/index.js";
+
+import {
   BashTool,
   CODING_SYSTEM_PROMPT,
   EditFileTool,
   GlobTool,
   LocalBashOperations,
   ReadFileTool,
-  Session,
-  SessionError,
   TodoWriteTool,
   WriteFileTool,
   createHarness,
   createToolRegistry,
-  defaultSystemPrompt,
-  formatSystemPrompt,
 } from "../src/coding-agent/index.js";
+
+import type {
+  HarnessConfig,
+  HarnessEventListener,
+  HarnessProject,
+  SystemPromptBuilder,
+  SystemPromptContext,
+  Unsubscribe,
+} from "../src/agent/harness/index.js";
+import type {
+  SessionContext,
+  SessionErrorCode,
+} from "../src/agent/harness/index.js";
 
 import type {
   BashOperations,
   CreateHarnessConfig,
-  HarnessConfig,
-  HarnessEventListener,
-  HarnessProject,
-  SessionContext,
-  SessionErrorCode,
-  SystemPromptBuilder,
-  SystemPromptContext,
   TodoItem,
-  Unsubscribe,
 } from "../src/coding-agent/index.js";
 
 void [
   AgentHarness,
+  Session,
+  SessionError,
+  SessionManager,
+  defaultSystemPrompt,
+  formatSystemPrompt,
   BashTool,
   CODING_SYSTEM_PROMPT,
   EditFileTool,
   GlobTool,
   LocalBashOperations,
   ReadFileTool,
-  Session,
-  SessionError,
   TodoWriteTool,
   WriteFileTool,
   createHarness,
   createToolRegistry,
-  defaultSystemPrompt,
-  formatSystemPrompt,
 ];
 
 test("public core imports without credentials or side effects", () => {
