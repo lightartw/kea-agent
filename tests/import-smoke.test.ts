@@ -12,14 +12,7 @@ import {
 } from "../src/agent/harness/index.js";
 
 import {
-  BashTool,
   CODING_SYSTEM_PROMPT,
-  EditFileTool,
-  GlobTool,
-  LocalBashOperations,
-  ReadFileTool,
-  TodoWriteTool,
-  WriteFileTool,
   createHarness,
   createToolRegistry,
 } from "../src/coding-agent/index.js";
@@ -37,11 +30,7 @@ import type {
   SessionErrorCode,
 } from "../src/agent/harness/index.js";
 
-import type {
-  BashOperations,
-  CreateHarnessConfig,
-  TodoItem,
-} from "../src/coding-agent/index.js";
+import type { CreateHarnessConfig } from "../src/coding-agent/index.js";
 
 void [
   AgentHarness,
@@ -50,14 +39,7 @@ void [
   SessionManager,
   defaultSystemPrompt,
   formatSystemPrompt,
-  BashTool,
   CODING_SYSTEM_PROMPT,
-  EditFileTool,
-  GlobTool,
-  LocalBashOperations,
-  ReadFileTool,
-  TodoWriteTool,
-  WriteFileTool,
   createHarness,
   createToolRegistry,
 ];
