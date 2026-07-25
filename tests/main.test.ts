@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { renderAgentEvent } from "../src/cli/render.js";
-import type { AssistantMessage } from "../src/ai/types.js";
+import { AgentHarness } from "../src/harness/agent-harness.js";
+import { Session } from "../src/harness/session/session.js";
+import { AgentToolRegistry } from "../src/agent/tools/registry.js";
+import type { AssistantMessage, StreamFn } from "../src/ai/types.js";
 
 const message: AssistantMessage = {
   role: "assistant",
@@ -42,7 +45,7 @@ test("renderAgentEvent logs tool_start with exec prefix", () => {
     log,
   );
 
-  assert.equal(logs[0], '\n[33m[exec] bash: {"command":"pwd"}[0m');
+  assert.equal(logs[0], '\n\x1b[33m[exec] bash: {"command":"pwd"}\x1b[0m');
   assert.equal(logs.length, 1);
 });
 
@@ -61,4 +64,39 @@ test("renderAgentEvent tool_end is a no-op in current renderer", () => {
   );
 
   assert.deepEqual(logs, []);
+});
+
+test("Harness renders through one subscription while prompt returns a Promise", async () => {
+  const rendered: string[] = [];
+  const stream: StreamFn = async function* () {
+    yield { type: "text_delta", text: "hello" };
+    yield {
+      type: "done",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "hello" }],
+        model: "test",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        stopReason: "stop",
+        latencyMs: 0,
+      },
+    };
+  };
+  const harness = new AgentHarness({
+    session: Session.inMemory(),
+    model: { provider: "test", model: "test" },
+    streamFn: stream,
+    toolRegistry: new AgentToolRegistry(),
+    systemPrompt: () => "",
+    cwd: process.cwd(),
+  });
+  const unsubscribe = harness.subscribe((event) => {
+    renderAgentEvent(event, (text) => rendered.push(text), () => undefined);
+  });
+
+  const run: Promise<void> = harness.prompt("hello");
+  await run;
+  unsubscribe();
+
+  assert.deepEqual(rendered, ["hello"]);
 });
