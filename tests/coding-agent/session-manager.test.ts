@@ -7,9 +7,9 @@ import test from "node:test";
 
 import type { AgentMessage } from "../../src/agent/types.js";
 import type { ModelConfig } from "../../src/ai/types.js";
-import { Session } from "../../src/harness/session/session.js";
-import { SessionManager } from "../../src/harness/session/manager.js";
-import { SessionError } from "../../src/harness/session/types.js";
+import { Session } from "../../src/agent/harness/session/session.js";
+import { SessionManager } from "../../src/agent/harness/session/manager.js";
+import { SessionError } from "../../src/agent/harness/session/types.js";
 
 const model: ModelConfig = { provider: "test", model: "test" };
 const user: AgentMessage = { role: "user", content: "hello" };

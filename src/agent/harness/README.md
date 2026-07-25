@@ -6,8 +6,8 @@ Harness 是拥有 Agent 生命周期的单线程运行时核心。它在内部�
 
 ```ts
 import { createStreamFn } from "./ai/factory.js";
-import { createHarness } from "./harness/factory.js";
-import { SessionManager } from "./harness/session/manager.js";
+import { createHarness } from "./coding-agent/factory.js";
+import { SessionManager } from "./agent/harness/session/manager.js";
 
 const { stream, defaultModel } = createStreamFn();
 

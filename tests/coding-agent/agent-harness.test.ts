@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AgentHarness } from "../../src/harness/agent-harness.js";
-import { Session } from "../../src/harness/session/session.js";
+import { AgentHarness } from "../../src/agent/harness/agent-harness.js";
+import { Session } from "../../src/agent/harness/session/session.js";
 import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
 import { AgentTool } from "../../src/agent/tools/types.js";
 import type { AgentEvent } from "../../src/agent/types.js";

@@ -1,9 +1,9 @@
-import { runAgentLoop } from "../agent/agent-loop.js";
-import type { AgentLoopConfig, AgentEvent, AgentMessage } from "../agent/types.js";
-import type { AgentTool } from "../agent/tools/types.js";
-import type { AgentToolRegistry } from "../agent/tools/registry.js";
-import { HookRegistry } from "../agent/hooks/registry.js";
-import type { Message, ModelConfig, StreamFn } from "../ai/types.js";
+import { runAgentLoop } from "../agent-loop.js";
+import type { AgentLoopConfig, AgentEvent, AgentMessage } from "../types.js";
+import type { AgentTool } from "../tools/types.js";
+import type { AgentToolRegistry } from "../tools/registry.js";
+import { HookRegistry } from "../hooks/registry.js";
+import type { Message, ModelConfig, StreamFn } from "../../ai/types.js";
 import { Session } from "./session/session.js";
 import type {
   HarnessConfig,
@@ -28,7 +28,6 @@ export class AgentHarness {
   private _messages: AgentMessage[];
   private agentSystemPrompt = "";
   private activeRun: ActiveRun | undefined;
-  private errorMessage: string | undefined;
   private _streamFn: StreamFn;
 
   // Hook registry
@@ -97,7 +96,6 @@ export class AgentHarness {
   private async *runPrompt(input: string): AsyncIterable<AgentEvent> {
     const abortController = new AbortController();
     this.activeRun = { abortController };
-    this.errorMessage = undefined;
 
     const config = this.createLoopConfig();
 
@@ -113,15 +111,6 @@ export class AgentHarness {
         this._streamFn,
         abortController.signal,
       )) {
-        if (event.type === "agent_end") {
-          for (const msg of event.messages) {
-            if (msg.role === "assistant" && msg.errorMessage) {
-              this.errorMessage = msg.errorMessage;
-            } else if (msg.role === "tool" && msg.isError) {
-              this.errorMessage = msg.content;
-            }
-          }
-        }
         yield event;
       }
     } finally {

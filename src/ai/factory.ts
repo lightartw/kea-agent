@@ -31,11 +31,17 @@ export interface Adapter {
  * Return an Adapter immediately (sync) whose stream() lazily loads the real
  * adapter in the background and forwards events. Matches Pi's lazyApi pattern.
  */
-function lazyAdapter(load: () => Promise<Adapter>): Adapter {
+export function lazyAdapter(load: () => Promise<Adapter>): Adapter {
+  let loaded: Promise<Adapter> | undefined;
+  const getAdapter = (): Promise<Adapter> => {
+    loaded ??= load();
+    return loaded;
+  };
+
   return {
     stream(model, context, options) {
       const stream = new EventStream<AssistantMessageEvent>();
-      load()
+      getAdapter()
         .then(async (real) => {
           try {
             for await (const event of real.stream(model, context, resolveOptions(options))) {
@@ -111,8 +117,14 @@ export function createStreamFn(
   const configured = allProviders.filter((p) => env[p.envApiKey]);
   if (configured.length === 0)
     throw new Error("No LLM provider configured; set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY");
-  if (configured.length > 1)
-    throw new Error(`Multiple LLM providers configured: ${configured.map((p) => p.id).join(", ")}`);
+
+  const requestedDefault = env["DEFAULT_PROVIDER"];
+  if (requestedDefault === undefined && configured.length > 1)
+    throw new Error("Multiple LLM providers configured; set DEFAULT_PROVIDER");
+  const defaultProvider = requestedDefault ?? configured[0]!.id;
+  if (!configured.some((provider) => provider.id === defaultProvider))
+    throw new Error(`DEFAULT_PROVIDER '${defaultProvider}' is not configured`);
+
   const modelId = env["MODEL_ID"];
   if (!modelId) throw new Error("Missing model; set MODEL_ID");
 
@@ -139,5 +151,5 @@ export function createStreamFn(
     yield* adapter.stream(model.model, context, resolveOptions(options));
   };
 
-  return { stream, defaultModel: { provider: configured[0]!.id, model: modelId } };
+  return { stream, defaultModel: { provider: defaultProvider, model: modelId } };
 }

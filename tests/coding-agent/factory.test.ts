@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createHarness } from "../../src/harness/factory.js";
-import { Session } from "../../src/harness/session/session.js";
+import { createHarness } from "../../src/coding-agent/factory.js";
+import { Session } from "../../src/agent/harness/session/session.js";
 import type {
   AssistantMessage,
   ModelConfig,

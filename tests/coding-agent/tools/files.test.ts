@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { ReadFileTool, WriteFileTool, EditFileTool } from "../../../src/harness/tools/files.js";
-import { GlobTool } from "../../../src/harness/tools/glob.js";
+import { ReadFileTool, WriteFileTool, EditFileTool } from "../../../src/coding-agent/tools/files.js";
+import { GlobTool } from "../../../src/coding-agent/tools/glob.js";
 
 function signal(): AbortSignal {
   return new AbortController().signal;

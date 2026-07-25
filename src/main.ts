@@ -5,8 +5,8 @@ import { homedir } from "node:os";
 import { config as loadDotenv } from "dotenv";
 
 import { CliFrontend } from "./cli/frontend.js";
-import { createHarness } from "./harness/factory.js";
-import { SessionManager } from "./harness/session/manager.js";
+import { createHarness } from "./coding-agent/factory.js";
+import { SessionManager } from "./agent/harness/session/manager.js";
 import { createStreamFn } from "./ai/factory.js";
 
 function resolveProject(cwd: string) {

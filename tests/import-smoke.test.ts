@@ -18,7 +18,7 @@ import {
   createToolRegistry,
   defaultSystemPrompt,
   formatSystemPrompt,
-} from "../src/harness/index.js";
+} from "../src/coding-agent/index.js";
 
 import type {
   BashOperations,
@@ -32,7 +32,7 @@ import type {
   SystemPromptContext,
   TodoItem,
   Unsubscribe,
-} from "../src/harness/index.js";
+} from "../src/coding-agent/index.js";
 
 void [
   AgentHarness,

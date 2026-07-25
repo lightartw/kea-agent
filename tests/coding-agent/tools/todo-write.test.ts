@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   TodoWriteTool,
   type TodoItem,
-} from "../../../src/harness/tools/todo-write.js";
+} from "../../../src/coding-agent/tools/todo-write.js";
 
 function signal(): AbortSignal {
   return new AbortController().signal;

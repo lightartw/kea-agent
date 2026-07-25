@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { renderAgentEvent } from "../src/cli/render.js";
-import { AgentHarness } from "../src/harness/agent-harness.js";
-import { Session } from "../src/harness/session/session.js";
+import { AgentHarness } from "../src/agent/harness/agent-harness.js";
+import { Session } from "../src/agent/harness/session/session.js";
 import { AgentToolRegistry } from "../src/agent/tools/registry.js";
 import type { AssistantMessage, StreamFn } from "../src/ai/types.js";
 
