@@ -1,5 +1,5 @@
 import { runAgentLoop } from "./agent-loop.js";
-import type { AgentEvent, AgentLoopConfig, AgentState } from "./types.js";
+import type { AgentEvent, AgentLoopConfig, AgentMessage, AgentState } from "./types.js";
 import type { Message, ModelConfig, StreamFn } from "../ai/types.js";
 import type { AgentToolRegistry } from "./tools/registry.js";
 
@@ -14,25 +14,32 @@ interface ActiveRun {
  * systemPrompt across turns; Agent stays the same instance for the session.
  */
 export class Agent {
-  private history: Message[];
+  private history: AgentMessage[];
   private activeRun: ActiveRun | undefined;
   private errorMessage: string | undefined;
   private _streamFn: StreamFn;
   private _model: ModelConfig;
   private _systemPrompt: string;
+  private _hooks: Omit<AgentLoopConfig, "model" | "convertToLlm"> | undefined;
 
   constructor(
     streamFn: StreamFn,
     model: ModelConfig,
-    private readonly registry: AgentToolRegistry,
-    initialMessages: readonly Message[] = [],
+    private readonly _registry: AgentToolRegistry,
+    initialMessages: readonly AgentMessage[] = [],
     systemPrompt = "",
-    private readonly config?: AgentLoopConfig,
+    hooks?: Omit<AgentLoopConfig, "model" | "convertToLlm">,
   ) {
     this.history = [...initialMessages];
     this._streamFn = streamFn;
     this._model = model;
     this._systemPrompt = systemPrompt;
+    this._hooks = hooks;
+  }
+
+  /** Default conversion: AgentMessage = Message, so identity is safe. */
+  private static defaultConvertToLlm(messages: AgentMessage[]): Message[] {
+    return messages as Message[];
   }
 
   // ── Public state ──
@@ -47,7 +54,7 @@ export class Agent {
     };
   }
 
-  get messages(): readonly Message[] {
+  get messages(): readonly AgentMessage[] {
     return this.history;
   }
 
@@ -93,19 +100,26 @@ export class Agent {
     this.activeRun = { abortController };
     this.errorMessage = undefined;
 
+    // Build config per-run so model changes are reflected
+    const config: AgentLoopConfig = {
+      model: this._model,
+      convertToLlm: Agent.defaultConvertToLlm,
+      ...this._hooks,
+    };
+
     try {
       for await (const event of runAgentLoop(
-        this.history,
-        this._systemPrompt,
         input,
+        {
+          systemPrompt: this._systemPrompt,
+          messages: this.history,
+          tools: this._registry,
+        },
+        config,
         this._streamFn,
-        this._model,
-        this.registry,
-        this.config,
         abortController.signal,
       )) {
         if (event.type === "agent_end") {
-          // TODO: is it a good design to sequaltial scan?
           for (const msg of event.messages) {
             if (msg.role === "assistant" && msg.errorMessage) {
               this.errorMessage = msg.errorMessage;

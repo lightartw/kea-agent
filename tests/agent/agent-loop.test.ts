@@ -21,6 +21,15 @@ import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 const testModel: ModelConfig = { provider: "test", model: "test-model" };
 
+/** Minimal AgentLoopConfig with identity convertToLlm for test callers. */
+function makeConfig(overrides?: Partial<AgentLoopConfig>): AgentLoopConfig {
+  return {
+    model: testModel,
+    convertToLlm: (msgs) => msgs,
+    ...overrides,
+  };
+}
+
 function assistantMsg(
   text: string,
   extraContent: ContentBlock[] = [],
@@ -72,7 +81,12 @@ test("runAgentLoop streams text and stores one complete assistant message", asyn
   ]]);
 
   const events = await collect(
-    runAgentLoop(history, "", "hi", streamFn, testModel, new AgentToolRegistry()),
+    runAgentLoop(
+      "hi",
+      { systemPrompt: "", messages: history, tools: new AgentToolRegistry() },
+      makeConfig(),
+      streamFn,
+    ),
   );
 
   assert.deepEqual(events, [
@@ -118,7 +132,14 @@ test("runAgentLoop streams and executes tools sequentially", async () => {
   };
   const history: Message[] = [];
 
-  const events = await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry));
+  const events = await collect(
+    runAgentLoop(
+      "run",
+      { systemPrompt: "", messages: history, tools: registry },
+      makeConfig(),
+      streamFn,
+    ),
+  );
 
   assert.deepEqual(observed, ["done", "first", "second"]);
   assert.deepEqual(events.map((event) => event.type), [
@@ -176,7 +197,14 @@ test("tool results are in history before the next model stream", async () => {
   );
   const history: Message[] = [];
 
-  await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry));
+  await collect(
+    runAgentLoop(
+      "run",
+      { systemPrompt: "", messages: history, tools: registry },
+      makeConfig(),
+      streamFn,
+    ),
+  );
 
   assert.deepEqual(secondHistory?.at(-1), {
     role: "tool",
@@ -200,7 +228,12 @@ test("Registry failures are emitted and returned to the model", async () => {
   const history: Message[] = [];
 
   const events = await collect(
-    runAgentLoop(history, "", "run", streamFn, testModel, new AgentToolRegistry()),
+    runAgentLoop(
+      "run",
+      { systemPrompt: "", messages: history, tools: new AgentToolRegistry() },
+      makeConfig(),
+      streamFn,
+    ),
   );
 
   const toolEnd = events.find((event) => event.type === "tool_end");
@@ -230,11 +263,18 @@ test("onBeforeTool blocks tool execution and returns error", async () => {
     [{ type: "done", message: assistantMsg("") }],
   ]);
   const history: Message[] = [];
-  const config: AgentLoopConfig = {
+  const config = makeConfig({
     onBeforeTool: async () => ({ block: true, reason: "blocked by test" }),
-  };
+  });
 
-  await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry, config));
+  await collect(
+    runAgentLoop(
+      "run",
+      { systemPrompt: "", messages: history, tools: registry },
+      config,
+      streamFn,
+    ),
+  );
 
   assert.equal(tool.ran, false);
   assert.equal(history[2]?.content, "Error: blocked by test");
@@ -259,11 +299,18 @@ test("onBeforeTool failure blocks tool execution", async () => {
     [{ type: "done", message: assistantMsg("") }],
   ]);
   const history: Message[] = [];
-  const config: AgentLoopConfig = {
+  const config = makeConfig({
     onBeforeTool: async () => { throw new Error("boom"); },
-  };
+  });
 
-  await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry, config));
+  await collect(
+    runAgentLoop(
+      "run",
+      { systemPrompt: "", messages: history, tools: registry },
+      config,
+      streamFn,
+    ),
+  );
 
   assert.equal(tool.ran, false);
   const content = history[2]?.role === "tool" ? history[2].content : "";

@@ -24,7 +24,7 @@ export interface HarnessConfig {
 }
 
 /** Bridge HookRegistry to AgentLoopConfig for the agent loop. */
-function registryToLoopConfig(registry: HookRegistry): AgentLoopConfig {
+function registryToLoopConfig(registry: HookRegistry): Omit<AgentLoopConfig, "model" | "convertToLlm"> {
   return {
     onUserPrompt: async (prompt) => {
       const r = await registry.trigger({ type: "user_prompt_submit", prompt });
