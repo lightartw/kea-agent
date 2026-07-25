@@ -1,4 +1,4 @@
-import type { Hook, UserPromptSubmitEvent } from "../../agent/hooks/types.js";
+import type { Hook, UserPromptSubmitEvent } from "./types.js";
 
 /** Logs working directory on every user prompt. Teaching-version hook. */
 export class ContextInjectHook implements Hook<UserPromptSubmitEvent> {

@@ -1,5 +1,5 @@
-import { HookRegistry } from "../../agent/hooks/registry.js";
-import type { Hook } from "../../agent/hooks/types.js";
+import { HookRegistry } from "./registry.js";
+import type { Hook } from "./types.js";
 import { ContextInjectHook } from "./context-inject.js";
 import { LargeOutputHook, LogHook } from "./log.js";
 import { PermissionHook } from "./permission.js";

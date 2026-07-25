@@ -1,5 +1,5 @@
 import { blockedBashFragment } from "../tools/bash.js";
-import type { HookResult, PreToolUseEvent } from "../../agent/hooks/types.js";
+import type { HookResult, PreToolUseEvent } from "./types.js";
 
 /**
  * Pure policy hook. Blocks hard-denied bash fragments; allows everything else.

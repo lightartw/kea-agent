@@ -82,7 +82,7 @@ type AgentEvent =
   | { type: "toolcall_delta"; id: string; argumentsDelta: string }
   | { type: "toolcall_end";   toolCall: ToolCall }
   | { type: "tool_start";     call: ToolCall }
-  | { type: "tool_end";       call: ToolCall; result: ToolResult }
+  | { type: "tool_end";       call: ToolCall; result: AgentToolResult }
 ```
 
 ### `AgentState` — [types.ts](types.ts)
@@ -123,7 +123,7 @@ class ToolRegistry {
   unregister(name: string): void;
   schemas(): Tool[];          // LLM-facing 的 schema
   all(): AgentTool[];         // 完整 AgentTool 实例
-  execute(call: ToolCall): Promise<ToolResult>;
+  execute(call: ToolCall): Promise<AgentToolResult>;
 }
 ```
 

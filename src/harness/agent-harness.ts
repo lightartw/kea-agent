@@ -1,9 +1,10 @@
 import { Agent } from "../agent/agent.js";
 import type { AgentEvent } from "../agent/types.js";
 import type { AgentTool } from "../agent/tools/types.js";
-import { ToolRegistry } from "../agent/tools/registry.js";
-import { HookRegistry } from "../agent/hooks/registry.js";
-import type { Hook } from "../agent/hooks/types.js";
+import { AgentToolRegistry } from "../agent/tools/registry.js";
+import type { AgentLoopConfig } from "../agent/types.js";
+import { HookRegistry } from "./hooks/registry.js";
+import type { Hook } from "./hooks/types.js";
 import type { Message, ModelConfig, StreamFn } from "../ai/types.js";
 import { Session } from "./session/session.js";
 import {
@@ -16,16 +17,44 @@ export interface HarnessConfig {
   readonly session: Session;
   readonly model: ModelConfig;
   readonly streamFn: StreamFn;
-  readonly toolRegistry: ToolRegistry;
+  readonly toolRegistry: AgentToolRegistry;
   readonly hookRegistry: HookRegistry;
   readonly systemPrompt?: SystemPromptBuilder;
   readonly cwd?: string;
 }
 
+/** Bridge HookRegistry to AgentLoopConfig for the agent loop. */
+function registryToLoopConfig(registry: HookRegistry): AgentLoopConfig {
+  return {
+    onUserPrompt: async (prompt) => {
+      const r = await registry.trigger({ type: "user_prompt_submit", prompt });
+      if (r?.block) return { block: true, ...(r.reason !== undefined ? { reason: r.reason } : {}) };
+      return undefined;
+    },
+    onPreTurn: async () => {
+      const r = await registry.trigger({ type: "pre_turn" });
+      if (r?.context) return { context: r.context };
+      return undefined;
+    },
+    onBeforeTool: async (call) => {
+      const r = await registry.trigger({ type: "pre_tool_use", call });
+      if (r?.block) return { block: true, ...(r.reason !== undefined ? { reason: r.reason } : {}) };
+      return undefined;
+    },
+    onAfterTool: async (call, result) => {
+      await registry.trigger({ type: "post_tool_use", call, result });
+    },
+    onStop: async (messages) => {
+      const r = await registry.trigger({ type: "stop", messages });
+      return r as { messages?: readonly import("../ai/types.js").Message[]; forceContinue?: string } | undefined;
+    },
+  };
+}
+
 export class AgentHarness {
   private readonly buildPrompt: SystemPromptBuilder;
   private readonly cwd: string;
-  private readonly _toolRegistry: ToolRegistry;
+  private readonly _toolRegistry: AgentToolRegistry;
   private readonly _hookRegistry: HookRegistry;
 
   private agent: Agent;
@@ -53,7 +82,7 @@ export class AgentHarness {
       config.toolRegistry,
       messages,
       systemPrompt,
-      config.hookRegistry,
+      registryToLoopConfig(config.hookRegistry),
     );
   }
 

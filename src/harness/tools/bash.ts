@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import { AgentTool } from "../../agent/tools/types.js";
+import { AgentTool, type AgentToolResult } from "../../agent/tools/types.js";
 import { LocalBashOperations } from "./bash-ops.js";
 
 /** Swappable execution backend for shell commands. */
@@ -47,11 +47,16 @@ export class BashTool extends AgentTool<typeof parameters> {
   async execute(
     arguments_: Static<typeof parameters>,
     signal: AbortSignal,
-  ): Promise<string> {
+  ): Promise<AgentToolResult> {
     const { command } = arguments_;
     if (blockedBashFragment(command) !== undefined) {
-      throw new Error("Dangerous command blocked");
+      return { content: "Error: Dangerous command blocked", isError: true };
     }
-    return this.ops.exec(command, this.resolvedCwd, signal);
+    try {
+      const content = await this.ops.exec(command, this.resolvedCwd, signal);
+      return { content, isError: false };
+    } catch (error) {
+      return { content: error instanceof Error ? error.message : String(error), isError: true };
+    }
   }
 }

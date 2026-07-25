@@ -1,12 +1,5 @@
 import type { TObject } from "typebox";
 
-// ── Model routing ──
-
-export interface ModelConfig {
-  readonly provider: string;
-  readonly model: string;
-}
-
 // ── Tool types ──
 
 export interface Tool {
@@ -22,10 +15,15 @@ export interface ToolCall {
   readonly arguments: Record<string, unknown>;
 }
 
+export interface ToolResultMessage {
+  readonly role: "tool";
+  readonly toolCallId: string;
+  readonly name: string;
+  readonly content: string;
+  readonly isError?: boolean;
+}
+
 // ── Content blocks (ordered within an assistant message) ──
-
-export type ContentBlock = TextBlock | ThinkingBlock | ToolCall;
-
 export interface TextBlock {
   readonly type: "text";
   readonly text: string;
@@ -37,10 +35,17 @@ export interface ThinkingBlock {
   readonly signature?: string;
 }
 
-// ── Stop reason ──
+export type ContentBlock = TextBlock | ThinkingBlock | ToolCall;
+
+// ── other class that assistant need ──
 
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
+export interface TokenUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+}
 // ── Messages (discriminated union) ──
 
 export interface UserMessage {
@@ -58,23 +63,7 @@ export interface AssistantMessage {
   readonly latencyMs: number;
 }
 
-export interface ToolResultMessage {
-  readonly role: "tool";
-  readonly toolCallId: string;
-  readonly name: string;
-  readonly content: string;
-  readonly isError?: boolean;
-}
-
 export type Message = UserMessage | AssistantMessage | ToolResultMessage;
-
-// ── Token usage ──
-
-export interface TokenUsage {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly totalTokens: number;
-}
 
 // ── Streaming events ──
 
@@ -104,6 +93,13 @@ export interface Context {
   readonly systemPrompt?: string;
   readonly messages: readonly Message[];
   readonly tools?: readonly Tool[];
+}
+
+// ── Model routing ──
+
+export interface ModelConfig {
+  readonly provider: string;
+  readonly model: string;
 }
 
 // ── Stream function (replaces LLMClient interface) ──

@@ -3,10 +3,18 @@ import { Compile, type Validator } from "typebox/compile";
 
 import type { Tool } from "../../ai/types.js";
 
-/** The registry's result, returned to both the model and the terminal. */
-export interface ToolResult {
+/** The result returned by AgentTool.execute(), before being wrapped into a ToolResultMessage. */
+export interface AgentToolResult {
   readonly content: string;
   readonly isError: boolean;
+}
+
+/** A tool call requested by the model. Agent-side equivalent of ai.ToolCall. */
+export interface AgentToolCall {
+  readonly type: "toolCall";
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
 }
 
 /** Agent-side tool: schema + validation + execution. Implements the ai layer Tool interface. */
@@ -30,6 +38,6 @@ export abstract class AgentTool<TParameters extends TObject = TObject> implement
   abstract execute(
     arguments_: Static<TParameters>,
     timeoutSignal: AbortSignal,
-  ): Promise<string>;
+  ): Promise<AgentToolResult>;
 }
 

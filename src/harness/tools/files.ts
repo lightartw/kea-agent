@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import { AgentTool } from "../../agent/tools/types.js";
+import { AgentTool, type AgentToolResult } from "../../agent/tools/types.js";
 import { safePath } from "../../utils/workspace.js";
 
 const readParameters = Type.Object(
@@ -39,20 +39,14 @@ export class ReadFileTool extends AgentTool<typeof readParameters> {
     super("read_file", "Read file contents.", readParameters);
   }
 
-  async execute(arguments_: Static<typeof readParameters>, _signal: AbortSignal): Promise<string> {
+  async execute(arguments_: Static<typeof readParameters>, _signal: AbortSignal): Promise<AgentToolResult> {
     const lines = (
       await readFile(safePath(this.workspace, arguments_.path), "utf8")
     ).split(/\r?\n/);
-    if (
-      arguments_.limit !== undefined &&
-      arguments_.limit < lines.length
-    ) {
-      return [
-        ...lines.slice(0, arguments_.limit),
-        `... (${lines.length - arguments_.limit} more lines)`,
-      ].join("\n");
-    }
-    return lines.join("\n");
+    const content = arguments_.limit !== undefined && arguments_.limit < lines.length
+      ? [...lines.slice(0, arguments_.limit), `... (${lines.length - arguments_.limit} more lines)`].join("\n")
+      : lines.join("\n");
+    return { content, isError: false };
   }
 }
 
@@ -61,11 +55,11 @@ export class WriteFileTool extends AgentTool<typeof writeParameters> {
     super("write_file", "Write content to a file.", writeParameters);
   }
 
-  async execute(arguments_: Static<typeof writeParameters>, _signal: AbortSignal): Promise<string> {
+  async execute(arguments_: Static<typeof writeParameters>, _signal: AbortSignal): Promise<AgentToolResult> {
     const path = safePath(this.workspace, arguments_.path);
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, arguments_.content, "utf8");
-    return `Wrote ${Buffer.byteLength(arguments_.content, "utf8")} bytes to ${arguments_.path}`;
+    return { content: `Wrote ${Buffer.byteLength(arguments_.content, "utf8")} bytes to ${arguments_.path}`, isError: false };
   }
 }
 
@@ -74,11 +68,11 @@ export class EditFileTool extends AgentTool<typeof editParameters> {
     super("edit_file", "Replace exact text in a file once.", editParameters);
   }
 
-  async execute(arguments_: Static<typeof editParameters>, _signal: AbortSignal): Promise<string> {
+  async execute(arguments_: Static<typeof editParameters>, _signal: AbortSignal): Promise<AgentToolResult> {
     const path = safePath(this.workspace, arguments_.path);
     const content = await readFile(path, "utf8");
     const index = content.indexOf(arguments_.old_text);
-    if (index === -1) throw new Error(`text not found in ${arguments_.path}`);
+    if (index === -1) return { content: `Error: text not found in ${arguments_.path}`, isError: true };
     await writeFile(
       path,
       content.slice(0, index) +
@@ -86,6 +80,6 @@ export class EditFileTool extends AgentTool<typeof editParameters> {
         content.slice(index + arguments_.old_text.length),
       "utf8",
     );
-    return `Edited ${arguments_.path}`;
+    return { content: `Edited ${arguments_.path}`, isError: false };
   }
 }

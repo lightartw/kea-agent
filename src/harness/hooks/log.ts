@@ -1,4 +1,4 @@
-import type { Hook, PostToolUseEvent, PreToolUseEvent } from "../../agent/hooks/types.js";
+import type { Hook, PostToolUseEvent, PreToolUseEvent } from "./types.js";
 
 /** Logs every tool call name. Teaching-version hook. */
 export class LogHook implements Hook<PreToolUseEvent> {

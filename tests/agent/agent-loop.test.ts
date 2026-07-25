@@ -4,6 +4,7 @@ import test from "node:test";
 import { Type } from "typebox";
 
 import { runAgentLoop } from "../../src/agent/agent-loop.js";
+import type { AgentLoopConfig } from "../../src/agent/types.js";
 import type { AgentEvent } from "../../src/agent/types.js";
 import type {
   AssistantMessage,
@@ -14,10 +15,8 @@ import type {
   ModelConfig,
   StreamFn,
 } from "../../src/ai/types.js";
-import { HookRegistry } from "../../src/agent/hooks/registry.js";
-import type { Hook, HookResult, PreToolUseEvent } from "../../src/agent/hooks/types.js";
-import { AgentTool } from "../../src/agent/tools/types.js";
-import { ToolRegistry } from "../../src/agent/tools/registry.js";
+import { AgentTool, type AgentToolResult } from "../../src/agent/tools/types.js";
+import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 const testModel: ModelConfig = { provider: "test", model: "test-model" };
@@ -73,7 +72,7 @@ test("runAgentLoop streams text and stores one complete assistant message", asyn
   ]]);
 
   const events = await collect(
-    runAgentLoop(history, "", "hi", streamFn, testModel, new ToolRegistry()),
+    runAgentLoop(history, "", "hi", streamFn, testModel, new AgentToolRegistry()),
   );
 
   assert.deepEqual(events, [
@@ -93,12 +92,12 @@ test("runAgentLoop streams and executes tools sequentially", async () => {
     constructor(name: string) {
       super(name, `Run ${name}.`, emptyParameters);
     }
-    async execute(): Promise<string> {
+    async execute(): Promise<AgentToolResult> {
       observed.push(this.name);
-      return `${this.name} result`;
+      return { content: `${this.name} result`, isError: false };
     }
   }
-  const registry = new ToolRegistry();
+  const registry = new AgentToolRegistry();
   registry.register(new OrderedTool("first"));
   registry.register(new OrderedTool("second"));
   const tc1 = { type: "toolCall" as const, id: "c1", name: "first", arguments: {} };
@@ -154,11 +153,11 @@ test("tool results are in history before the next model stream", async () => {
     constructor() {
       super("noop", "Run noop.", emptyParameters);
     }
-    async execute(): Promise<string> {
-      return "ok";
+    async execute(): Promise<AgentToolResult> {
+      return { content: "ok", isError: false };
     }
   }
-  const registry = new ToolRegistry();
+  const registry = new AgentToolRegistry();
   registry.register(new NoopTool());
   const tc = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
   let secondHistory: readonly Message[] | undefined;
@@ -201,7 +200,7 @@ test("Registry failures are emitted and returned to the model", async () => {
   const history: Message[] = [];
 
   const events = await collect(
-    runAgentLoop(history, "", "run", streamFn, testModel, new ToolRegistry()),
+    runAgentLoop(history, "", "run", streamFn, testModel, new AgentToolRegistry()),
   );
 
   const toolEnd = events.find((event) => event.type === "tool_end");
@@ -212,24 +211,14 @@ test("Registry failures are emitted and returned to the model", async () => {
   assert.equal(history[2]?.content, "Error: Unknown tool 'missing'");
 });
 
-test("pre_tool_use hook blocks tool execution and returns error", async () => {
-  class BlockHook implements Hook<PreToolUseEvent> {
-    readonly name = "block";
-    readonly eventType = "pre_tool_use";
-    async execute(): Promise<HookResult> {
-      return { block: true, reason: "blocked by test" };
-    }
-  }
-  const hooks = new HookRegistry();
-  hooks.register(new BlockHook());
-
+test("onBeforeTool blocks tool execution and returns error", async () => {
   class ObservedTool extends AgentTool<typeof emptyParameters> {
     ran = false;
     constructor() { super("noop", "Run noop.", emptyParameters); }
-    async execute() { this.ran = true; return "ok"; }
+    async execute() { this.ran = true; return { content: "ok", isError: false }; }
   }
   const tool = new ObservedTool();
-  const registry = new ToolRegistry();
+  const registry = new AgentToolRegistry();
   registry.register(tool);
   const tc = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
   const streamFn = streamFnWithEvents([
@@ -241,29 +230,24 @@ test("pre_tool_use hook blocks tool execution and returns error", async () => {
     [{ type: "done", message: assistantMsg("") }],
   ]);
   const history: Message[] = [];
+  const config: AgentLoopConfig = {
+    onBeforeTool: async () => ({ block: true, reason: "blocked by test" }),
+  };
 
-  await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry, hooks));
+  await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry, config));
 
   assert.equal(tool.ran, false);
   assert.equal(history[2]?.content, "Error: blocked by test");
 });
 
-test("pre_tool_use hook failure blocks tool execution", async () => {
-  class BrokenHook implements Hook<PreToolUseEvent> {
-    readonly name = "broken";
-    readonly eventType = "pre_tool_use";
-    async execute() { throw new Error("boom"); }
-  }
-  const hooks = new HookRegistry();
-  hooks.register(new BrokenHook());
-
+test("onBeforeTool failure blocks tool execution", async () => {
   class ObservedTool extends AgentTool<typeof emptyParameters> {
     ran = false;
     constructor() { super("noop", "Run noop.", emptyParameters); }
-    async execute() { this.ran = true; return "ok"; }
+    async execute() { this.ran = true; return { content: "ok", isError: false }; }
   }
   const tool = new ObservedTool();
-  const registry = new ToolRegistry();
+  const registry = new AgentToolRegistry();
   registry.register(tool);
   const tc = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
   const streamFn = streamFnWithEvents([
@@ -275,10 +259,13 @@ test("pre_tool_use hook failure blocks tool execution", async () => {
     [{ type: "done", message: assistantMsg("") }],
   ]);
   const history: Message[] = [];
+  const config: AgentLoopConfig = {
+    onBeforeTool: async () => { throw new Error("boom"); },
+  };
 
-  await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry, hooks));
+  await collect(runAgentLoop(history, "", "run", streamFn, testModel, registry, config));
 
   assert.equal(tool.ran, false);
   const content = history[2]?.role === "tool" ? history[2].content : "";
-  assert.match(content, /hook 'broken' failed/);
+  assert.match(content, /boom/);
 });

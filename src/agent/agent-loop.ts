@@ -6,17 +6,13 @@ import type {
   StreamFn,
   ToolCall,
 } from "../ai/types.js";
-import type { HookRegistry } from "./hooks/registry.js";
-import type { AgentEvent } from "./types.js";
-import type { ToolRegistry } from "./tools/registry.js";
+import type { AgentEvent, AgentLoopConfig } from "./types.js";
+import type { AgentToolRegistry } from "./tools/registry.js";
+import type { AgentToolResult } from "./tools/types.js";
 
 /**
  * Pure function: run the agent loop from a user input.
  * Mutates `messages` in place.
- *
- * Lifecycle:
- *   agent_start → [user_prompt_submit] → user message →
- *   (turn_start → stream → [tools] → turn_end)* → agent_end
  */
 export async function* runAgentLoop(
   messages: Message[],
@@ -24,17 +20,17 @@ export async function* runAgentLoop(
   input: string,
   streamFn: StreamFn,
   model: ModelConfig,
-  registry: ToolRegistry,
-  hooks?: HookRegistry,
+  registry: AgentToolRegistry,
+  config?: AgentLoopConfig,
   signal?: AbortSignal,
 ): AsyncIterable<AgentEvent> {
   yield { type: "agent_start" };
 
-  // user_prompt_submit — hook can block; failure = blocked
-  if (hooks !== undefined) {
+  // onUserPrompt
+  if (config?.onUserPrompt) {
     try {
-      const result = await hooks.trigger({ type: "user_prompt_submit", prompt: input });
-      if (result?.block === true) {
+      const result = await config.onUserPrompt(input);
+      if (result?.block) {
         yield { type: "agent_end", messages: [...messages] };
         return;
       }
@@ -47,7 +43,6 @@ export async function* runAgentLoop(
   messages.push({ role: "user", content: input });
 
   while (true) {
-    // Aborted between turns — exit cleanly
     if (signal?.aborted) {
       yield { type: "agent_end", messages: [...messages] };
       return;
@@ -55,17 +50,16 @@ export async function* runAgentLoop(
 
     yield { type: "turn_start" };
 
-    // pre_turn — before LLM stream, hook can inject context; failure is swallowed
-    if (hooks !== undefined && !signal?.aborted) {
+    // onPreTurn
+    if (config?.onPreTurn && !signal?.aborted) {
       try {
-        const result = await hooks.trigger({ type: "pre_turn" });
+        const result = await config.onPreTurn();
         if (result?.context !== undefined) {
           messages.push({ role: "user", content: result.context });
         }
-      } catch { /* pre_turn is advisory */ }
+      } catch { /* advisory */ }
     }
 
-    // Build Context
     const ctx: Context = {
       ...(systemPrompt ? { systemPrompt } : {}),
       messages,
@@ -107,17 +101,16 @@ export async function* runAgentLoop(
 
     yield { type: "turn_end", message: turnMessage! };
 
-    // Aborted during streaming — exit cleanly, skip tools
     if (signal?.aborted) {
       yield { type: "agent_end", messages: [...messages] };
       return;
     }
 
-    // No tool calls — run stop hook; failure is swallowed
+    // No tool calls — onStop
     if (toolCalls.length === 0) {
-      if (hooks !== undefined && !signal?.aborted) {
+      if (config?.onStop && !signal?.aborted) {
         try {
-          const result = await hooks.trigger({ type: "stop", messages: [...messages] });
+          const result = await config.onStop([...messages]);
           if (result?.messages !== undefined) {
             messages.length = 0;
             messages.push(...result.messages);
@@ -126,28 +119,27 @@ export async function* runAgentLoop(
             messages.push({ role: "user", content: result.forceContinue });
             continue;
           }
-        } catch { /* stop is advisory */ }
+        } catch { /* advisory */ }
       }
       yield { type: "agent_end", messages: [...messages] };
       return;
     }
 
-    // Execute tools sequentially — hooks run around each execution
+    // Execute tools
     for (const call of toolCalls) {
       yield { type: "tool_start", call };
 
-      // pre_tool_use — hook can block before execution starts
       let blockReason: string | undefined;
-      if (hooks !== undefined && !signal?.aborted) {
+      if (config?.onBeforeTool && !signal?.aborted) {
         try {
-          const hookResult = await hooks.trigger({ type: "pre_tool_use", call });
-          if (hookResult?.block === true) blockReason = hookResult.reason ?? "blocked by hook";
+          const r = await config.onBeforeTool(call);
+          if (r?.block) blockReason = r.reason ?? "blocked";
         } catch (error) {
           blockReason = error instanceof Error ? error.message : String(error);
         }
       }
 
-      let result;
+      let result: AgentToolResult;
       if (blockReason !== undefined) {
         result = { content: `Error: ${blockReason}`, isError: true };
       } else if (signal?.aborted) {
@@ -164,11 +156,8 @@ export async function* runAgentLoop(
       });
       yield { type: "tool_end", call, result };
 
-      // post_tool_use — side-effect hooks, failures are swallowed
-      if (hooks !== undefined) {
-        try {
-          await hooks.trigger({ type: "post_tool_use", call, result });
-        } catch { /* post hooks are side-effects */ }
+      if (config?.onAfterTool) {
+        try { await config.onAfterTool(call, result); } catch { /* side-effect */ }
       }
 
       if (signal?.aborted) break;

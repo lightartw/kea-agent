@@ -1,7 +1,7 @@
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import { AgentTool } from "../../agent/tools/types.js";
+import { AgentTool, type AgentToolResult } from "../../agent/tools/types.js";
 
 export interface TodoItem {
   readonly content: string;
@@ -49,7 +49,7 @@ export class TodoWriteTool extends AgentTool<typeof parameters> {
     );
   }
 
-  async execute(arguments_: Static<typeof parameters>, _signal: AbortSignal): Promise<string> {
+  async execute(arguments_: Static<typeof parameters>, _signal: AbortSignal): Promise<AgentToolResult> {
     currentTodos = arguments_.todos;
     const lines = ["\n## Current Tasks"];
     for (const t of currentTodos) {
@@ -57,6 +57,6 @@ export class TodoWriteTool extends AgentTool<typeof parameters> {
       lines.push(`  [${icon}] ${t.content}`);
     }
     const formatted = lines.join("\n");
-    return `${formatted}\n\nUpdated ${currentTodos.length} tasks`;
+    return { content: `${formatted}\n\nUpdated ${currentTodos.length} tasks`, isError: false };
   }
 }

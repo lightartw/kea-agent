@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { PermissionHook } from "../../src/harness/hooks/permission.js";
-import { HookRegistry } from "../../src/agent/hooks/registry.js";
+import { HookRegistry } from "../../src/harness/hooks/registry.js";
 
 function execute(name: string, arguments_: Record<string, unknown>) {
   const hook = new PermissionHook();

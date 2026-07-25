@@ -1,12 +1,28 @@
 import type { AssistantMessage, Message, ModelConfig, ToolCall } from "../ai/types.js";
-import type { ToolResult } from "./tools/types.js";
+import type { AgentToolResult } from "./tools/types.js";
+
+/**
+ * Callbacks that the agent loop invokes at lifecycle points.
+ * Each callback is optional and receives only the data it needs.
+ */
+export interface AgentLoopConfig {
+  /** Before pushing the user message. Return { block } to reject. */
+  onUserPrompt?: (prompt: string) => Promise<{ block: boolean; reason?: string } | undefined>;
+  /** Before each LLM stream. Return { context } to inject as a user message. */
+  onPreTurn?: () => Promise<{ context: string } | undefined>;
+  /** Before executing a tool. Return { block } to skip with an error. */
+  onBeforeTool?: (call: ToolCall) => Promise<{ block: boolean; reason?: string } | undefined>;
+  /** After executing a tool. Side-effect only. */
+  onAfterTool?: (call: ToolCall, result: AgentToolResult) => Promise<void>;
+  /** After an assistant message with no tool calls. */
+  onStop?: (messages: readonly Message[]) => Promise<{
+    messages?: readonly Message[]; forceContinue?: string;
+  } | undefined>;
+}
 
 /**
  * Presentation-neutral events emitted during one agent run.
- * CLI and future TUI render these independently; core modules never
- * import presentation code.
- *
- * Lifecycle: agent_start → turn_start* → ... → turn_end* → agent_end
+ * CLI and future TUI render these independently.
  */
 export type AgentEvent =
   // Run lifecycle
@@ -23,7 +39,7 @@ export type AgentEvent =
   | { readonly type: "toolcall_end";    readonly toolCall: ToolCall }
   // Tool execution
   | { readonly type: "tool_start";      readonly call: ToolCall }
-  | { readonly type: "tool_end";        readonly call: ToolCall; readonly result: ToolResult };
+  | { readonly type: "tool_end";        readonly call: ToolCall; readonly result: AgentToolResult };
 
 /** Public read-only snapshot of the Agent's current state. */
 export interface AgentState {

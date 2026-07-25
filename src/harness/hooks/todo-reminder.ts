@@ -3,7 +3,7 @@ import type {
   PostToolUseEvent,
   PreTurnEvent,
   UserPromptSubmitEvent,
-} from "../../agent/hooks/types.js";
+} from "./types.js";
 
 const THRESHOLD = 3;
 

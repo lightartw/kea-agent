@@ -1,4 +1,4 @@
-import type { Hook, HookResult, StopEvent } from "../../agent/hooks/types.js";
+import type { Hook, HookResult, StopEvent } from "./types.js";
 
 /** Prints tool-call count at session end. Teaching-version hook. */
 export class SummaryHook implements Hook<StopEvent> {

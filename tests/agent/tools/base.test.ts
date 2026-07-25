@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { Type, type Static } from "typebox";
 
-import { AgentTool } from "../../../src/agent/tools/types.js";
+import { AgentTool, type AgentToolResult } from "../../../src/agent/tools/types.js";
 
 const parameters = Type.Object({ value: Type.String() });
 
@@ -12,8 +12,8 @@ class EchoTool extends AgentTool<typeof parameters> {
     super("echo", "Echo text.", parameters);
   }
 
-  async execute(arguments_: Static<typeof parameters>): Promise<string> {
-    return arguments_.value;
+  async execute(arguments_: Static<typeof parameters>): Promise<AgentToolResult> {
+    return { content: arguments_.value, isError: false };
   }
 }
 

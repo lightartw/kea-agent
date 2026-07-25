@@ -1,8 +1,7 @@
 import { runAgentLoop } from "./agent-loop.js";
-import type { AgentEvent, AgentState } from "./types.js";
+import type { AgentEvent, AgentLoopConfig, AgentState } from "./types.js";
 import type { Message, ModelConfig, StreamFn } from "../ai/types.js";
-import type { ToolRegistry } from "./tools/registry.js";
-import type { HookRegistry } from "./hooks/registry.js";
+import type { AgentToolRegistry } from "./tools/registry.js";
 
 /** Tracks an in-flight prompt so abort() can cancel it. */
 interface ActiveRun {
@@ -25,10 +24,10 @@ export class Agent {
   constructor(
     streamFn: StreamFn,
     model: ModelConfig,
-    private readonly registry: ToolRegistry,
+    private readonly registry: AgentToolRegistry,
     initialMessages: readonly Message[] = [],
     systemPrompt = "",
-    private readonly hooks?: HookRegistry,
+    private readonly config?: AgentLoopConfig,
   ) {
     this.history = [...initialMessages];
     this._streamFn = streamFn;
@@ -102,10 +101,11 @@ export class Agent {
         this._streamFn,
         this._model,
         this.registry,
-        this.hooks,
+        this.config,
         abortController.signal,
       )) {
         if (event.type === "agent_end") {
+          // TODO: is it a good design to sequaltial scan?
           for (const msg of event.messages) {
             if (msg.role === "assistant" && msg.errorMessage) {
               this.errorMessage = msg.errorMessage;

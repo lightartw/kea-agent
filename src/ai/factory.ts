@@ -1,10 +1,10 @@
-import type { AnthropicAdapter } from "./adapters/anthropic.js";
-import type { GeminiAdapter } from "./adapters/gemini.js";
-import type { OpenAIAdapter } from "./adapters/openai.js";
 import type { AssistantMessageEvent, Context, ModelConfig, StreamFn, StreamOptions } from "./types.js";
+import { EventStream } from "./utils/event-stream.js";
 
 const DEFAULT_TIMEOUT = 120;
 const DEFAULT_MAX_TOKENS = 8000;
+
+// ── Resolved options ──
 
 export interface ResolvedOptions {
   timeout: number;
@@ -19,8 +19,38 @@ function resolveOptions(options?: Partial<StreamOptions>): ResolvedOptions {
   return { timeout: DEFAULT_TIMEOUT, maxTokens: DEFAULT_MAX_TOKENS, ...options };
 }
 
+// ── Adapter ──
+
 export interface Adapter {
   stream(model: string, context: Context, options: ResolvedOptions): AsyncIterable<AssistantMessageEvent>;
+}
+
+// ── Lazy loading ──
+
+/**
+ * Return an Adapter immediately (sync) whose stream() lazily loads the real
+ * adapter in the background and forwards events. Matches Pi's lazyApi pattern.
+ */
+function lazyAdapter(load: () => Promise<Adapter>): Adapter {
+  return {
+    stream(model, context, options) {
+      const stream = new EventStream<AssistantMessageEvent>();
+      load()
+        .then(async (real) => {
+          try {
+            for await (const event of real.stream(model, context, resolveOptions(options))) {
+              stream.push(event);
+            }
+          } catch (err) {
+            stream.error(err);
+            return;
+          }
+          stream.end();
+        })
+        .catch((err) => stream.error(err));
+      return stream;
+    },
+  };
 }
 
 // ── Provider registry ──
@@ -39,32 +69,32 @@ const BUILTIN_PROVIDERS: readonly ProviderConfig[] = [
     envApiKey: "ANTHROPIC_API_KEY",
     envBaseUrl: "ANTHROPIC_BASE_URL",
     defaultBaseUrl: "https://api.anthropic.com",
-    createAdapter: (apiKey, baseUrl) => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { AnthropicAdapter: A } = require("./adapters/anthropic.js") as { AnthropicAdapter: typeof AnthropicAdapter };
-      return new A(apiKey, baseUrl);
-    },
+    createAdapter: (apiKey, baseUrl) =>
+      lazyAdapter(async () => {
+        const { AnthropicAdapter } = await import("./adapters/anthropic.js");
+        return new AnthropicAdapter(apiKey, baseUrl);
+      }),
   },
   {
     id: "openai",
     envApiKey: "OPENAI_API_KEY",
     envBaseUrl: "OPENAI_BASE_URL",
     defaultBaseUrl: "https://api.openai.com/v1",
-    createAdapter: (apiKey, baseUrl) => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { OpenAIAdapter: A } = require("./adapters/openai.js") as { OpenAIAdapter: typeof OpenAIAdapter };
-      return new A(apiKey, baseUrl);
-    },
+    createAdapter: (apiKey, baseUrl) =>
+      lazyAdapter(async () => {
+        const { OpenAIAdapter } = await import("./adapters/openai.js");
+        return new OpenAIAdapter(apiKey, baseUrl);
+      }),
   },
   {
     id: "gemini",
     envApiKey: "GEMINI_API_KEY",
     envBaseUrl: "GEMINI_BASE_URL",
-    createAdapter: (apiKey, baseUrl) => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { GeminiAdapter: A } = require("./adapters/gemini.js") as { GeminiAdapter: typeof GeminiAdapter };
-      return new A(apiKey, baseUrl);
-    },
+    createAdapter: (apiKey, baseUrl) =>
+      lazyAdapter(async () => {
+        const { GeminiAdapter } = await import("./adapters/gemini.js");
+        return new GeminiAdapter(apiKey, baseUrl);
+      }),
   },
 ];
 
@@ -86,22 +116,17 @@ export function createStreamFn(
   const modelId = env["MODEL_ID"];
   if (!modelId) throw new Error("Missing model; set MODEL_ID");
 
-  const configs = new Map<string, { createAdapter: ProviderConfig["createAdapter"]; apiKey: string; baseUrl?: string | null }>();
+  // Eagerly create lazy adapters (module import is deferred to first stream call)
+  const adapters = new Map<string, Adapter>();
   for (const p of configured) {
+    const apiKey = env[p.envApiKey]!;
     const baseUrl = env[p.envBaseUrl ?? ""] ?? p.defaultBaseUrl ?? null;
-    configs.set(p.id, { createAdapter: p.createAdapter, apiKey: env[p.envApiKey]!, baseUrl });
+    adapters.set(p.id, p.createAdapter(apiKey, baseUrl));
   }
 
-  const adapters = new Map<string, Adapter>();
-
   function getAdapter(provider: string): Adapter {
-    let adapter = adapters.get(provider);
-    if (!adapter) {
-      const config = configs.get(provider);
-      if (!config) throw new Error(`Unknown provider: ${provider}`);
-      adapter = config.createAdapter(config.apiKey, config.baseUrl);
-      adapters.set(provider, adapter);
-    }
+    const adapter = adapters.get(provider);
+    if (!adapter) throw new Error(`Unknown provider: ${provider}`);
     return adapter;
   }
 

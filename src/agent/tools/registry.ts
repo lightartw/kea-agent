@@ -1,11 +1,11 @@
 import { runWithTimeout } from "../../utils/timeout.js";
-import { AgentTool, type ToolResult } from "./types.js";
-import type { Tool, ToolCall } from "../../ai/types.js";
+import { AgentTool, type AgentToolCall, type AgentToolResult } from "./types.js";
+import type { Tool } from "../../ai/types.js";
 
 const ERROR_PREFIX = "Error: ";
 
 /** Validates and executes tool calls. Does not know about hooks. */
-export class ToolRegistry {
+export class AgentToolRegistry {
   private readonly tools = new Map<string, AgentTool>();
 
   constructor(private readonly timeout = 120) {}
@@ -30,12 +30,12 @@ export class ToolRegistry {
     return [...this.tools.values()];
   }
 
-  private error(message: string): ToolResult {
+  private error(message: string): AgentToolResult {
     return { content: message.startsWith(ERROR_PREFIX) ? message : `${ERROR_PREFIX}${message}`, isError: true };
   }
 
   /** Validate and execute a tool call. Hooks are handled by the caller. */
-  async execute(call: ToolCall): Promise<ToolResult> {
+  async execute(call: AgentToolCall): Promise<AgentToolResult> {
     const tool = this.tools.get(call.name);
     if (tool === undefined) {
       return this.error(`Unknown tool '${call.name}'`);
@@ -48,10 +48,9 @@ export class ToolRegistry {
     }
 
     try {
-      const content = await runWithTimeout(this.timeout, (timeoutSignal) =>
+      return await runWithTimeout(this.timeout, (timeoutSignal) =>
         tool.execute(call.arguments, timeoutSignal),
       );
-      return { content, isError: false };
     } catch (error) {
       return this.error(error instanceof Error ? error.message : String(error));
     }
