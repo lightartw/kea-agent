@@ -4,8 +4,7 @@ import test from "node:test";
 import { Type } from "typebox";
 
 import { runAgentLoop } from "../../src/agent/agent-loop.js";
-import type { AgentLoopConfig } from "../../src/agent/types.js";
-import type { AgentEvent } from "../../src/agent/types.js";
+import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage } from "../../src/agent/types.js";
 import type {
   AssistantMessage,
   AssistantMessageEvent,
@@ -73,7 +72,7 @@ async function collect(
 
 test("runAgentLoop streams text and stores one complete assistant message", async () => {
   const final = assistantMsg("hello");
-  const history: Message[] = [];
+  const history: AgentMessage[] = [];
   const streamFn = streamFnWithEvents([[
     { type: "text_delta", text: "hel" },
     { type: "text_delta", text: "lo" },
@@ -130,7 +129,7 @@ test("runAgentLoop streams and executes tools sequentially", async () => {
       yield { type: "done", message: finalMsg };
     }
   };
-  const history: Message[] = [];
+  const history: AgentMessage[] = [];
 
   const events = await collect(
     runAgentLoop(
@@ -181,7 +180,7 @@ test("tool results are in history before the next model stream", async () => {
   const registry = new AgentToolRegistry();
   registry.register(new NoopTool());
   const tc = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
-  let secondHistory: readonly Message[] | undefined;
+  let secondHistory: readonly AgentMessage[] | undefined;
   const streamFn = streamFnWithEvents(
     [
       [
@@ -195,7 +194,7 @@ test("tool results are in history before the next model stream", async () => {
       if (index === 1) secondHistory = [...context.messages];
     },
   );
-  const history: Message[] = [];
+  const history: AgentMessage[] = [];
 
   await collect(
     runAgentLoop(
@@ -225,7 +224,7 @@ test("Registry failures are emitted and returned to the model", async () => {
     ],
     [{ type: "done", message: assistantMsg("recovered") }],
   ]);
-  const history: Message[] = [];
+  const history: AgentMessage[] = [];
 
   const events = await collect(
     runAgentLoop(
@@ -262,7 +261,7 @@ test("onBeforeTool blocks tool execution and returns error", async () => {
     ],
     [{ type: "done", message: assistantMsg("") }],
   ]);
-  const history: Message[] = [];
+  const history: AgentMessage[] = [];
   const config = makeConfig({
     onBeforeTool: async () => ({ block: true, reason: "blocked by test" }),
   });
@@ -298,7 +297,7 @@ test("onBeforeTool failure blocks tool execution", async () => {
     ],
     [{ type: "done", message: assistantMsg("") }],
   ]);
-  const history: Message[] = [];
+  const history: AgentMessage[] = [];
   const config = makeConfig({
     onBeforeTool: async () => { throw new Error("boom"); },
   });

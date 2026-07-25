@@ -2,17 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Agent } from "../../src/agent/agent.js";
-import type { AssistantMessage, ModelConfig, StreamFn } from "../../src/ai/types.js";
+import type { ModelConfig, StreamFn } from "../../src/ai/types.js";
 import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
 
 const testModel: ModelConfig = { provider: "test", model: "test-model" };
 
-const assistantMsg: AssistantMessage = {
-  role: "assistant",
-  content: [{ type: "text", text: "hello" }],
+const assistantMsg = {
+  role: "assistant" as const,
+  content: [{ type: "text" as const, text: "hello" }],
   model: "test-model",
   usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-  stopReason: "stop",
+  stopReason: "stop" as const,
   latencyMs: 0,
 };
 
