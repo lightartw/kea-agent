@@ -83,6 +83,47 @@ test("persistent session appends entries after first assistant", async () => {
   }
 });
 
+test("concurrent appends persist one ordered parent chain", async () => {
+  const storageDir = await tempStorage();
+  const followUp: AgentMessage = { role: "user", content: "follow up" };
+  try {
+    const session = await Session.create(storageDir);
+    const path = join(storageDir, "sessions", `${session.id}.jsonl`);
+    await session.appendMessage(user);
+    await session.appendMessage(assistant);
+
+    await Promise.all([
+      session.appendMessage(followUp),
+      session.appendModelChange(modelB),
+    ]);
+
+    const entries = (await readFile(path, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { id: string; parentId: string | null; type: string });
+    assert.deepEqual(entries.map((entry) => entry.type), [
+      "message",
+      "message",
+      "message",
+      "model_change",
+    ]);
+    assert.deepEqual(entries.map((entry) => entry.parentId), [
+      null,
+      entries[0]!.id,
+      entries[1]!.id,
+      entries[2]!.id,
+    ]);
+
+    const reopened = await Session.open(storageDir, session.id);
+    assert.deepEqual(reopened.buildContext(), {
+      messages: [user, assistant, followUp],
+      model: modelB,
+    });
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
 test("open rejects missing, empty, malformed, and invalid-entry sessions", async () => {
   const storageDir = await tempStorage();
   const sessionsDir = join(storageDir, "sessions");
@@ -202,6 +243,19 @@ test("append rejects invalid runtime entries without changing the session", asyn
       assert.deepEqual(session.buildContext(), { messages: [], model: null });
     });
   }
+});
+
+test("a failed queued append does not block a later valid append", async () => {
+  const session = Session.inMemory();
+  const failed = session.appendMessage({ ...assistant, latencyMs: Number.NaN });
+  const succeeded = session.appendMessage(user);
+
+  await assert.rejects(
+    failed,
+    (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
+  );
+  await succeeded;
+  assert.deepEqual(session.buildContext(), { messages: [user], model: null });
 });
 
 test("open rejects duplicate IDs, missing parents, and multiple roots", async () => {

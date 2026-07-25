@@ -149,6 +149,7 @@ export class Session {
   private byId = new Map<string, SessionEntry>();
   private leafId: string | null = null;
   private flushed = false;
+  private pending = Promise.resolve();
 
   private constructor(
     readonly id: string,
@@ -280,23 +281,32 @@ export class Session {
     }
   }
 
+  private enqueue(operation: () => Promise<void>): Promise<void> {
+    const result = this.pending.then(operation, operation);
+    this.pending = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   async appendMessage(message: AgentMessage): Promise<void> {
-    await this.append({
+    await this.enqueue(() => this.append({
       type: "message",
       id: newId(),
       parentId: this.leafId,
       message,
-    } satisfies SessionMessageEntry);
+    } satisfies SessionMessageEntry));
   }
 
   async appendModelChange(model: ModelConfig): Promise<void> {
-    await this.append({
+    await this.enqueue(() => this.append({
       type: "model_change",
       id: newId(),
       parentId: this.leafId,
       provider: model.provider,
       modelId: model.model,
-    } satisfies SessionModelChangeEntry);
+    } satisfies SessionModelChangeEntry));
   }
 
   private branch(): SessionEntry[] {
