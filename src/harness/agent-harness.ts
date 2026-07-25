@@ -1,202 +1,146 @@
 import { Agent } from "../agent/agent.js";
 import type { AgentEvent, AgentMessage } from "../agent/types.js";
 import type { AgentTool } from "../agent/tools/types.js";
-import { AgentToolRegistry } from "../agent/tools/registry.js";
-import type { AgentLoopConfig } from "../agent/types.js";
-import { HookRegistry } from "./hooks/registry.js";
-import type { Hook } from "./hooks/types.js";
-import type { ModelConfig, StreamFn } from "../ai/types.js";
+import type { AgentToolRegistry } from "../agent/tools/registry.js";
+import type { ModelConfig } from "../ai/types.js";
 import { Session } from "./session/session.js";
-import {
-  CODING_SYSTEM_PROMPT,
-  defaultSystemPrompt,
-  type SystemPromptBuilder,
-} from "./system-prompt.js";
-
-export interface HarnessConfig {
-  readonly session: Session;
-  readonly model: ModelConfig;
-  readonly streamFn: StreamFn;
-  readonly toolRegistry: AgentToolRegistry;
-  readonly hookRegistry: HookRegistry;
-  readonly systemPrompt?: SystemPromptBuilder;
-  readonly cwd?: string;
-}
-
-/** Convert HookRegistry callbacks to AgentLoopConfig hook fields. */
-function hooksToLoopConfig(registry: HookRegistry): Partial<AgentLoopConfig> {
-  return {
-    onUserPrompt: async (prompt) => {
-      const r = await registry.trigger({ type: "user_prompt_submit", prompt });
-      if (r?.block) return { block: true, ...(r.reason !== undefined ? { reason: r.reason } : {}) };
-      return undefined;
-    },
-    onPreTurn: async () => {
-      const r = await registry.trigger({ type: "pre_turn" });
-      if (r?.context) return { context: r.context };
-      return undefined;
-    },
-    onBeforeTool: async (call) => {
-      const r = await registry.trigger({ type: "pre_tool_use", call });
-      if (r?.block) return { block: true, ...(r.reason !== undefined ? { reason: r.reason } : {}) };
-      return undefined;
-    },
-    onAfterTool: async (call, result) => {
-      await registry.trigger({ type: "post_tool_use", call, result });
-    },
-    onStop: async (messages) => {
-      const r = await registry.trigger({ type: "stop", messages });
-      return r as { messages?: readonly AgentMessage[]; forceContinue?: string } | undefined;
-    },
-  };
-}
+import type {
+  HarnessConfig,
+  HarnessEventListener,
+  SystemPromptBuilder,
+  Unsubscribe,
+} from "./types.js";
 
 export class AgentHarness {
-  private readonly buildPrompt: SystemPromptBuilder;
+  private readonly session: Session;
+  private readonly agent: Agent;
+  private readonly toolRegistry: AgentToolRegistry;
+  private readonly buildSystemPrompt: SystemPromptBuilder;
   private readonly cwd: string;
-  private readonly _toolRegistry: AgentToolRegistry;
-  private readonly _hookRegistry: HookRegistry;
-
-  private agent: Agent;
-  private session: Session;
+  private readonly listeners = new Set<HarnessEventListener>();
+  private currentModel: ModelConfig;
+  private persistedMessageCount: number;
+  private running = false;
+  private abortRequested = false;
 
   constructor(config: HarnessConfig) {
-    this.cwd = config.cwd ?? process.cwd();
-    this.buildPrompt = config.systemPrompt ?? (() => "");
-    this._toolRegistry = config.toolRegistry;
-    this._hookRegistry = config.hookRegistry;
+    const context = config.session.buildContext();
+    this.session = config.session;
+    this.toolRegistry = config.toolRegistry;
+    this.buildSystemPrompt = config.systemPrompt;
+    this.cwd = config.cwd;
+    this.currentModel = context.model ?? config.model;
+    this.persistedMessageCount = context.messages.length;
+    this.agent = new Agent(
+      config.streamFn,
+      this.currentModel,
+      config.toolRegistry,
+      context.messages,
+    );
+  }
 
-    const { messages, model } = config.session.buildContext();
-    const initialModel = model ?? config.model;
-    const systemPrompt = this.buildPrompt({
-      model: initialModel,
-      tools: [...config.toolRegistry.all()],
+  // ── Private helpers ──
+
+  private assertIdle(): void {
+    if (this.running) throw new Error("AgentHarness is busy");
+  }
+
+  private async prepareAgentForRun(): Promise<void> {
+    this.agent.model = this.currentModel;
+    this.agent.systemPrompt = await this.buildSystemPrompt({
+      model: this.currentModel,
+      tools: this.toolRegistry.all(),
       cwd: this.cwd,
       date: new Date(),
     });
+  }
 
-    this.session = config.session;
-    this.agent = new Agent(
-      config.streamFn,
-      initialModel,
-      config.toolRegistry,
-      messages,
-      systemPrompt,
-      hooksToLoopConfig(config.hookRegistry),
-    );
+  private async persistNewMessages(): Promise<void> {
+    while (this.persistedMessageCount < this.agent.messages.length) {
+      const message = this.agent.messages[this.persistedMessageCount]!;
+      await this.session.appendMessage(message);
+      this.persistedMessageCount++;
+    }
+  }
+
+  private async publish(event: AgentEvent): Promise<void> {
+    for (const listener of [...this.listeners]) {
+      await listener(event);
+    }
   }
 
   // ── Core ──
 
-  async *prompt(input: string): AsyncIterable<AgentEvent> {
-    const { model } = this.session.buildContext();
-    if (model !== null) {
-      this.agent.model = model;
-      this.agent.systemPrompt = this.buildPrompt({
-        model,
-        tools: [...this._toolRegistry.all()],
-        cwd: this.cwd,
-        date: new Date(),
-      });
-    }
+  async prompt(input: string): Promise<void> {
+    this.assertIdle();
+    this.running = true;
+    this.abortRequested = false;
 
-    const before = this.agent.messages.length;
-    yield* this.agent.prompt(input);
+    try {
+      await this.prepareAgentForRun();
+      if (this.abortRequested) return;
 
-    // Batch write new messages
-    for (let i = before; i < this.agent.messages.length; i++) {
-      await this.session.appendMessage(this.agent.messages[i]!);
+      for await (const event of this.agent.prompt(input)) {
+        await this.persistNewMessages();
+        await this.publish(event);
+      }
+    } finally {
+      try {
+        await this.persistNewMessages();
+      } finally {
+        this.running = false;
+        this.abortRequested = false;
+      }
     }
+  }
+
+  subscribe(listener: HarnessEventListener): Unsubscribe {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   // ── Control ──
 
   abort(): void {
+    if (!this.running) return;
+    this.abortRequested = true;
     this.agent.abort();
   }
 
   // ── Model ──
 
-  get model(): ModelConfig {
-    return this.agent.model;
+  async switchModel(model: ModelConfig): Promise<void> {
+    this.assertIdle();
+    await this.session.appendModelChange(model);
+    this.currentModel = model;
+    this.agent.model = model;
   }
 
-  async switchModel(config: ModelConfig): Promise<void> {
-    await this.session.appendModelChange(config);
-    this.agent.model = config;
-    this.agent.systemPrompt = this.buildPrompt({
-      model: config,
-      tools: [...this._toolRegistry.all()],
-      cwd: this.cwd,
-      date: new Date(),
-    });
-  }
-
-  // ── Tools & Hooks ──
+  // ── Tools ──
 
   registerTool(tool: AgentTool): void {
-    this._toolRegistry.register(tool);
+    this.assertIdle();
+    this.toolRegistry.register(tool);
   }
 
-  registerHook(hook: Hook): void {
-    this._hookRegistry.register(hook);
+  unregisterTool(name: string): void {
+    this.assertIdle();
+    this.toolRegistry.unregister(name);
   }
 
   // ── State ──
-
-  get isRunning(): boolean {
-    return this.agent.isRunning;
-  }
 
   get messages(): readonly AgentMessage[] {
     return this.agent.messages;
   }
 
-  getHook<T extends Hook>(name: string): T | undefined {
-    return this._hookRegistry.get<T>(name);
+  get model(): ModelConfig {
+    return this.currentModel;
   }
-}
 
-// ── Factory ──
-
-export interface CreateHarnessConfig {
-  readonly project: { readonly workDir: string; readonly storageDir: string };
-  readonly streamFn: StreamFn;
-  readonly model?: ModelConfig;
-  readonly systemPrompt?: string | SystemPromptBuilder;
-  readonly cwd?: string;
-}
-
-export async function createHarness(
-  config: CreateHarnessConfig,
-): Promise<AgentHarness> {
-  const cwd = config.cwd ?? process.cwd();
-
-  const { createHookRegistry } = await import("./hooks/factory.js");
-  const { createToolRegistry } = await import("./tools/factory.js");
-
-  const hookRegistry = createHookRegistry(cwd);
-  const toolRegistry = createToolRegistry(cwd);
-
-  const session = await Session.create(config.project.storageDir);
-
-  const model = config.model;
-  if (model === undefined) throw new Error("model is required");
-
-  const promptBuilder: SystemPromptBuilder =
-    typeof config.systemPrompt === "function"
-      ? config.systemPrompt
-      : config.systemPrompt !== undefined
-        ? defaultSystemPrompt(config.systemPrompt)
-        : defaultSystemPrompt(CODING_SYSTEM_PROMPT);
-
-  return new AgentHarness({
-    session,
-    model,
-    streamFn: config.streamFn,
-    toolRegistry,
-    hookRegistry,
-    systemPrompt: promptBuilder,
-    cwd,
-  });
+  get isRunning(): boolean {
+    return this.running;
+  }
 }

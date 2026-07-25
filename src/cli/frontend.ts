@@ -1,6 +1,5 @@
 import { createInterface, type Interface } from "node:readline/promises";
 
-import type { AgentEvent } from "../agent/types.js";
 import type { AgentHarness } from "../harness/agent-harness.js";
 import { renderAgentEvent } from "./render.js";
 
@@ -20,49 +19,52 @@ export class CliFrontend {
 
   /** Keep accepting user turns while AgentHarness owns conversation state. */
   async run(harness: AgentHarness): Promise<void> {
+    const unsubscribe = harness.subscribe((event) => {
+      renderAgentEvent(
+        event,
+        (text) => process.stdout.write(text),
+        (text) => console.log(text),
+      );
+    });
+
     console.log("Agent Loop");
     console.log("Press Enter to send. ESC to abort streaming. 'q' to quit.\n");
-    while (true) {
-      let query: string;
-      try {
-        query = await this.readline.question(`${CYAN}>> ${RESET}`);
-      } catch {
-        break;
-      }
-      if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
 
-      // Enable ESC detection during streaming. In raw mode, ^C also becomes
-      // a regular byte so we forward it to SIGINT ourselves.
-      let onData: ((buf: Buffer) => void) | undefined;
-      if (process.stdin.isTTY) {
-        onData = (buf: Buffer): void => {
-          if (buf[0] === 0x1b) {
-            // ESC — abort the current prompt
-            harness.abort();
-          } else if (buf[0] === 0x03) {
-            // ^C — forward as SIGINT signal
-            process.kill(process.pid, "SIGINT");
+    try {
+      while (true) {
+        let query: string;
+        try {
+          query = await this.readline.question(`${CYAN}>> ${RESET}`);
+        } catch {
+          break;
+        }
+        if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
+
+        let onData: ((buf: Buffer) => void) | undefined;
+        if (process.stdin.isTTY) {
+          onData = (buf: Buffer): void => {
+            if (buf[0] === 0x1b) {
+              harness.abort();
+            } else if (buf[0] === 0x03) {
+              process.kill(process.pid, "SIGINT");
+            }
+          };
+          process.stdin.setRawMode(true);
+          process.stdin.on("data", onData);
+        }
+
+        try {
+          await harness.prompt(query);
+        } finally {
+          if (onData !== undefined) {
+            process.stdin.removeListener("data", onData);
+            process.stdin.setRawMode(false);
           }
-        };
-        process.stdin.setRawMode(true);
-        process.stdin.on("data", onData);
-      }
-
-      try {
-        for await (const event of harness.prompt(query)) {
-          renderAgentEvent(
-            event,
-            (text) => process.stdout.write(text),
-            (text) => console.log(text),
-          );
         }
-      } finally {
-        if (onData !== undefined) {
-          process.stdin.removeListener("data", onData);
-          process.stdin.setRawMode(false);
-        }
+        console.log();
       }
-      console.log();
+    } finally {
+      unsubscribe();
     }
   }
 
