@@ -1,4 +1,3 @@
-export * from "./agent/agent.js";
 export * from "./agent/agent-loop.js";
 export * from "./agent/types.js";
 export * from "./agent/tools/index.js";

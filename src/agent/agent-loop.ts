@@ -7,7 +7,7 @@ import type {
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage } from "./types.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
 
-// ── Helpers (extracted from old loop body) ──
+// ── Helpers ──
 
 function aiEventToToolCalls(event: AssistantMessageEvent, toolCalls: AgentToolCall[]): void {
   if (event.type === "toolcall_end") {
@@ -33,15 +33,11 @@ export async function* runAgentLoop(
 ): AsyncIterable<AgentEvent> {
   yield { type: "agent_start" };
 
-  // ── onUserPrompt ──
-  if (config.onUserPrompt) {
-    try {
-      const result = await config.onUserPrompt(input);
-      if (result?.block) {
-        yield { type: "agent_end", messages: [...context.messages] };
-        return;
-      }
-    } catch {
+  // ── user_prompt hook ──
+  const userPromptResult = await config.hooks.trigger("user_prompt", { prompt: input });
+  if (userPromptResult !== undefined && userPromptResult !== null) {
+    const r = userPromptResult as { block?: boolean; reason?: string };
+    if (r.block) {
       yield { type: "agent_end", messages: [...context.messages] };
       return;
     }
@@ -58,14 +54,21 @@ export async function* runAgentLoop(
 
     yield { type: "turn_start" };
 
-    // ── onPreTurn ──
-    if (config.onPreTurn && !signal?.aborted) {
-      try {
-        const result = await config.onPreTurn();
-        if (result?.context !== undefined) {
-          context.messages.push({ role: "user", content: result.context } as AgentMessage);
-        }
-      } catch { /* advisory */ }
+    // ── pre_turn hook ──
+    if (!signal?.aborted) {
+      await config.hooks.trigger("pre_turn", {});
+    }
+
+    // ── context transform hook ──
+    const contextResult = await config.hooks.trigger("context", {
+      messages: [...context.messages],
+    });
+    if (contextResult !== undefined && contextResult !== null) {
+      const transformed = contextResult as { messages?: AgentMessage[] };
+      if (transformed.messages !== undefined) {
+        context.messages.length = 0;
+        context.messages.push(...transformed.messages);
+      }
     }
 
     // ── convertToLlm boundary ──
@@ -120,26 +123,16 @@ export async function* runAgentLoop(
 
     yield { type: "turn_end", message: turnMessage! };
 
+    // ── turn_end hook ──
+    await config.hooks.trigger("turn_end", { message: turnMessage! });
+
     if (signal?.aborted) {
       yield { type: "agent_end", messages: [...context.messages] };
       return;
     }
 
-    // ── No tool calls → onStop ──
+    // ── No tool calls → done ──
     if (toolCalls.length === 0) {
-      if (config.onStop && !signal?.aborted) {
-        try {
-          const result = await config.onStop([...context.messages]);
-          if (result?.messages !== undefined) {
-            context.messages.length = 0;
-            context.messages.push(...result.messages);
-          }
-          if (result?.forceContinue !== undefined) {
-            context.messages.push({ role: "user", content: result.forceContinue } as AgentMessage);
-            continue;
-          }
-        } catch { /* advisory */ }
-      }
       yield { type: "agent_end", messages: [...context.messages] };
       return;
     }
@@ -149,11 +142,19 @@ export async function* runAgentLoop(
       yield { type: "tool_start", call };
 
       let blockReason: string | undefined;
-      if (config.onBeforeTool && !signal?.aborted) {
+      if (!signal?.aborted) {
         try {
-          const r = await config.onBeforeTool(call);
-          if (r?.block) blockReason = r.reason ?? "blocked";
+          const blockResult = await config.hooks.trigger("tool_call", {
+            toolCallId: call.id,
+            toolName: call.name,
+            input: call.arguments as Record<string, unknown>,
+          });
+          if (blockResult !== undefined && blockResult !== null) {
+            const r = blockResult as { block?: boolean; reason?: string };
+            if (r.block) blockReason = r.reason ?? "blocked";
+          }
         } catch (error) {
+          // Exception in hook handler → block the tool (safe default)
           blockReason = error instanceof Error ? error.message : String(error);
         }
       }
@@ -172,12 +173,18 @@ export async function* runAgentLoop(
         toolCallId: call.id,
         name: call.name,
         content: result.content,
+        isError: result.isError,
       } as AgentMessage);
       yield { type: "tool_end", call, result };
 
-      if (config.onAfterTool) {
-        try { await config.onAfterTool(call, result); } catch { /* side-effect */ }
-      }
+      // ── tool_result hook ──
+      await config.hooks.trigger("tool_result", {
+        toolCallId: call.id,
+        toolName: call.name,
+        input: call.arguments as Record<string, unknown>,
+        content: result.content,
+        isError: result.isError,
+      });
 
       if (signal?.aborted) break;
     }

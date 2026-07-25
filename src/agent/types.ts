@@ -1,6 +1,7 @@
 import type { Message, ModelConfig } from "../ai/types.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
 import type { AgentToolRegistry } from "./tools/registry.js";
+import type { HookRegistry } from "./hooks/registry.js";
 
 /**
  * Agent-layer message type. Currently an alias for Message; will become
@@ -19,27 +20,16 @@ export interface AgentContext {
 }
 
 /**
- * Callbacks and configuration consumed by the agent loop.
- * model, convertToLlm, and hooks are all in one place.
+ * Configuration consumed by the agent loop.
+ * Hooks replace the old per-event callbacks — the loop only calls
+ * `hooks.trigger()` and delegates reducer semantics to the registry.
  */
 export interface AgentLoopConfig {
   readonly model: ModelConfig;
   /** Convert agent messages to LLM-compatible messages before each stream call. */
   readonly convertToLlm: (messages: AgentMessage[]) => Message[];
-
-  /** Before pushing the user message. Return { block } to reject. */
-  readonly onUserPrompt?: (prompt: string) => Promise<{ block: boolean; reason?: string } | undefined>;
-  /** Before each LLM stream. Return { context } to inject as a user message. */
-  readonly onPreTurn?: () => Promise<{ context: string } | undefined>;
-  /** Before executing a tool. Return { block } to skip with an error. */
-  readonly onBeforeTool?: (call: AgentToolCall) => Promise<{ block: boolean; reason?: string } | undefined>;
-  /** After executing a tool. Side-effect only. */
-  readonly onAfterTool?: (call: AgentToolCall, result: AgentToolResult) => Promise<void>;
-  /** After an assistant message with no tool calls. */
-  readonly onStop?: (messages: readonly AgentMessage[]) => Promise<{
-    messages?: readonly AgentMessage[];
-    forceContinue?: string;
-  } | undefined>;
+  /** Unified hook registry for tool_call, context, turn_end, user_prompt, pre_turn. */
+  readonly hooks: HookRegistry;
 }
 
 /**
@@ -63,12 +53,3 @@ export type AgentEvent =
   // Tool execution
   | { readonly type: "tool_start";      readonly call: AgentToolCall }
   | { readonly type: "tool_end";        readonly call: AgentToolCall; readonly result: AgentToolResult };
-
-/** Public read-only snapshot of the Agent's current state. */
-export interface AgentState {
-  readonly messages: readonly AgentMessage[];
-  readonly model: ModelConfig;
-  readonly systemPrompt: string;
-  readonly isRunning: boolean;
-  readonly errorMessage?: string;
-}

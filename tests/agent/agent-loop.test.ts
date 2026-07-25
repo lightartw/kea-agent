@@ -16,6 +16,7 @@ import type {
 } from "../../src/ai/types.js";
 import { AgentTool, type AgentToolResult } from "../../src/agent/tools/types.js";
 import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
+import { HookRegistry } from "../../src/agent/hooks/registry.js";
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 const testModel: ModelConfig = { provider: "test", model: "test-model" };
@@ -25,6 +26,7 @@ function makeConfig(overrides?: Partial<AgentLoopConfig>): AgentLoopConfig {
   return {
     model: testModel,
     convertToLlm: (msgs) => msgs,
+    hooks: new HookRegistry(),
     ...overrides,
   };
 }
@@ -210,6 +212,7 @@ test("tool results are in history before the next model stream", async () => {
     toolCallId: "c1",
     name: "noop",
     content: "ok",
+    isError: false,
   });
   assert.deepEqual(history.at(-1), assistantMsg(""));
 });
@@ -240,7 +243,13 @@ test("Registry failures are emitted and returned to the model", async () => {
   if (toolEnd?.type !== "tool_end") return;
   assert.equal(toolEnd.result.isError, true);
   assert.equal(toolEnd.result.content, "Error: Unknown tool 'missing'");
-  assert.equal(history[2]?.content, "Error: Unknown tool 'missing'");
+  assert.deepEqual(history[2], {
+    role: "tool",
+    toolCallId: "c1",
+    name: "missing",
+    content: "Error: Unknown tool 'missing'",
+    isError: true,
+  });
 });
 
 test("onBeforeTool blocks tool execution and returns error", async () => {
@@ -262,9 +271,9 @@ test("onBeforeTool blocks tool execution and returns error", async () => {
     [{ type: "done", message: assistantMsg("") }],
   ]);
   const history: AgentMessage[] = [];
-  const config = makeConfig({
-    onBeforeTool: async () => ({ block: true, reason: "blocked by test" }),
-  });
+  const hooks = new HookRegistry();
+  hooks.register("tool_call", async () => ({ block: true, reason: "blocked by test" }));
+  const config = makeConfig({ hooks });
 
   await collect(
     runAgentLoop(
@@ -298,9 +307,9 @@ test("onBeforeTool failure blocks tool execution", async () => {
     [{ type: "done", message: assistantMsg("") }],
   ]);
   const history: AgentMessage[] = [];
-  const config = makeConfig({
-    onBeforeTool: async () => { throw new Error("boom"); },
-  });
+  const hooks = new HookRegistry();
+  hooks.register("tool_call", async () => { throw new Error("boom"); });
+  const config = makeConfig({ hooks });
 
   await collect(
     runAgentLoop(
