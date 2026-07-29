@@ -1,7 +1,7 @@
 import type { Message, ModelConfig } from "../ai/types.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
 import type { AgentToolRegistry } from "./tools/registry.js";
-import type { HookRegistry } from "./hooks/registry.js";
+import type { AgentHookTrigger } from "./hooks/types.js";
 
 /**
  * Agent-layer message type. Currently an alias for Message; will become
@@ -28,8 +28,8 @@ export interface AgentLoopConfig {
   readonly model: ModelConfig;
   /** Convert agent messages to LLM-compatible messages before each stream call. */
   readonly convertToLlm: (messages: AgentMessage[]) => Message[];
-  /** Unified hook registry for tool_call, context, turn_end, user_prompt, pre_turn. */
-  readonly hooks: HookRegistry;
+  /** Unified hook trigger for the five Agent Hook events. */
+  readonly hooks: AgentHookTrigger;
 }
 
 /**

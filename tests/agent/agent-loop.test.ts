@@ -17,16 +17,21 @@ import type {
 import { AgentTool, type AgentToolResult } from "../../src/agent/tools/types.js";
 import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
 import { HookRegistry } from "../../src/agent/hooks/registry.js";
+import type { AgentHookEvent } from "../../src/agent/hooks/types.js";
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 const testModel: ModelConfig = { provider: "test", model: "test-model" };
+
+function emptyHooks(): HookRegistry<AgentHookEvent, Record<string, never>> {
+  return new HookRegistry<AgentHookEvent, Record<string, never>>({});
+}
 
 /** Minimal AgentLoopConfig with identity convertToLlm for test callers. */
 function makeConfig(overrides?: Partial<AgentLoopConfig>): AgentLoopConfig {
   return {
     model: testModel,
     convertToLlm: (msgs) => msgs,
-    hooks: new HookRegistry(),
+    hooks: emptyHooks(),
     ...overrides,
   };
 }
@@ -271,8 +276,8 @@ test("onBeforeTool blocks tool execution and returns error", async () => {
     [{ type: "done", message: assistantMsg("") }],
   ]);
   const history: AgentMessage[] = [];
-  const hooks = new HookRegistry();
-  hooks.register("tool_call", async () => ({ block: true, reason: "blocked by test" }));
+  const hooks = emptyHooks();
+  hooks.register("tool_call", async () => ({ block: true, reason: "blocked by test" }) as const);
   const config = makeConfig({ hooks });
 
   await collect(
@@ -307,7 +312,7 @@ test("onBeforeTool failure blocks tool execution", async () => {
     [{ type: "done", message: assistantMsg("") }],
   ]);
   const history: AgentMessage[] = [];
-  const hooks = new HookRegistry();
+  const hooks = emptyHooks();
   hooks.register("tool_call", async () => { throw new Error("boom"); });
   const config = makeConfig({ hooks });
 
@@ -323,4 +328,139 @@ test("onBeforeTool failure blocks tool execution", async () => {
   assert.equal(tool.ran, false);
   const content = history[2]?.role === "tool" ? history[2].content : "";
   assert.match(content, /boom/);
+});
+
+// ── Task 2: user_prompt, context, stop tests ──
+
+test("user_prompt block prevents history and model access", async () => {
+  const hooks = emptyHooks();
+  hooks.register("user_prompt", () => ({
+    block: true,
+    reason: "blocked",
+  }));
+  let streams = 0;
+  const history: AgentMessage[] = [];
+  const events = await collect(runAgentLoop(
+    "secret",
+    { systemPrompt: "", messages: history, tools: new AgentToolRegistry() },
+    makeConfig({ hooks }),
+    async function* () {
+      streams++;
+      yield { type: "done", message: assistantMsg("unused") };
+    },
+  ));
+
+  assert.equal(streams, 0);
+  assert.deepEqual(history, []);
+  assert.deepEqual(events, [
+    { type: "agent_start" },
+    { type: "agent_end", messages: [] },
+  ]);
+});
+
+test("context hook changes one request without replacing real history", async () => {
+  const hooks = emptyHooks();
+  hooks.register("context", ({ messages }) => ({
+    messages: [
+      ...messages,
+      { role: "user", content: "request-only" },
+    ],
+  }));
+  const history: AgentMessage[] = [];
+  let requestMessages: readonly Message[] = [];
+  await collect(runAgentLoop(
+    "real",
+    { systemPrompt: "", messages: history, tools: new AgentToolRegistry() },
+    makeConfig({ hooks }),
+    async function* (_model, context) {
+      requestMessages = [...context.messages];
+      yield { type: "done", message: assistantMsg("done") };
+    },
+  ));
+
+  assert.deepEqual(
+    requestMessages.map((message) =>
+      message.role === "user" ? message.content : message.role
+    ),
+    ["real", "request-only"],
+  );
+  assert.deepEqual(
+    history.map((message) =>
+      message.role === "user" ? message.content : message.role
+    ),
+    ["real", "assistant"],
+  );
+});
+
+test("stop continueWith appends a message and starts another turn", async () => {
+  const hooks = emptyHooks();
+  let stops = 0;
+  hooks.register("stop", () => {
+    stops++;
+    return stops === 1
+      ? { continueWith: { role: "user", content: "continue" } }
+      : undefined;
+  });
+  const history: AgentMessage[] = [];
+  let streams = 0;
+  await collect(runAgentLoop(
+    "start",
+    { systemPrompt: "", messages: history, tools: new AgentToolRegistry() },
+    makeConfig({ hooks }),
+    async function* () {
+      streams++;
+      yield { type: "done", message: assistantMsg(`answer-${streams}`) };
+    },
+  ));
+
+  assert.equal(streams, 2);
+  assert.equal(stops, 2);
+  assert.deepEqual(history.map((message) => message.role), [
+    "user", "assistant", "user", "assistant",
+  ]);
+  assert.equal(history[2]?.role === "user" ? history[2].content : "", "continue");
+});
+
+test("AI error does not trigger stop", async () => {
+  const hooks = emptyHooks();
+  let stops = 0;
+  hooks.register("stop", () => { stops++; });
+  const failed = {
+    ...assistantMsg(""),
+    stopReason: "error" as const,
+    errorMessage: "provider failed",
+  };
+
+  await collect(runAgentLoop(
+    "start",
+    {
+      systemPrompt: "",
+      messages: [],
+      tools: new AgentToolRegistry(),
+    },
+    makeConfig({ hooks }),
+    streamFnWithEvents([[{ type: "error", message: failed }]]),
+  ));
+  assert.equal(stops, 0);
+});
+
+test("pre-aborted run does not trigger stop", async () => {
+  const hooks = emptyHooks();
+  let stops = 0;
+  hooks.register("stop", () => { stops++; });
+  const controller = new AbortController();
+  controller.abort();
+
+  await collect(runAgentLoop(
+    "start",
+    {
+      systemPrompt: "",
+      messages: [],
+      tools: new AgentToolRegistry(),
+    },
+    makeConfig({ hooks }),
+    streamFnWithEvents([]),
+    controller.signal,
+  ));
+  assert.equal(stops, 0);
 });
