@@ -28,6 +28,7 @@ export async function asyncMain(): Promise<void> {
       streamFn: stream,
       model: defaultModel,
       session,
+      ui: cli,
     });
     await cli.run(harness);
   } finally {
