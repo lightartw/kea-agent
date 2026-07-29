@@ -35,7 +35,7 @@ Harness 分为三层：
 
 - **Session 管理层**（`SessionManager`）：管理一个 project 下多个 `Session` 文件的生命周期。负责 session 的创建、打开、列出和恢复。
 - **通用运行时**（`AgentHarness`）：持有 Agent、Session 和监听器。消费 Agent 事件、持久化消息并发布给订阅者。绝不导入具体 coding 工具或 coding system prompt。
-- **Coding 组合**（`createHarness`）：将 `AgentHarness` 与 coding 工具集、coding system prompt 组装在一起的工厂函数。这是唯一导入具体工具和 `CODING_SYSTEM_PROMPT` 的文件。`session` 由调用方传入（必传）。
+- **Coding 组合**（`createHarness`）：将 `AgentHarness` 与 coding 工具集、coding system prompt 和 Hook 组装在一起的工厂函数。这是唯一导入具体工具和 `CODING_SYSTEM_PROMPT` 的文件。`session` 和 `model` 由调用方传入。
 
 ## `SessionManager`
 
@@ -73,8 +73,25 @@ interface HarnessConfig {
   readonly toolRegistry: AgentToolRegistry;
   readonly systemPrompt: SystemPromptBuilder;
   readonly cwd: string;
+  readonly hooks?: AgentHookTrigger;
 }
 ```
+
+### Hook 透传
+
+- `hooks` 为可选 `AgentHookTrigger`；未传入时使用空 Registry。
+- Harness 将同一个 trigger 直接传给 Agent Loop，不重新包装或定义新的事件。
+- Harness 不建立自己的 Hook 事件、第二个 dispatcher 或 ExtensionHost。
+- `subscribe()` 返回的观察者只能接收 `AgentEvent`，不能控制运行。
+
+### 两条通道
+
+| 通道 | 接口 | 用途 |
+|------|------|------|
+| 观察 | `subscribe(listener)` → `AgentEvent` | 渲染、日志；返回值被忽略 |
+| 控制 | `HarnessConfig.hooks` → `AgentHookTrigger` | 阻止/转换/修补/续跑 |
+
+二者不是两套同义回调——`subscribe` 的返回值被忽略，只能观察运行事实；Hook 在动作提交前触发，只有事件定义的结果可以阻止、转换、修补或续跑。
 
 ### 方法
 
@@ -101,15 +118,16 @@ interface HarnessConfig {
 
 ## `createHarness`
 
-Coding agent 的组合根：
+Coding agent 的组合根。定义在 `coding-agent/factory.ts`，其配置类型 `CreateHarnessConfig` 属于 `coding-agent` 包。
 
 ```ts
 interface CreateHarnessConfig {
   readonly project: HarnessProject;
   readonly streamFn: StreamFn;
-  readonly model: ModelConfig;           // 必填
-  readonly session: Session;             // 必填，由调用方通过 SessionManager 创建
+  readonly model: ModelConfig;
+  readonly session?: Session;
   readonly systemPrompt?: string | SystemPromptBuilder;
+  readonly ui?: CodingHookUI;
 }
 
 interface HarnessProject {
@@ -123,6 +141,7 @@ interface HarnessProject {
 - 若 `systemPrompt` 为字符串，则通过 `defaultSystemPrompt()` 包装，支持 `{{cwd}}`/`{{date}}` 替换。
 - 若 `systemPrompt` 为函数，则直接作为 `SystemPromptBuilder` 使用。
 - 若省略 `systemPrompt`，则默认使用 `CODING_SYSTEM_PROMPT`。
+- `ui` 可选；未传入时使用内部 `NO_UI`（fail-closed）。
 
 ### 典型调用链
 
@@ -130,7 +149,7 @@ interface HarnessProject {
 const project = { workDir: process.cwd(), storageDir: "~/.kea/projects/..." };
 const sessionManager = await SessionManager.create(project);
 const session = await sessionManager.createSession();
-const harness = await createHarness({ project, streamFn, model, session });
+const harness = await createHarness({ project, streamFn, model, session, ui: cli });
 ```
 
 ## Session
@@ -207,90 +226,25 @@ type SystemPromptBuilder = (ctx: SystemPromptContext) => string | Promise<string
 | `defaultSystemPrompt(template)` | 将模板字符串包装为 `SystemPromptBuilder`。 |
 | `CODING_SYSTEM_PROMPT` | 带有 `{{cwd}}` 和 `{{date}}` 的默认 coding agent prompt。 |
 
-## 工具
+## 完整公开导出
 
-### `createToolRegistry(cwd: string): AgentToolRegistry`
+从 `src/agent/harness/index.ts`：
 
-按注册顺序创建包含默认工具集的 registry：
-
-1. `BashTool(cwd)` — shell 命令执行
-2. `ReadFileTool(cwd)` — 读取文件
-3. `WriteFileTool(cwd)` — 创建/覆写文件
-4. `EditFileTool(cwd)` — 精确字符串替换
-5. `GlobTool(cwd)` — 文件通配符匹配
-6. `TodoWriteTool()` — 任务列表管理
-
-### `BashTool`
-
-- 拥有唯一的权威 Bash 安全策略。
-- 阻止包含禁止片段的命令：`rm `、`rm -rf /`、`sudo`、`chmod 777`、`shutdown`、`reboot`、`mkfs`、`dd `、`> /etc/`、`> /dev/`。
-- 对被阻止的命令返回 `{ content: "Error: Permission denied: <reason>", isError: true }`。
-- 策略检查在调用执行后端之前运行。
-- `BashOperations` 接口允许替换后端（默认：`LocalBashOperations`）。
-
-### `TodoWriteTool`
-
-- Todo 状态为实例私有。两个 `TodoWriteTool` 实例的状态相互独立。
-- 无全局访问器。状态仅通过工具自身的 `execute()` 访问。
-
-### 其他工具
-
-- `ReadFileTool`、`WriteFileTool`、`EditFileTool` — 限定在工作区内的文件操作。
-- `GlobTool` — 返回相对于工作区的匹配结果。
-
-## 包边界
-
-### 导入（来自 AI/Agent 层）
-
-```ts
-// 从 Agent 层消费的类型
-import type { AgentEvent, AgentMessage } from "../agent/types.js";
-import type { AgentTool, AgentToolResult } from "../agent/tools/types.js";
-import { AgentToolRegistry } from "../agent/tools/registry.js";
-
-// 从 AI 层消费的类型
-import type { ModelConfig, StreamFn } from "../ai/types.js";
-```
-
-### 导出（面向 CLI）
-
-```ts
-// 类
-export { AgentHarness } from "./agent-harness.js";
-export { BashTool } from "./tools/bash.js";
-export { LocalBashOperations } from "./tools/bash-ops.js";
-export { ReadFileTool, WriteFileTool, EditFileTool } from "./tools/files.js";
-export { GlobTool } from "./tools/glob.js";
-export { TodoWriteTool } from "./tools/todo-write.js";
-export { Session } from "./session/session.js";
-export { SessionError } from "./session/types.js";
-export { SessionManager } from "./session/manager.js";
-
-// 工厂函数
-export { createHarness } from "./factory.js";
-export { createToolRegistry } from "./tools/factory.js";
-
-// Prompt
-export { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
-export { defaultSystemPrompt, formatSystemPrompt } from "./system-prompt.js";
-
-// 类型
-export type { CreateHarnessConfig, HarnessConfig, HarnessEventListener,
-  HarnessProject, SystemPromptBuilder, SystemPromptContext,
-  Unsubscribe } from "./types.js";
-export type { SessionContext, SessionErrorCode } from "./session/types.js";
-export type { BashOperations } from "./tools/bash.js";
-export type { TodoItem } from "./tools/todo-write.js";
-```
+- `AgentHarness`、`Session`、`SessionError`、`SessionManager`
+- `defaultSystemPrompt`、`formatSystemPrompt`
+- `HarnessConfig`、`HarnessEventListener`、`HarnessProject`
+- `SystemPromptBuilder`、`SystemPromptContext`、`Unsubscribe`
+- `SessionContext`、`SessionErrorCode`
 
 ## 明确不提供的功能
 
 Harness 明确**不**提供：
 
-- Hook 或插件 — Hook 子系统已移除。
+- Harness 专属 Hook 事件 — Hook 事件由 Agent 层定义，Harness 只透传 `AgentHookTrigger`。
+- 第二个 Hook dispatcher 或 ExtensionHost。
 - EventBus — 订阅者是 Harness 实例上的直接监听器。
 - 重试、压缩、分支 API。
 - 除 `SystemPromptBuilder` 之外的 skills 或 prompt 模板。
 - 队列 — session 追加操作内部序列化但不对外暴露。
 
-Harness 运行时文件（`agent-harness.ts`、`types.ts`、`system-prompt.ts`、`session/`）绝不导入具体 coding 工具或 `CODING_SYSTEM_PROMPT`。仅 `factory.ts` 组合这些默认值。
+`CreateHarnessConfig` 属于 `coding-agent`，不属于通用 Harness。Harness 运行时文件（`agent-harness.ts`、`types.ts`、`system-prompt.ts`、`session/`）绝不导入具体 coding 工具或 `CODING_SYSTEM_PROMPT`。仅 `coding-agent/factory.ts` 组合这些默认值。

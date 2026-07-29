@@ -8,7 +8,7 @@
 agent 核心分为四部分：
 
 1. `runAgentLoop`：纯函数，多 turn 事件循环。
-2. `HookRegistry`：统一 hook 注册与分发。
+2. `HookRegistry`：类型化 Hook 注册与分发（控制通道）。
 3. `AgentTool` 与 `AgentToolRegistry`：工具定义和执行。
 4. `AgentHarness`：有状态运行时的核心类，位于 `harness/` 子目录。
 
@@ -34,13 +34,13 @@ interface AgentContext {
 
 执行顺序：
 
-1. `agent_start`，通过 `config.hooks.trigger("user_prompt")` 检查拦截。
-2. 写入 user message。
-3. 每个 turn 执行 `hooks.trigger("pre_turn")`，通过 `hooks.trigger("context")` 变换上下文。
+1. `agent_start`，通过 `config.hooks.trigger({ type: "user_prompt" })` 检查拦截。
+2. 未被拦截则写入 user message。
+3. 每个 turn 复制历史消息，通过 `hooks.trigger({ type: "context" })` 变换本次请求上下文。
 4. 用 `convertToLlm` 构造 ai `Context`，消费 `StreamFn`。
-5. 产生 `turn_end`，执行 `hooks.trigger("turn_end")`。
-6. 无 tool call 时结束；有 tool call 时每个工具执行前触发 `hooks.trigger("tool_call")`（可 block），执行后触发 `hooks.trigger("tool_result")`。
-7. 结束时产生 `agent_end`。
+5. 无 tool call 时触发 `hooks.trigger({ type: "stop" })`，`continueWith` 非空时添加消息并开始下一 turn。
+6. 有 tool call 时每个工具执行前触发 `hooks.trigger({ type: "tool_call" })`（可 block / 修改 input），执行后触发 `hooks.trigger({ type: "tool_result" })`（可修补结果），最终结果一致用于 `tool_end`、历史与下一次请求。
+7. AI 错误和 Abort 不触发 `stop`；结束时产生 `agent_end`。
 
 ### Message 与 Event
 
@@ -67,46 +67,85 @@ type AgentEvent =
 interface AgentLoopConfig {
   readonly model: ModelConfig;
   readonly convertToLlm: (messages: AgentMessage[]) => Message[];
-  readonly hooks: HookRegistry;
+  readonly hooks: AgentHookTrigger;
 }
 ```
 
-`hooks` 统一了所有生命周期回调。loop 只调 `trigger()`，不关心 reducer 语义。
+`hooks` 是窄触发接口，Loop 只调 `trigger()`，不能注册 Handler、Observer 或做生命周期管理。
+
+## 两条运行通道
+
+### `AgentEvent` 与 `subscribe`：观察通道
+
+`AgentEvent` 描述已经发生或正在发生的运行事实。Harness 的 `subscribe` 让 UI 或其他消费者接收这些事件。
+
+观察者的返回值被忽略。它不能阻止工具执行、改写上下文、修改工具结果或要求 Agent 继续运行。
+
+### Hook：控制通道
+
+Hook 在状态或动作提交前被调用，可以根据事件契约阻止、转换、修补或续跑。两者虽然都由回调实现，但权限、调用时机和返回值契约完全不同。
 
 ## HookRegistry
 
-位于 `agent/hooks/`。
+位于 `agent/hooks/`。类型化、支持生命周期管理。
+
+### 五种 Agent Hook 事件
+
+| 事件 | 类型 | 组合规则 |
+|------|------|---------|
+| `user_prompt` | `UserPromptEvent` | 顺序执行；第一个 `block: true` 获胜并提前结束 |
+| `context` | `ContextEvent` | 顺序应用 `messages`；后一个看到前一个结果；只影响本次请求 |
+| `tool_call` | `ToolCallEvent` | 顺序执行与共享可变 `input`；第一个 `block: true` 获胜 |
+| `tool_result` | `ToolResultPatch` | 顺序应用 patch；后一个看到前一个结果 |
+| `stop` | `StopEvent` | 第一个 `continueWith` 获胜并提前结束 |
+
+### 公开 API
 
 ```ts
-class HookRegistry {
-  constructor(reducers?: Record<string, ReduceStrategy>);
+export class HookRegistry<TEvent extends HookEvent<string, unknown>, TContext> {
+  constructor(context: TContext);
+  get context(): TContext;
+  setContext(context: TContext): void;
 
-  register(type: string, handler: (event: unknown) => Promise<unknown>): () => void;
-  trigger(type: string, event: unknown): Promise<unknown>;
+  register<TType extends TEvent["type"]>(
+    type: TType,
+    handler: HookHandler<Extract<TEvent, { type: TType }>, TContext>,
+  ): Unregister;
+
+  registerObserver(observer: HookObserver<TEvent, TContext>): Unregister;
+
+  trigger<T extends TEvent>(
+    event: T,
+    signal?: AbortSignal,
+  ): Promise<ResultOf<T> | undefined>;
+
+  addCleanup(cleanup: Cleanup): Unregister;
+  clear(): Promise<void>;
+  dispose(): Promise<void>;
 }
 ```
 
-四种 reducer 策略：
+### 语义
 
-| 策略 | 行为 |
-|------|------|
-| `earlyExit` | 串行，任一 handler 返回非 undefined 立即停止 |
-| `transform` | 串行，下个 handler 看到上一个的输出 |
-| `patch` | 串行，补丁累积合并 |
-| `observe` | 串行，全部执行，忽略返回值 |
+- Handler 按注册顺序执行；Observer 在所有 Handler 前执行。
+- Observer 返回值被忽略，不能控制流程。
+- 每次 `trigger` 开始时快照 context、Observer 列表和该事件 Handler 列表。
+- 触发期间的注册/注销只影响下一次 `trigger`。
+- `Unregister` 幂等；`clear` 逆序执行 Cleanup 后可复用；`dispose` 永久销毁。
+- Handler / Observer 错误原样穿透，不包装。
 
-默认事件：
+## AgentHookTrigger
 
-| 事件 | reducer | loop 中的位置 |
-|------|---------|-------------|
-| `user_prompt` | `earlyExit` | 写入 user message 前 |
-| `pre_turn` | `observe` | 每次 LLM 调用前 |
-| `context` | `transform` | `pre_turn` 之后，LLM 调用前 |
-| `tool_call` | `earlyExit` | 工具执行前 |
-| `tool_result` | `patch` | 工具执行后 |
-| `turn_end` | `observe` | 每个 turn 结束时 |
+```ts
+interface AgentHookTrigger {
+  trigger<TEvent extends AgentHookEvent>(
+    event: TEvent,
+    signal?: AbortSignal,
+  ): Promise<ResultOf<TEvent> | undefined>;
+}
+```
 
-handler 抛异常会中断链并穿透到 `trigger()` 调用方（`tool_call` 的异常被 loop 捕获并转为 block，安全默认）。
+Agent Loop 和 Harness 只依赖此接口，不看到 `register()`、context 或 lifecycle。
 
 ## Tools
 
@@ -166,7 +205,7 @@ class AgentToolRegistry {
 
 ## AgentHarness
 
-位于 `agent/harness/`。持有 `_messages`、管理 `activeRun`、直接调用 `runAgentLoop()`、通过 `createLoopConfig()` 注入 `HookRegistry`。
+位于 `agent/harness/`。持有 `_messages`、管理 `activeRun`、直接调用 `runAgentLoop()`、通过 `createLoopConfig()` 注入 `AgentHookTrigger`。
 
 ```ts
 class AgentHarness {
@@ -184,6 +223,26 @@ class AgentHarness {
 ```
 
 详见 [harness/README.md](harness/README.md)。
+
+## 完整公开导出
+
+从 `src/agent/hooks/index.ts`：
+- `HookRegistry`
+- `AgentHookEvent`, `AgentHookTrigger`, `HookEvent`
+- `HookHandler`, `HookObserver`, `ResultOf`
+- `Unregister`, `Cleanup`
+- `UserPromptEvent`, `UserPromptResult`
+- `ContextEvent`, `ContextResult`
+- `ToolCallEvent`, `ToolCallResult`
+- `ToolResultEvent`, `ToolResultPatch`
+- `StopEvent`, `StopResult`
+
+从 `src/agent/harness/index.ts`：
+- `AgentHarness`, `Session`, `SessionError`, `SessionManager`
+- `defaultSystemPrompt`, `formatSystemPrompt`
+- `HarnessConfig`, `HarnessEventListener`, `HarnessProject`
+- `SystemPromptBuilder`, `SystemPromptContext`, `Unsubscribe`
+- `SessionContext`, `SessionErrorCode`
 
 ## 包边界
 
