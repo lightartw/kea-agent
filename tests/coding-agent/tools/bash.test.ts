@@ -43,29 +43,40 @@ test("bash tool reports command failures", async () => {
   assert.match(result.content, /code 7/);
 });
 
-test("bash tool blocks the complete policy before invoking its backend", async () => {
+test("bash tool independently blocks only hard-denied commands", async () => {
   const ops = new RecordingBashOperations();
   const tool = new BashTool(process.cwd(), ops);
-  const commands = [
-    "rm file.txt",
+  for (const command of [
     "rm -rf /",
     "sudo true",
-    "chmod 777 script.sh",
     "shutdown now",
     "reboot",
     "mkfs.ext4 /dev/sda",
     "dd if=/dev/zero of=disk.img",
-    "echo x > /etc/hosts",
     "echo x > /dev/sda",
-  ];
-
-  for (const command of commands) {
+  ]) {
     const result = await tool.execute({ command }, signal());
     assert.equal(result.isError, true, command);
     assert.match(result.content, /Permission denied/, command);
   }
-
   assert.deepEqual(ops.calls, []);
+});
+
+test("bash tool leaves ask-class commands to the Hook layer", async () => {
+  const ops = new RecordingBashOperations();
+  const tool = new BashTool(process.cwd(), ops);
+  for (const command of [
+    "rm file.txt",
+    "echo x > /etc/hosts",
+    "chmod 777 script.sh",
+  ]) {
+    assert.equal((await tool.execute({ command }, signal())).isError, false);
+  }
+  assert.deepEqual(ops.calls, [
+    "rm file.txt",
+    "echo x > /etc/hosts",
+    "chmod 777 script.sh",
+  ]);
 });
 
 test("bash tool invokes its backend for a safe command", async () => {

@@ -4,33 +4,11 @@ import { Type } from "typebox";
 
 import { AgentTool, type AgentToolResult } from "../../agent/tools/types.js";
 import { LocalBashOperations } from "./bash-ops.js";
+import { hardDeniedBashReason } from "./bash-policy.js";
 
 /** Swappable execution backend for shell commands. */
 export interface BashOperations {
   exec(command: string, cwd: string, signal: AbortSignal): Promise<string>;
-}
-
-const FORBIDDEN_BASH_FRAGMENTS = [
-  "rm ",
-  "rm -rf /",
-  "sudo",
-  "chmod 777",
-  "shutdown",
-  "reboot",
-  "mkfs",
-  "dd ",
-  "> /etc/",
-  "> /dev/",
-] as const;
-
-function blockedBashReason(command: string): string | undefined {
-  const fragment = FORBIDDEN_BASH_FRAGMENTS.find((candidate) =>
-    command.includes(candidate),
-  );
-  if (fragment === undefined) return undefined;
-  return fragment === "rm "
-    ? "file deletion is not allowed"
-    : `command contains forbidden fragment '${fragment}'`;
 }
 
 const parameters = Type.Object(
@@ -56,7 +34,7 @@ export class BashTool extends AgentTool<typeof parameters> {
     signal: AbortSignal,
   ): Promise<AgentToolResult> {
     const { command } = arguments_;
-    const reason = blockedBashReason(command);
+    const reason = hardDeniedBashReason(command);
     if (reason !== undefined) {
       return {
         content: `Error: Permission denied: ${reason}`,
