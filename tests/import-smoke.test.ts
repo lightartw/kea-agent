@@ -32,6 +32,38 @@ import type {
 
 import type { CreateHarnessConfig } from "../src/coding-agent/index.js";
 
+import { HookRegistry } from "../src/agent/hooks/index.js";
+import type {
+  AgentHookEvent,
+  AgentHookTrigger,
+  Cleanup,
+  ContextEvent,
+  ContextResult,
+  HookEvent,
+  HookHandler,
+  HookObserver,
+  ResultOf,
+  StopEvent,
+  StopResult,
+  ToolCallEvent,
+  ToolCallResult,
+  ToolResultEvent,
+  ToolResultPatch,
+  Unregister,
+  UserPromptEvent,
+  UserPromptResult,
+} from "../src/agent/hooks/index.js";
+
+import {
+  createCodingHookRegistry,
+} from "../src/coding-agent/index.js";
+import type {
+  CodingHookContext,
+  CodingHookUI,
+  HookNotification,
+  PermissionRequest,
+} from "../src/coding-agent/index.js";
+
 void [
   AgentHarness,
   Session,
@@ -42,7 +74,41 @@ void [
   CODING_SYSTEM_PROMPT,
   createHarness,
   createToolRegistry,
+  HookRegistry,
+  createCodingHookRegistry,
 ];
+
+// Type-only assertions — keep imports from being tree-shaken
+type PublicAgentHookTypes = [
+  AgentHookEvent,
+  AgentHookTrigger,
+  Cleanup,
+  ContextEvent,
+  ContextResult,
+  HookEvent<string>,
+  HookHandler<UserPromptEvent, Record<string, never>>,
+  HookObserver<AgentHookEvent, Record<string, never>>,
+  ResultOf<UserPromptEvent>,
+  StopEvent,
+  StopResult,
+  ToolCallEvent,
+  ToolCallResult,
+  ToolResultEvent,
+  ToolResultPatch,
+  Unregister,
+  UserPromptEvent,
+  UserPromptResult,
+];
+
+type PublicCodingHookTypes = [
+  CodingHookContext,
+  CodingHookUI,
+  CreateHarnessConfig,
+  HookNotification,
+  PermissionRequest,
+];
+void (null as PublicAgentHookTypes | null);
+void (null as PublicCodingHookTypes | null);
 
 test("public core imports without credentials or side effects", () => {
   const environment = { ...process.env };

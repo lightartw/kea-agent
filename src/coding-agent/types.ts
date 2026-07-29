@@ -1,3 +1,7 @@
+import type { HarnessProject, SystemPromptBuilder } from "../agent/harness/types.js";
+import type { StreamFn, ModelConfig } from "../ai/types.js";
+import type { Session } from "../agent/harness/session/session.js";
+
 /** A structured permission request shown to the user for confirmation. */
 export interface PermissionRequest {
   readonly toolCallId: string;
@@ -34,4 +38,14 @@ export interface CodingHookUI {
 export interface CodingHookContext {
   readonly cwd: string;
   readonly ui: CodingHookUI;
+}
+
+/** Configuration for creating a Coding Agent harness through the public factory. */
+export interface CreateHarnessConfig {
+  readonly project: HarnessProject;
+  readonly streamFn: StreamFn;
+  readonly model: ModelConfig;
+  readonly session?: Session;
+  readonly systemPrompt?: string | SystemPromptBuilder;
+  readonly ui?: CodingHookUI;
 }

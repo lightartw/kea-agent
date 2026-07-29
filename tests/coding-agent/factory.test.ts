@@ -8,6 +8,10 @@ import type {
   ModelConfig,
   StreamFn,
 } from "../../src/ai/types.js";
+import type {
+  CodingHookUI,
+  HookNotification,
+} from "../../src/coding-agent/types.js";
 
 const model: ModelConfig = { provider: "test", model: "model" };
 const assistant: AssistantMessage = {
@@ -71,26 +75,107 @@ test("factory restores the supplied Session", async () => {
   assert.deepEqual(seenRoles, ["user", "assistant", "user"]);
 });
 
-test("default Harness composition emits no Hook console logs", async () => {
-  const logs: unknown[][] = [];
-  const originalLog = console.log;
-  console.log = (...args: unknown[]): void => {
-    logs.push(args);
+function recordingUi(): {
+  ui: CodingHookUI;
+  notifications: HookNotification[];
+} {
+  const notifications: HookNotification[] = [];
+  return {
+    notifications,
+    ui: {
+      available: true,
+      async confirm() { return true; },
+      notify(notification) { notifications.push(notification); },
+    },
   };
-  try {
-    const harness = await createHarness({
-      project: { workDir: process.cwd(), storageDir: "unused" },
-      streamFn: async function* () {
-        yield { type: "done", message: assistant };
-      },
-      model,
-      session: Session.inMemory(),
-    });
-    await harness.prompt("hello");
-  } finally {
-    console.log = originalLog;
-  }
-  assert.deepEqual(logs, []);
+}
+
+const oneTurnStream: StreamFn = async function* () {
+  yield { type: "done", message: assistant };
+};
+
+function twoTurnBashStream(command: string): StreamFn {
+  let turn = 0;
+  const call = {
+    type: "toolCall" as const,
+    id: "c1",
+    name: "bash",
+    arguments: { command },
+  };
+  return async function* () {
+    turn++;
+    if (turn === 1) {
+      yield { type: "toolcall_start", id: call.id, name: call.name };
+      yield { type: "toolcall_end", toolCall: call };
+      yield {
+        type: "done",
+        message: {
+          ...assistant,
+          content: [call],
+          stopReason: "toolUse",
+        },
+      };
+      return;
+    }
+    yield { type: "done", message: assistant };
+  };
+}
+
+test("factory assembles the default Hook registry with supplied UI", async () => {
+  const { ui, notifications } = recordingUi();
+  const harness = await createHarness({
+    project: { workDir: process.cwd(), storageDir: "unused" },
+    streamFn: oneTurnStream,
+    model,
+    session: Session.inMemory(),
+    ui,
+  });
+
+  await harness.prompt("hello");
+  assert.equal(notifications[0]?.source, "context_inject");
+  assert.equal(notifications.at(-1)?.source, "summary");
+});
+
+test("factory defaults to fail-closed NO_UI for ask commands", async () => {
+  const harness = await createHarness({
+    project: { workDir: process.cwd(), storageDir: "unused" },
+    streamFn: twoTurnBashStream("rm file.txt"),
+    model,
+    session: Session.inMemory(),
+  });
+  await harness.prompt("remove file");
+  const toolMessage = harness.messages.find((message) => message.role === "tool");
+  assert.equal(toolMessage?.role, "tool");
+  assert.match(toolMessage?.content ?? "", /no confirmation UI available/);
+});
+
+test("factory creates independent Hook context for each Harness", async () => {
+  const {
+    ui: firstUi,
+    notifications: firstNotifications,
+  } = recordingUi();
+  const {
+    ui: secondUi,
+    notifications: secondNotifications,
+  } = recordingUi();
+  const first = await createHarness({
+    project: { workDir: "C:/first", storageDir: "unused" },
+    streamFn: oneTurnStream,
+    model,
+    session: Session.inMemory(),
+    ui: firstUi,
+  });
+  const second = await createHarness({
+    project: { workDir: "C:/second", storageDir: "unused" },
+    streamFn: oneTurnStream,
+    model,
+    session: Session.inMemory(),
+    ui: secondUi,
+  });
+  await first.prompt("one");
+  await second.prompt("two");
+  assert.match(firstNotifications[0]?.message ?? "", /C:\/first/);
+  assert.match(secondNotifications[0]?.message ?? "", /C:\/second/);
 });
 
 test("default Harness system prompt contains the coding agent opening text", async () => {

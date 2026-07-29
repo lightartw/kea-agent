@@ -2,10 +2,10 @@ import { AgentHarness } from "../agent/harness/agent-harness.js";
 import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
 import { defaultSystemPrompt } from "../agent/harness/system-prompt.js";
 import { createToolRegistry } from "./tools/factory.js";
-import type {
-  CreateHarnessConfig,
-  SystemPromptBuilder,
-} from "../agent/harness/types.js";
+import { createCodingHookRegistry } from "./hooks/factory.js";
+import { NO_UI } from "./hooks/types.js";
+import type { SystemPromptBuilder } from "../agent/harness/types.js";
+import type { CreateHarnessConfig } from "./types.js";
 
 function resolveSystemPrompt(
   prompt: string | SystemPromptBuilder | undefined,
@@ -20,6 +20,11 @@ export async function createHarness(
   if (!config.session) throw new Error("session is required");
   const session = config.session;
 
+  const hooks = createCodingHookRegistry({
+    cwd: config.project.workDir,
+    ui: config.ui ?? NO_UI,
+  });
+
   return new AgentHarness({
     session,
     model: config.model,
@@ -27,5 +32,6 @@ export async function createHarness(
     toolRegistry: createToolRegistry(config.project.workDir),
     systemPrompt: resolveSystemPrompt(config.systemPrompt),
     cwd: config.project.workDir,
+    hooks,
   });
 }

@@ -1,7 +1,14 @@
 export { createHarness } from "./factory.js";
+export { createCodingHookRegistry } from "./hooks/factory.js";
 export {
   CODING_SYSTEM_PROMPT,
 } from "./coding-system-prompt.js";
 export { createToolRegistry } from "./tools/factory.js";
 
-export type { CreateHarnessConfig } from "../agent/harness/types.js";
+export type { CreateHarnessConfig } from "./types.js";
+export type {
+  CodingHookContext,
+  CodingHookUI,
+  HookNotification,
+  PermissionRequest,
+} from "./types.js";

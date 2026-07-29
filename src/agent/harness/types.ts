@@ -36,11 +36,3 @@ export interface HarnessProject {
   readonly workDir: string;
   readonly storageDir: string;
 }
-
-export interface CreateHarnessConfig {
-  readonly project: HarnessProject;
-  readonly streamFn: StreamFn;
-  readonly model: ModelConfig;
-  readonly session?: Session;
-  readonly systemPrompt?: string | SystemPromptBuilder;
-}
