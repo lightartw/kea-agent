@@ -1,103 +1,324 @@
-import type { HookHandler, ReduceStrategy } from "./types.js";
+import type {
+  AgentHookEvent,
+  Cleanup,
+  ContextEvent,
+  ContextResult,
+  HookEvent,
+  HookHandler,
+  HookObserver,
+  ResultOf,
+  StopEvent,
+  StopResult,
+  ToolCallEvent,
+  ToolCallResult,
+  ToolResultEvent,
+  ToolResultPatch,
+  Unregister,
+  UserPromptEvent,
+  UserPromptResult,
+} from "./types.js";
 
-const DEFAULT_REDUCERS: Record<string, ReduceStrategy> = {
-  tool_call: "earlyExit",
-  context: "transform",
-  tool_result: "patch",
-  turn_end: "observe",
-  user_prompt: "earlyExit",
-  pre_turn: "observe",
-};
+const KNOWN_EVENT_TYPES = new Set<string>([
+  "user_prompt",
+  "context",
+  "tool_call",
+  "tool_result",
+  "stop",
+]);
 
-/**
- * Unified hook registry. Handlers are registered per event type string.
- * When `trigger(type, event)` is called, handlers run serially
- * and results are reduced according to the strategy configured for that type.
- */
-export class HookRegistry {
-  private readonly handlers = new Map<string, Set<HookHandler>>();
-  private readonly reducers: Record<string, ReduceStrategy>;
+export class HookRegistry<
+  TEvent extends HookEvent<string, unknown>,
+  TContext,
+> {
+  private _context: TContext;
+  private readonly handlers = new Map<
+    string,
+    Set<HookHandler<TEvent, TContext>>
+  >();
+  private readonly observers = new Set<HookObserver<TEvent, TContext>>();
+  private readonly cleanups: Cleanup[] = [];
+  private disposed = false;
 
-  constructor(reducers?: Record<string, ReduceStrategy>) {
-    this.reducers = { ...DEFAULT_REDUCERS, ...reducers };
+  constructor(context: TContext) {
+    this._context = context;
   }
 
-  /** Register a handler. Returns an unsubscribe function. */
-  register(type: string, handler: HookHandler): () => void {
+  get context(): TContext {
+    return this._context;
+  }
+
+  setContext(context: TContext): void {
+    this.assertActive();
+    this._context = context;
+  }
+
+  register<TType extends TEvent["type"]>(
+    type: TType,
+    handler: HookHandler<Extract<TEvent, { type: TType }>, TContext>,
+  ): Unregister {
+    this.assertActive();
     let set = this.handlers.get(type);
     if (set === undefined) {
       set = new Set();
       this.handlers.set(type, set);
     }
-    set.add(handler);
+    const typedHandler = handler as HookHandler<TEvent, TContext>;
+    set.add(typedHandler);
+    let active = true;
     return () => {
-      set!.delete(handler);
+      if (!active) return;
+      active = false;
+      set!.delete(typedHandler);
     };
   }
 
-  /** Trigger all handlers for `type` and reduce results per the configured strategy. */
-  async trigger(type: string, event: unknown): Promise<unknown> {
-    const set = this.handlers.get(type);
-    if (set === undefined || set.size === 0) return undefined;
+  registerObserver(
+    observer: HookObserver<TEvent, TContext>,
+  ): Unregister {
+    this.assertActive();
+    this.observers.add(observer);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.observers.delete(observer);
+    };
+  }
 
-    const strategy = this.reducers[type] ?? "observe";
+  async trigger<T extends TEvent>(
+    event: T,
+    signal?: AbortSignal,
+  ): Promise<ResultOf<T> | undefined> {
+    this.assertActive();
+    this.assertKnownEvent(event.type);
+    const context = this._context;
+    const observers = [...this.observers];
+    const handlers = [...(this.handlers.get(event.type) ?? [])];
 
-    switch (strategy) {
-      case "earlyExit":
-        return this.reduceEarlyExit(set, event);
-      case "transform":
-        return this.reduceTransform(set, event);
-      case "patch":
-        return this.reducePatch(set, event);
-      case "observe":
-        await this.reduceObserve(set, event);
+    for (const observer of observers) {
+      await observer(event as unknown as TEvent, context, signal);
+    }
+
+    switch (event.type) {
+      case "user_prompt":
+        return this.triggerUserPrompt(
+          event as unknown as UserPromptEvent,
+          handlers,
+          context,
+          signal,
+        ) as Promise<ResultOf<T> | undefined>;
+      case "context":
+        return this.triggerContext(
+          event as unknown as ContextEvent,
+          handlers,
+          context,
+          signal,
+        ) as Promise<ResultOf<T> | undefined>;
+      case "tool_call":
+        return this.triggerToolCall(
+          event as unknown as ToolCallEvent,
+          handlers,
+          context,
+          signal,
+        ) as Promise<ResultOf<T> | undefined>;
+      case "tool_result":
+        return this.triggerToolResult(
+          event as unknown as ToolResultEvent,
+          handlers,
+          context,
+          signal,
+        ) as Promise<ResultOf<T> | undefined>;
+      case "stop":
+        return this.triggerStop(
+          event as unknown as StopEvent,
+          handlers,
+          context,
+          signal,
+        ) as Promise<ResultOf<T> | undefined>;
+      default:
         return undefined;
     }
   }
 
-  private async reduceEarlyExit(
-    handlers: Set<HookHandler>,
-    event: unknown,
-  ): Promise<unknown> {
+  addCleanup(cleanup: Cleanup): Unregister {
+    this.assertActive();
+    this.cleanups.push(cleanup);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      const index = this.cleanups.indexOf(cleanup);
+      if (index !== -1) this.cleanups.splice(index, 1);
+    };
+  }
+
+  async clear(): Promise<void> {
+    this.assertActive();
+    await this.clearRegistrations();
+  }
+
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    await this.clearRegistrations();
+  }
+
+  // ── Private helpers ──
+
+  private assertActive(): void {
+    if (this.disposed) {
+      throw new Error("HookRegistry is disposed");
+    }
+  }
+
+  private assertKnownEvent(type: string): void {
+    if (!KNOWN_EVENT_TYPES.has(type)) {
+      throw new Error(`Unknown hook event '${type}'`);
+    }
+  }
+
+  private async clearRegistrations(): Promise<void> {
+    const cleanups = [...this.cleanups].reverse();
+    this.handlers.clear();
+    this.observers.clear();
+    this.cleanups.length = 0;
+    const errors: unknown[] = [];
+    for (const cleanup of cleanups) {
+      try {
+        await cleanup();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "Hook cleanup failed");
+  }
+
+  // ── Event-specific trigger implementations ──
+
+  private async triggerUserPrompt(
+    event: UserPromptEvent,
+    handlers: HookHandler<TEvent, TContext>[],
+    context: TContext,
+    signal: AbortSignal | undefined,
+  ): Promise<UserPromptResult | undefined> {
     for (const handler of handlers) {
-      const result = await handler(event);
-      if (result !== undefined && result !== null) return result;
+      const result = await (handler as unknown as HookHandler<UserPromptEvent, TContext>)(
+        event,
+        context,
+        signal,
+      );
+      if (result !== undefined && result !== null) {
+        const r = result as UserPromptResult;
+        if (r.block === true) return r;
+      }
     }
     return undefined;
   }
 
-  private async reduceTransform(
-    handlers: Set<HookHandler>,
-    initial: unknown,
-  ): Promise<unknown> {
-    let value = initial;
+  private async triggerContext(
+    event: ContextEvent,
+    handlers: HookHandler<TEvent, TContext>[],
+    context: TContext,
+    signal: AbortSignal | undefined,
+  ): Promise<ContextResult | undefined> {
+    let current = event;
     for (const handler of handlers) {
-      const result = await handler(value);
-      if (result !== undefined && result !== null) value = result;
-    }
-    return value;
-  }
-
-  private async reducePatch(
-    handlers: Set<HookHandler>,
-    event: unknown,
-  ): Promise<unknown> {
-    let accumulated: Record<string, unknown> = {};
-    for (const handler of handlers) {
-      const patch = await handler(event);
-      if (patch !== undefined && patch !== null) {
-        accumulated = { ...accumulated, ...(patch as Record<string, unknown>) };
+      const result = await (handler as unknown as HookHandler<ContextEvent, TContext>)(
+        current,
+        context,
+        signal,
+      );
+      if (result !== undefined && result !== null) {
+        const r = result as ContextResult;
+        if (r.messages !== undefined) {
+          current = { ...current, messages: r.messages };
+        }
       }
     }
-    return Object.keys(accumulated).length > 0 ? accumulated : undefined;
+    return current.messages !== event.messages
+      ? { messages: current.messages }
+      : undefined;
   }
 
-  private async reduceObserve(
-    handlers: Set<HookHandler>,
-    event: unknown,
-  ): Promise<void> {
+  private async triggerToolCall(
+    event: ToolCallEvent,
+    handlers: HookHandler<TEvent, TContext>[],
+    context: TContext,
+    signal: AbortSignal | undefined,
+  ): Promise<ToolCallResult | undefined> {
     for (const handler of handlers) {
-      await handler(event);
+      const result = await (handler as unknown as HookHandler<ToolCallEvent, TContext>)(
+        event,
+        context,
+        signal,
+      );
+      if (result !== undefined && result !== null) {
+        const r = result as ToolCallResult;
+        if (r.block === true) return r;
+      }
     }
+    return undefined;
+  }
+
+  private async triggerToolResult(
+    event: ToolResultEvent,
+    handlers: HookHandler<TEvent, TContext>[],
+    context: TContext,
+    signal: AbortSignal | undefined,
+  ): Promise<ToolResultPatch | undefined> {
+    let currentContent = event.content;
+    let currentIsError = event.isError;
+    let hasPatch = false;
+    const accumulated: { content?: string; isError?: boolean } = {};
+    for (const handler of handlers) {
+      const syntheticEvent: ToolResultEvent = {
+        type: "tool_result",
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        input: event.input,
+        content: currentContent,
+        isError: currentIsError,
+      };
+      const result = await (handler as unknown as HookHandler<ToolResultEvent, TContext>)(
+        syntheticEvent,
+        context,
+        signal,
+      );
+      if (result !== undefined && result !== null) {
+        const r = result as ToolResultPatch;
+        if (r.content !== undefined) {
+          accumulated.content = r.content;
+          currentContent = r.content;
+          hasPatch = true;
+        }
+        if (r.isError !== undefined) {
+          accumulated.isError = r.isError;
+          currentIsError = r.isError;
+          hasPatch = true;
+        }
+      }
+    }
+    return hasPatch ? (accumulated as ToolResultPatch) : undefined;
+  }
+
+  private async triggerStop(
+    event: StopEvent,
+    handlers: HookHandler<TEvent, TContext>[],
+    context: TContext,
+    signal: AbortSignal | undefined,
+  ): Promise<StopResult | undefined> {
+    for (const handler of handlers) {
+      const result = await (handler as unknown as HookHandler<StopEvent, TContext>)(
+        event,
+        context,
+        signal,
+      );
+      if (result !== undefined && result !== null) {
+        const r = result as StopResult;
+        if (r.continueWith !== undefined) return r;
+      }
+    }
+    return undefined;
   }
 }
