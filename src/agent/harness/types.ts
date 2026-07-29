@@ -1,7 +1,7 @@
 import type { AgentEvent } from "../types.js";
 import type { AgentTool } from "../tools/types.js";
 import type { AgentToolRegistry } from "../tools/registry.js";
-import type { HookRegistry } from "../hooks/registry.js";
+import type { AgentHookTrigger } from "../hooks/types.js";
 import type { ModelConfig, StreamFn } from "../../ai/types.js";
 import type { Session } from "./session/session.js";
 
@@ -29,7 +29,7 @@ export interface HarnessConfig {
   readonly toolRegistry: AgentToolRegistry;
   readonly systemPrompt: SystemPromptBuilder;
   readonly cwd: string;
-  readonly hooks?: HookRegistry;
+  readonly hooks?: AgentHookTrigger;
 }
 
 export interface HarnessProject {

@@ -3,6 +3,7 @@ import type { AgentLoopConfig, AgentEvent, AgentMessage } from "../types.js";
 import type { AgentTool } from "../tools/types.js";
 import type { AgentToolRegistry } from "../tools/registry.js";
 import { HookRegistry } from "../hooks/registry.js";
+import type { AgentHookEvent, AgentHookTrigger } from "../hooks/types.js";
 import type { Message, ModelConfig, StreamFn } from "../../ai/types.js";
 import { Session } from "./session/session.js";
 import type {
@@ -31,7 +32,7 @@ export class AgentHarness {
   private _streamFn: StreamFn;
 
   // Hook registry
-  private hooks: HookRegistry;
+  private hooks: AgentHookTrigger;
 
   // Model
   private currentModel: ModelConfig;
@@ -51,7 +52,8 @@ export class AgentHarness {
     this.currentModel = context.model ?? config.model;
     this._messages = [...context.messages];
     this.persistedMessageCount = context.messages.length;
-    this.hooks = config.hooks ?? new HookRegistry();
+    this.hooks = config.hooks ??
+      new HookRegistry<AgentHookEvent, Record<string, never>>({});
   }
 
   // ── Private helpers ──

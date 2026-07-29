@@ -6,6 +6,9 @@ import { Session } from "../../src/agent/harness/session/session.js";
 import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
 import { AgentTool } from "../../src/agent/tools/types.js";
 import type { AgentEvent } from "../../src/agent/types.js";
+import { HookRegistry } from "../../src/agent/hooks/registry.js";
+import type { AgentHookEvent, AgentHookTrigger } from "../../src/agent/hooks/types.js";
+import type { HarnessConfig } from "../../src/agent/harness/types.js";
 import type {
   AssistantMessage,
   ModelConfig,
@@ -33,15 +36,20 @@ function createHarness(options: {
   session?: Session;
   streamFn?: StreamFn;
   systemPrompt?: () => string | Promise<string>;
+  hooks?: AgentHookTrigger;
 } = {}): AgentHarness {
-  return new AgentHarness({
+  const base: Omit<HarnessConfig, "hooks"> = {
     session: options.session ?? Session.inMemory(),
     model: modelA,
     streamFn: options.streamFn ?? stream,
     toolRegistry: new AgentToolRegistry(),
     systemPrompt: options.systemPrompt ?? (() => "system"),
     cwd: process.cwd(),
-  });
+  };
+  if (options.hooks !== undefined) {
+    return new AgentHarness({ ...base, hooks: options.hooks });
+  }
+  return new AgentHarness(base);
 }
 
 // ── Step 1: Basic prompt/subscribe ──
@@ -315,4 +323,48 @@ test("abort during Agent streaming settles the Harness run", async () => {
       : undefined,
     "aborted",
   );
+});
+
+// ── Task 4: Harness Hook pass-through tests ──
+
+test("Harness passes one Hook trigger to Agent Loop", async () => {
+  const hooks = new HookRegistry<AgentHookEvent, { calls: string[] }>({
+    calls: [],
+  });
+  hooks.register("user_prompt", (_event, context) => {
+    context.calls.push("user_prompt");
+  });
+  hooks.register("context", (_event, context) => {
+    context.calls.push("context");
+  });
+  hooks.register("stop", (_event, context) => {
+    context.calls.push("stop");
+  });
+
+  const harness = createHarness({ hooks });
+  await harness.prompt("hello");
+  assert.deepEqual(hooks.context.calls, [
+    "user_prompt", "context", "stop",
+  ]);
+});
+
+test("user_prompt and context Hook failures reject prompt and restore idle", async () => {
+  for (const type of ["user_prompt", "context"] as const) {
+    const hooks = new HookRegistry<AgentHookEvent, Record<string, never>>({});
+    hooks.register(type, () => { throw new Error(`${type} failed`); });
+    const harness = createHarness({ hooks });
+
+    await assert.rejects(harness.prompt("hello"), new RegExp(`${type} failed`));
+    assert.equal(harness.isRunning, false);
+  }
+});
+
+test("stop Hook failure keeps the completed assistant message and restores idle", async () => {
+  const hooks = new HookRegistry<AgentHookEvent, Record<string, never>>({});
+  hooks.register("stop", () => { throw new Error("stop failed"); });
+  const harness = createHarness({ hooks });
+
+  await assert.rejects(harness.prompt("hello"), /stop failed/);
+  assert.equal(harness.messages.at(-1)?.role, "assistant");
+  assert.equal(harness.isRunning, false);
 });
