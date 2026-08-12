@@ -2,7 +2,7 @@
 
 日期：2026-08-13
 
-状态：已批准，待实现计划
+状态：根据评审修订，待复核
 
 范围：`ai`、`agent`、`agent/harness`、`coding-agent` 与当前行式 CLI UI。
 
@@ -133,6 +133,63 @@ tool_call
 
 Hook 输入是调用过程中的候选值，因此不再命名为 `ToolCallEvent` 或 `ToolResultEvent`，避免和事实 Event 混淆。
 
+Call 的字段与可变性固定如下：
+
+```ts
+interface BeforeUserPromptCall {
+  readonly type: "user_prompt";
+  readonly prompt: string;
+}
+
+interface TransformContextCall {
+  readonly type: "context";
+  readonly messages: readonly AgentMessage[];
+}
+
+interface BeforeToolCall {
+  readonly type: "tool_call";
+  readonly toolCallId: string;
+  readonly toolName: string;
+  /** Registry 为本次 Hook 管线创建的工作副本；Handler 可原地修改。 */
+  input: Record<string, unknown>;
+}
+
+interface AfterToolCall {
+  readonly type: "tool_result";
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly input: Readonly<Record<string, unknown>>;
+  readonly content: string;
+  readonly details?: unknown;
+  readonly isError: boolean;
+}
+
+interface BeforeStopCall {
+  readonly type: "stop";
+  readonly messages: readonly AgentMessage[];
+}
+
+interface BeforeUserPromptResult {
+  readonly block?: boolean;
+  readonly reason?: string;
+}
+
+interface TransformContextResult {
+  readonly messages?: AgentMessage[];
+}
+
+interface BeforeToolCallResult {
+  readonly block?: boolean;
+  readonly reason?: string;
+}
+
+interface BeforeStopResult {
+  readonly continueWith?: AgentMessage;
+}
+```
+
+`BeforeToolCall.input` 是唯一允许原地修改的字段。它不是模型产出的原始 arguments 对象；Agent Loop 必须先保存不可变的原始 call，再创建工作副本交给 Hook。`AfterToolCall` 全部只读，Handler 只能通过第 8.3 节的 `AfterToolCallPatch` 修改结果。各 Result 的顺序聚合和 early-exit 规则沿用已实现语义。
+
 ### 5.2 Registry API
 
 保留：
@@ -262,8 +319,8 @@ interface CodingHookContext {
 | permission | 阻止或允许 Bash | 保留为 Hook，使用 `ui.confirm()` |
 | context-inject | 只显示 cwd，没有注入上下文 | 删除；未来真有注入行为时再实现 Hook |
 | log | 显示工具调用 | 从 Hook 删除，迁移为 subscribe renderer |
-| large-output | 显示大结果提醒 | 从 Hook 删除，迁移为 `tool_end` observer |
-| summary | 统计并显示工具数量 | 从 Hook 删除，迁移为 `agent_end` observer |
+| large-output | 显示大结果提醒 | 从 Hook 删除，迁移为 `tool_end` subscribe consumer |
+| summary | 统计并显示工具数量 | 从 Hook 删除，迁移为 `agent_end` subscribe consumer |
 
 因此默认 Hook Factory 当前只注册真正改变控制流或数据的 Hook。被动功能由 UI 针对 Harness Event 组装。
 
@@ -316,14 +373,48 @@ abstract class AgentTool<
 
 ### 8.3 最终结果一致性
 
-`AfterToolCall` 和对应 patch 增加 `details?: unknown`。Agent Loop 必须保证同一个 Hook 处理后的最终结果用于：
+`AfterToolCall` 和对应 patch 支持 details。为避免 UI 状态与模型可见状态静默发散，只要 Handler 修改 details，就必须同时明确返回与新 details 语义一致的完整 content：
+
+```ts
+type AfterToolCallPatch =
+  | {
+      readonly content?: string;
+      readonly details?: never;
+      readonly isError?: boolean;
+    }
+  | {
+      readonly content: string;
+      readonly details: unknown;
+      readonly isError?: boolean;
+    };
+```
+
+这允许 Hook 只修改 content 或错误状态；但不允许只修改模型不可见的 details。当前不提供删除已有 details 的特殊 sentinel，出现真实需求后再扩展。
+
+类型约束之外，Registry 还必须校验运行时 Handler 输出：只要 patch 拥有 `details` 自有属性，就必须同时拥有字符串类型的 `content` 自有属性；否则按非法 Hook 输出处理，遵循 AfterToolCall Handler 异常策略。通用 Registry 无法判断 content 与任意 details 在业务语义上是否相等；具体领域 Hook 必须复用该领域的 formatter，并由领域测试保证。
+
+Agent Loop 必须保证同一个 Hook 处理后的最终结果用于：
 
 - 写入 Session 的 `ToolResultMessage`；
 - `tool_end` Event；
-- 下一次模型请求；
+- 下一次模型请求的内存 `Message[]`；
 - UI renderer。
 
 Hook 没有返回某个字段时保留原值，不做深合并。
+
+这里有两层不同边界：
+
+```text
+Session / Agent Context
+  ToolResultMessage 保留 content + details
+            |
+            v
+Provider Adapter
+  只把 content 和 Provider 所需协议字段投影到 wire payload
+  details 不进入网络请求，模型永远看不到 details
+```
+
+因此，凡是模型下一轮需要知道的状态，都必须出现在 content 中；details 只提供同一事实的结构化表示，供 Session、UI 和程序消费。
 
 `AgentMessage` 当前继续等于 ai `Message`。`details` 不需要新增 `AgentToolResultMessage`。未来真正增加新的消息 role 时，再采用 Pi 的 `CustomAgentMessages` declaration merging 模式扩展 AgentMessage。
 
@@ -332,11 +423,12 @@ Hook 没有返回某个字段时保留原值，不做深合并。
 ### 9.1 成功执行
 
 ```text
-模型产生 AgentToolCall
-  -> BeforeToolCall Hook
-  -> 参数确定并通过验证
+模型产生原始 AgentToolCall
+  -> 保存原始 call，复制 working input
+  -> BeforeToolCall Hook 修改 working input / 决定 block
+  -> AgentToolRegistry.prepare() 查找工具并验证最终参数
   -> tool_start Event
-  -> AgentTool.execute()
+  -> AgentToolRegistry.execute(prepared)
   -> AfterToolCall Hook
   -> 最终 ToolResultMessage
   -> 写入 Session
@@ -344,6 +436,25 @@ Hook 没有返回某个字段时保留原值，不做深合并。
 ```
 
 `tool_start` 必须携带 Hook 处理后的有效参数，只能表示真实执行已经开始。
+
+当前 `AgentToolRegistry.execute(call)` 把 lookup、validate 和 execute 打包，无法满足这个时序。Registry 必须拆为准备和执行两步：
+
+```ts
+type ToolPreparation =
+  | { readonly kind: "ready"; readonly prepared: PreparedAgentToolCall }
+  | {
+      readonly kind: "rejected";
+      readonly reason: "unknown" | "invalid";
+      readonly result: AgentToolResult<unknown>;
+    };
+
+class AgentToolRegistry {
+  prepare(call: AgentToolCall): ToolPreparation;
+  execute(prepared: PreparedAgentToolCall): Promise<AgentToolResult<unknown>>;
+}
+```
+
+`PreparedAgentToolCall` 是 Agent 包内部的 Registry-owned 值，封装已经解析的工具与已经验证的参数；不作为根入口的稳定公共 API 导出。`execute(prepared)` 负责 timeout 和异常归一化，不再重复查找或验证。Harness 运行期间禁止修改 Tool Registry，因此 prepare 与 execute 之间不存在工具被替换的竞态。
 
 ### 9.2 被 Hook 阻止、参数无效或工具不存在
 
@@ -366,7 +477,10 @@ type ToolRejectedReason =
 
 interface ToolRejectedEvent {
   readonly type: "tool_rejected";
+  /** 模型原始请求；arguments 永远不被 Hook 改写。 */
   readonly call: AgentToolCall;
+  /** Hook 处理后的参数；仅在已经形成工作参数时提供。 */
+  readonly effectiveArguments?: Readonly<Record<string, unknown>>;
   readonly result: AgentToolResult<unknown>;
   readonly reason: ToolRejectedReason;
 }
@@ -374,7 +488,32 @@ interface ToolRejectedEvent {
 
 这避免没有 `tool_start` 却收到 `tool_end` 的不完整生命周期，也避免把“准备尝试”误称为“开始执行”。
 
-### 9.3 当前代码修正
+每一个来自最终 assistant message 的 `AgentToolCall` 都必须恰好产生一个终态：
+
+```text
+tool_start -> tool_end
+或
+tool_rejected
+```
+
+不得因为 block、unknown、invalid 或 Abort 静默丢失调用。若一次批处理中途 Abort，所有尚未开始的调用都生成 synthetic aborted result 和 `tool_rejected`，从而保证历史、模型协议和审计完整。
+
+`tool_rejected.call` 始终保存模型请求的原始参数，用于展示和审计。若 Hook 在阻止前修改过参数，或最终参数验证失败，`effectiveArguments` 额外保存工作参数。
+
+`aborted` 拒绝只用于尚未开始真实 Tool effect 的调用。已经发布 `tool_start` 后，即使 Tool 因 AbortSignal 结束，也必须发布对应 `tool_end`，并携带 `isError: true` 的最终结果，不能把已经开始的执行改记为 rejected。
+
+权限确认中的 ESC 分两种处理：
+
+- 用户在仍然有效的确认框按 ESC，`confirm()` 返回 false，归类为 `blocked`；
+- 外部 Agent AbortSignal 已触发时，不论 confirm 返回什么，Agent Loop 优先归类为 `aborted`。
+
+### 9.3 拒绝结果的持久化
+
+`tool_rejected` 是运行 Event；对应的 synthetic `ToolResultMessage` 才是 Session 中的权威记录。Event 必须在消息成功写入 Session 后发布，并携带同一个 result。
+
+这些调用没有执行 Tool，因此不触发 `AfterToolCall`。Synthetic result 由 Agent Loop 按拒绝原因直接构造；Hook 不能把一个未执行调用伪装成成功执行结果。
+
+### 9.4 当前代码修正
 
 当前 `agent-loop.ts` 在 `tool_call` Hook 之前 yield `tool_start`，属于错误语义，必须调整。Event 公开的一律是 Hook 处理后的最终值。
 
@@ -420,6 +559,10 @@ interface CliToolRenderer {
     call: AgentToolCall,
     result: AgentToolResult<unknown>,
   ): string | undefined;
+
+  renderRejected?(
+    event: ToolRejectedEvent,
+  ): string | undefined;
 }
 ```
 
@@ -431,10 +574,11 @@ toolRenderers.register("todo_write", todoRenderer);
 行为：
 
 1. 有专用 renderer 时使用专用展示；
-2. 没有专用 renderer 时使用通用 fallback；
-3. details 无效时回退到 content；
-4. renderer 抛错时记录 UI 错误并使用 fallback；
-5. renderer 错误绝不影响 Agent 执行。
+2. Tool 被拒绝且 renderer 实现 `renderRejected` 时使用专用拒绝展示；否则使用拒绝 fallback；
+3. 没有专用 renderer 时使用通用 fallback；
+4. details 无效时回退到 content；
+5. renderer 抛错时记录 UI 错误并使用 fallback；
+6. renderer 错误绝不影响 Agent 执行。
 
 当前 CLI 只实现文本渲染。未来 TUI 或 RPC 共享 Event、Session 和 details，不共享具体渲染对象。
 
@@ -468,17 +612,29 @@ export interface TodoDetails {
 
 ```ts
 {
-  content: "Updated 3 tasks",
+  content: [
+    "Current tasks:",
+    "1. [completed] Read the code",
+    "2. [in_progress] Design Tool UI",
+    "3. [pending] Add tests",
+    "Updated 3 tasks",
+  ].join("\n"),
   details: { todos: arguments_.todos },
   isError: false,
 }
 ```
 
+`content` 必须完整、逐项包含当前列表与状态，因为它是模型可见的权威表示；不能只返回 `Updated N tasks`。`details.todos` 是同一份规范化列表的结构化副本，供程序消费。两者必须由同一个纯格式化函数从同一输入生成，避免手工维护两份状态。
+
+完整的 `ToolResultMessage` 是唯一记录事实：程序化状态只从 `details.todos` 投影，模型只从 `content` 读取；二者不是独立状态源。若未来某个 AfterToolCall Hook 修改 Todo details，它必须调用同一个 `formatTodoContent()` 同步生成 content。默认 Hook 当前不修改任何 details。
+
+这样在 switchModel、Session 恢复和长会话中，新模型都能直接从 Provider 可见历史恢复当前列表，无需解析先前 assistant tool-call arguments。
+
 Todo 的真实状态定义为：
 
 > 当前 Session 分支中最后一条有效 `todo_write` ToolResultMessage 的 `details.todos`。
 
-UI 使用纯函数投影：
+Coding Agent 使用纯函数投影：
 
 ```ts
 function findLatestTodoDetails(
@@ -499,7 +655,7 @@ src/ui/
   frontend.ts          # CliFrontend、输入循环、CodingHookUI 实现、统一协调
   harness-renderer.ts  # 通用 Harness/Agent Event 展示
   tool-renderers.ts    # Tool renderer 接口、Registry、fallback
-  todo-renderer.ts     # Todo 专用 renderer 与历史投影
+  todo-renderer.ts     # Todo 专用 renderer
 ```
 
 不提前增加 `ui/cli`、`ui/tui` 等子目录；只有一个真实前端时保持结构紧凑，出现第二个前端后再提取共享层。
@@ -516,6 +672,10 @@ src/coding-agent/hooks/types.ts
 src/coding-agent/tools/todo-write.ts
   TodoItem
   TodoDetails
+
+src/coding-agent/tools/todo-state.ts
+  formatTodoContent
+  findLatestTodoDetails
 
 src/ai/types.ts
   ToolResultMessage<TDetails>
@@ -583,6 +743,8 @@ Pi 是重要设计参考，但不是无需判断的规范：
 ### Tool details 与 renderer
 
 - Session 读取时允许 ToolResultMessage 携带 JSON-safe details；
+- 模型需要的 Tool 状态必须完整出现在 content，不能只存在 details；
+- 修改 details 的 AfterToolCall patch 必须同时返回同步后的完整 content；
 - Todo renderer 在使用前验证 details 结构；
 - 旧 Session 没有 details 时使用通用 content；
 - renderer 错误局限在 UI，并回退到 fallback。
@@ -593,6 +755,8 @@ Pi 是重要设计参考，但不是无需判断的规范：
 - AfterToolCall 抛错产生最终 error result；
 - synthetic result 与正常 result 都必须写入 Session；
 - 只有真实 Tool effect 产生 `tool_start` / `tool_end`。
+- 每个最终 assistant tool call 恰好产生 `tool_start -> tool_end` 或一个 `tool_rejected`；
+- 外部 AbortSignal 优先于 permission confirm 的 false 结果归类。
 
 ## 17. 测试设计
 
@@ -607,10 +771,15 @@ Pi 是重要设计参考，但不是无需判断的规范：
 
 - Hook 允许后才产生 `tool_start`；
 - Hook 修改后的参数出现在 Tool 与 `tool_start`；
-- blocked、invalid、unknown、aborted 分别产生正确 `tool_rejected`；
+- blocked、invalid、unknown、aborted 每条路径都必须产生且只产生一个 `tool_rejected`；
+- 批处理中途 Abort 时，每个尚未开始的 call 都有 aborted result 和 `tool_rejected`；
+- rejected synthetic result 不触发 AfterToolCall；
+- `tool_rejected.call` 保留原始参数，`effectiveArguments` 保存可用的 Hook 后参数；
 - 真实 Tool 执行产生匹配的 `tool_start` / `tool_end`；
-- details 经过 AfterToolCall patch 后一致进入 Event、历史和下一次请求；
-- ToolResultMessage details 不被 Provider Adapter 发送。
+- `prepare()` 在 `tool_start` 前完成 lookup 和最终参数验证，`execute(prepared)` 不重复验证；
+- details 经过 AfterToolCall patch 后一致进入 Event、Session 和下一次请求的内存 Message；
+- 修改 details 时类型要求同步返回 content；
+- ToolResultMessage details 不进入 Provider wire payload。
 
 ### 17.3 Session
 
@@ -618,6 +787,8 @@ Pi 是重要设计参考，但不是无需判断的规范：
 - 缺少 details 的旧消息仍可打开；
 - 无效非 JSON 数据被存储边界拒绝；
 - 从当前分支能找到最后一个有效 TodoDetails。
+- Todo content 完整包含当前列表，details 与 content 从同一规范化输入生成；
+- switchModel 和 Session 恢复后的 Provider 可见历史仍能读到完整 Todo 列表。
 
 ### 17.4 Coding Agent Hook
 
@@ -631,6 +802,7 @@ Pi 是重要设计参考，但不是无需判断的规范：
 
 - Harness renderer 处理普通生命周期事件；
 - Tool renderer 专用匹配和通用 fallback；
+- `renderRejected` 的专用路径和缺省拒绝 fallback；
 - large-output 警告消费最终 `tool_end`；
 - summary 消费最终 `agent_end`；
 - TodoDetails 正确渲染；
@@ -647,6 +819,7 @@ Pi 是重要设计参考，但不是无需判断的规范：
 - `src/agent/harness/README.md`：subscribe 的观察职责，以及当前 Agent Hook 的透传边界；
 - `src/coding-agent/README.md`：CodingHookUI、默认 Hook、工具 details 和 Factory；
 - 根 README：更新包依赖、启动用法和 UI 目录。
+- `docs/architecture.md`：在代码实现完成的同一提交系列中删除 listener 表、改用 Call 命名并更新 Tool/UI 时序。
 
 README 说明使用方式、总体概念、完整导出和依赖边界；本文保留详细设计理由。
 
@@ -659,11 +832,13 @@ README 说明使用方式、总体概念、完整导出和依赖边界；本文�
 5. Hook UI 不随 Hook 数量增加专用方法；
 6. `details` 位于 ai ToolResultMessage，并贯穿 AgentToolResult、Session 与 UI；
 7. Provider payload 不包含 details；
-8. `tool_start` 只在 Hook 通过、参数有效并准备真实执行后产生；
-9. 未执行的 Tool call 产生明确的 `tool_rejected`；
-10. TodoWrite 无实例状态，可以从 Session 当前分支恢复；
-11. Tool 不依赖 renderer 或 UI；
-12. 所有具体 CLI UI 实现集中在 `src/ui`；
-13. renderer 错误不影响 Agent 执行；
-14. README 与实际公开导出、依赖方向一致；
-15. 类型检查、现有测试和新增测试全部通过。
+8. 模型所需的 Tool 状态完整存在于 content，修改 details 必须同步修改 content；
+9. Registry 提供 prepare/execute 两阶段，`tool_start` 只在 Hook 通过、参数有效并准备真实执行后产生；
+10. 每个 Tool call 恰好以 `tool_end` 或 `tool_rejected` 结束，未执行调用不会静默丢失；
+11. TodoWrite 无实例状态，可以从 Session 当前分支恢复，模型也能从 content 恢复完整列表；
+12. Tool 不依赖 renderer 或 UI；
+13. Todo 状态投影位于 coding-agent，不位于具体 UI；
+14. 所有具体 CLI UI 实现集中在 `src/ui`；
+15. renderer 错误不影响 Agent 执行；
+16. README、architecture.md 与实际公开导出、依赖方向一致；
+17. 类型检查、现有测试和新增测试全部通过。

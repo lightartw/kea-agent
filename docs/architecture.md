@@ -1,6 +1,11 @@
 # Kea Agent 架构
 
-**更新：** 2026-08-12
+**更新：** 2026-08-13
+
+> 本文描述当前已实现的代码架构，因此仍会列出当前存在的
+> `HookListener/registerListener`、Event 类型名和 `src/cli`。这些接口已经在
+> [Hook、Harness 与 Tool UI 边界设计](superpowers/specs/2026-08-13-hook-harness-tool-ui-design.md)
+> 中确定替换方案；代码实现完成时必须同步更新本文，不能提前把目标设计写成当前事实。
 
 依赖从底层往上，每层只依赖它的下层。源码箭头始终向下：
 
