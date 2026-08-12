@@ -2,7 +2,7 @@
 
 日期：2026-08-13
 
-状态：根据评审修订，待复核
+状态：已批准
 
 范围：`ai`、`agent`、`agent/harness`、`coding-agent` 与当前行式 CLI UI。
 
