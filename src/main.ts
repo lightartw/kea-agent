@@ -6,7 +6,7 @@ import { config as loadDotenv } from "dotenv";
 
 import { CliFrontend } from "./cli/frontend.js";
 import { createHarness } from "./coding-agent/factory.js";
-import { SessionManager } from "./agent/harness/session/manager.js";
+import { Session } from "./agent/harness/session/session.js";
 import { createStreamFn } from "./ai/factory.js";
 
 function resolveProject(cwd: string) {
@@ -21,8 +21,7 @@ export async function asyncMain(): Promise<void> {
   try {
     const { stream, defaultModel } = createStreamFn();
     const project = resolveProject(process.cwd());
-    const sessionManager = await SessionManager.create(project);
-    const session = await sessionManager.createSession();
+    const session = await Session.create(project.storageDir);
     const harness = await createHarness({
       project,
       streamFn: stream,

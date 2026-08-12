@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HookRegistry } from "../../../src/agent/hooks/registry.js";
-import type { AgentHookEvent } from "../../../src/agent/hooks/types.js";
 import {
   createCodingHookRegistry,
 } from "../../../src/coding-agent/hooks/factory.js";
@@ -39,7 +38,7 @@ function setup(
   notifications: HookNotification[];
 } {
   const ui = new NotificationUI();
-  const hooks = new HookRegistry<AgentHookEvent, CodingHookContext>({
+  const hooks = new HookRegistry<CodingHookContext>({
     cwd: process.cwd(),
     ui,
   });

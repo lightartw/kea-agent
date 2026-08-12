@@ -11,7 +11,6 @@ import type {
   ThinkingBlock,
   Tool,
   ToolCall,
-  TokenUsage,
 } from "../types.js";
 import { mergeSignals } from "../../utils/timeout.js";
 
@@ -60,12 +59,6 @@ function mapStopReason(reason: string | null | undefined): StopReason {
   if (reason === "tool_use") return "toolUse";
   if (reason === "max_tokens") return "length";
   return reason === "end_turn" || reason === "stop_sequence" ? "stop" : "error";
-}
-
-function makeUsage(raw: Record<string, unknown> = {}): TokenUsage {
-  const inputTokens = Number(raw.input_tokens ?? 0);
-  const outputTokens = Number(raw.output_tokens ?? 0);
-  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
 }
 
 // ── Adapter ──

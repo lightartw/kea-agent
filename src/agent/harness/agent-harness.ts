@@ -3,12 +3,12 @@ import type { AgentLoopConfig, AgentEvent, AgentMessage } from "../types.js";
 import type { AgentTool } from "../tools/types.js";
 import type { AgentToolRegistry } from "../tools/registry.js";
 import { HookRegistry } from "../hooks/registry.js";
-import type { AgentHookEvent, AgentHookTrigger } from "../hooks/types.js";
+import type { AgentHookTrigger } from "../hooks/types.js";
 import type { Message, ModelConfig, StreamFn } from "../../ai/types.js";
 import { Session } from "./session/session.js";
 import type {
   HarnessConfig,
-  HarnessEventListener,
+  HarnessListener,
   SystemPromptBuilder,
   Unsubscribe,
 } from "./types.js";
@@ -23,7 +23,7 @@ export class AgentHarness {
   private readonly toolRegistry: AgentToolRegistry;
   private readonly buildSystemPrompt: SystemPromptBuilder;
   private readonly cwd: string;
-  private readonly listeners = new Set<HarnessEventListener>();
+  private readonly listeners = new Set<HarnessListener>();
 
   // Absorbed from Agent
   private _messages: AgentMessage[];
@@ -53,7 +53,7 @@ export class AgentHarness {
     this._messages = [...context.messages];
     this.persistedMessageCount = context.messages.length;
     this.hooks = config.hooks ??
-      new HookRegistry<AgentHookEvent, Record<string, never>>({});
+      new HookRegistry<Record<string, never>>({});
   }
 
   // ── Private helpers ──
@@ -145,7 +145,7 @@ export class AgentHarness {
     }
   }
 
-  subscribe(listener: HarnessEventListener): Unsubscribe {
+  subscribe(listener: HarnessListener): Unsubscribe {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);

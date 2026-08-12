@@ -3,9 +3,8 @@ import type {
   Cleanup,
   ContextEvent,
   ContextResult,
-  HookEvent,
   HookHandler,
-  HookObserver,
+  HookListener,
   ResultOf,
   StopEvent,
   StopResult,
@@ -18,24 +17,13 @@ import type {
   UserPromptResult,
 } from "./types.js";
 
-const KNOWN_EVENT_TYPES = new Set<string>([
-  "user_prompt",
-  "context",
-  "tool_call",
-  "tool_result",
-  "stop",
-]);
-
-export class HookRegistry<
-  TEvent extends HookEvent<string, unknown>,
-  TContext,
-> {
+export class HookRegistry<TContext> {
   private _context: TContext;
   private readonly handlers = new Map<
     string,
-    Set<HookHandler<TEvent, TContext>>
+    Set<HookHandler<AgentHookEvent, TContext>>
   >();
-  private readonly observers = new Set<HookObserver<TEvent, TContext>>();
+  private readonly listeners = new Set<HookListener<AgentHookEvent, TContext>>();
   private readonly cleanups: Cleanup[] = [];
   private disposed = false;
 
@@ -52,9 +40,9 @@ export class HookRegistry<
     this._context = context;
   }
 
-  register<TType extends TEvent["type"]>(
+  register<TType extends AgentHookEvent["type"]>(
     type: TType,
-    handler: HookHandler<Extract<TEvent, { type: TType }>, TContext>,
+    handler: HookHandler<Extract<AgentHookEvent, { type: TType }>, TContext>,
   ): Unregister {
     this.assertActive();
     let set = this.handlers.get(type);
@@ -62,7 +50,7 @@ export class HookRegistry<
       set = new Set();
       this.handlers.set(type, set);
     }
-    const typedHandler = handler as HookHandler<TEvent, TContext>;
+    const typedHandler = handler as HookHandler<AgentHookEvent, TContext>;
     set.add(typedHandler);
     let active = true;
     return () => {
@@ -72,31 +60,30 @@ export class HookRegistry<
     };
   }
 
-  registerObserver(
-    observer: HookObserver<TEvent, TContext>,
+  registerListener(
+    listener: HookListener<AgentHookEvent, TContext>,
   ): Unregister {
     this.assertActive();
-    this.observers.add(observer);
+    this.listeners.add(listener);
     let active = true;
     return () => {
       if (!active) return;
       active = false;
-      this.observers.delete(observer);
+      this.listeners.delete(listener);
     };
   }
 
-  async trigger<T extends TEvent>(
+  async trigger<T extends AgentHookEvent>(
     event: T,
     signal?: AbortSignal,
   ): Promise<ResultOf<T> | undefined> {
     this.assertActive();
-    this.assertKnownEvent(event.type);
     const context = this._context;
-    const observers = [...this.observers];
+    const listeners = [...this.listeners];
     const handlers = [...(this.handlers.get(event.type) ?? [])];
 
-    for (const observer of observers) {
-      await observer(event as unknown as TEvent, context, signal);
+    for (const listener of listeners) {
+      await listener(event, context, signal);
     }
 
     switch (event.type) {
@@ -171,16 +158,10 @@ export class HookRegistry<
     }
   }
 
-  private assertKnownEvent(type: string): void {
-    if (!KNOWN_EVENT_TYPES.has(type)) {
-      throw new Error(`Unknown hook event '${type}'`);
-    }
-  }
-
   private async clearRegistrations(): Promise<void> {
     const cleanups = [...this.cleanups].reverse();
     this.handlers.clear();
-    this.observers.clear();
+    this.listeners.clear();
     this.cleanups.length = 0;
     const errors: unknown[] = [];
     for (const cleanup of cleanups) {
@@ -198,7 +179,7 @@ export class HookRegistry<
 
   private async triggerUserPrompt(
     event: UserPromptEvent,
-    handlers: HookHandler<TEvent, TContext>[],
+    handlers: HookHandler<AgentHookEvent, TContext>[],
     context: TContext,
     signal: AbortSignal | undefined,
   ): Promise<UserPromptResult | undefined> {
@@ -218,7 +199,7 @@ export class HookRegistry<
 
   private async triggerContext(
     event: ContextEvent,
-    handlers: HookHandler<TEvent, TContext>[],
+    handlers: HookHandler<AgentHookEvent, TContext>[],
     context: TContext,
     signal: AbortSignal | undefined,
   ): Promise<ContextResult | undefined> {
@@ -243,7 +224,7 @@ export class HookRegistry<
 
   private async triggerToolCall(
     event: ToolCallEvent,
-    handlers: HookHandler<TEvent, TContext>[],
+    handlers: HookHandler<AgentHookEvent, TContext>[],
     context: TContext,
     signal: AbortSignal | undefined,
   ): Promise<ToolCallResult | undefined> {
@@ -263,7 +244,7 @@ export class HookRegistry<
 
   private async triggerToolResult(
     event: ToolResultEvent,
-    handlers: HookHandler<TEvent, TContext>[],
+    handlers: HookHandler<AgentHookEvent, TContext>[],
     context: TContext,
     signal: AbortSignal | undefined,
   ): Promise<ToolResultPatch | undefined> {
@@ -304,7 +285,7 @@ export class HookRegistry<
 
   private async triggerStop(
     event: StopEvent,
-    handlers: HookHandler<TEvent, TContext>[],
+    handlers: HookHandler<AgentHookEvent, TContext>[],
     context: TContext,
     signal: AbortSignal | undefined,
   ): Promise<StopResult | undefined> {

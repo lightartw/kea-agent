@@ -102,19 +102,19 @@ Hook 在状态或动作提交前被调用，可以根据事件契约阻止、转
 ### 公开 API
 
 ```ts
-export class HookRegistry<TEvent extends HookEvent<string, unknown>, TContext> {
+export class HookRegistry<TContext> {
   constructor(context: TContext);
   get context(): TContext;
   setContext(context: TContext): void;
 
-  register<TType extends TEvent["type"]>(
+  register<TType extends AgentHookEvent["type"]>(
     type: TType,
-    handler: HookHandler<Extract<TEvent, { type: TType }>, TContext>,
+    handler: HookHandler<Extract<AgentHookEvent, { type: TType }>, TContext>,
   ): Unregister;
 
-  registerObserver(observer: HookObserver<TEvent, TContext>): Unregister;
+  registerListener(listener: HookListener<AgentHookEvent, TContext>): Unregister;
 
-  trigger<T extends TEvent>(
+  trigger<T extends AgentHookEvent>(
     event: T,
     signal?: AbortSignal,
   ): Promise<ResultOf<T> | undefined>;
@@ -127,12 +127,12 @@ export class HookRegistry<TEvent extends HookEvent<string, unknown>, TContext> {
 
 ### 语义
 
-- Handler 按注册顺序执行；Observer 在所有 Handler 前执行。
-- Observer 返回值被忽略，不能控制流程。
-- 每次 `trigger` 开始时快照 context、Observer 列表和该事件 Handler 列表。
+- Handler 按注册顺序执行；Listener 在所有 Handler 前执行。
+- Listener 返回值被忽略，不能控制流程。
+- 每次 `trigger` 开始时快照 context、Listener 列表和该事件 Handler 列表。
 - 触发期间的注册/注销只影响下一次 `trigger`。
 - `Unregister` 幂等；`clear` 逆序执行 Cleanup 后可复用；`dispose` 永久销毁。
-- Handler / Observer 错误原样穿透，不包装。
+- Handler / Listener 错误原样穿透，不包装。
 
 ## AgentHookTrigger
 
@@ -211,7 +211,7 @@ class AgentToolRegistry {
 class AgentHarness {
   constructor(config: HarnessConfig);
   prompt(input: string): Promise<void>;
-  subscribe(listener: HarnessEventListener): Unsubscribe;
+  subscribe(listener: HarnessListener): Unsubscribe;
   abort(): void;
   switchModel(model: ModelConfig): Promise<void>;
   registerTool(tool: AgentTool): void;
@@ -228,8 +228,8 @@ class AgentHarness {
 
 从 `src/agent/hooks/index.ts`：
 - `HookRegistry`
-- `AgentHookEvent`, `AgentHookTrigger`, `HookEvent`
-- `HookHandler`, `HookObserver`, `ResultOf`
+- `AgentHookEvent`, `AgentHookTrigger`
+- `HookHandler`, `HookListener`, `ResultOf`
 - `Unregister`, `Cleanup`
 - `UserPromptEvent`, `UserPromptResult`
 - `ContextEvent`, `ContextResult`
@@ -240,9 +240,38 @@ class AgentHarness {
 从 `src/agent/harness/index.ts`：
 - `AgentHarness`, `Session`, `SessionError`, `SessionManager`
 - `defaultSystemPrompt`, `formatSystemPrompt`
-- `HarnessConfig`, `HarnessEventListener`, `HarnessProject`
+- `HarnessConfig`, `HarnessListener`, `HarnessProject`
 - `SystemPromptBuilder`, `SystemPromptContext`, `Unsubscribe`
 - `SessionContext`, `SessionErrorCode`
+
+## 与 UI 的解耦
+
+agent 层（以及其上的 coding-agent 层）从不 import 任何 UI/CLI 类型。UI 通过两种**不同**的机制注入，二者都遵循依赖倒置（DI），但适用场景不同：
+
+### Hook：`TContext` 泛型盒子
+
+`HookRegistry<TContext>` 是泛型——agent 的 hook 层只负责把不透明的 `TContext` 原样传给 handler/listener，它**不知道**盒子里装了什么。
+
+- coding-agent 定义 `CodingHookContext = { cwd, ui }`，把 `ui`（一个 `CodingHookUI`）塞进 context。
+- 需要和用户交互的 hook（如 permission）从 `context.ui` 取出 `confirm`/`notify` 调用。
+- CLI 实现 `CodingHookUI`；coding-agent 永不 import CLI。
+
+为什么用 context 而不是构造注入？因为 hook 是**泛型且晚绑定**的：注册一次、在 loop 的各个控制点多次触发，每次触发所需的上下文在注册时未知，只能作为运行时参数逐次传入。
+
+### Tool：构造注入（没有 context）
+
+`AgentTool.execute(args, timeoutSignal)` **没有** context/UI 参数。工具在组合根 `createToolRegistry(cwd)` 构造时就捕获自己的依赖：
+
+- `ReadFileTool` / `WriteFileTool` / `EditFileTool` / `GlobTool(workspace)` —— 工作目录；
+- `BashTool(cwd, ops)` —— 目录 + `BashOperations` 可替换后端（本地 / SSH / Docker）。
+
+工具**从不**碰 UI。哪怕 `BashTool` 也只做 `hardDeniedBashReason` 的硬拒绝兜底，不弹用户确认。
+
+### 关键原则：策略属于 Hook，不属于工具
+
+「用户确认」这类 UI 交互不是工具职责，而是**策略**职责。Permission Hook（持有 `context.ui`）在工具执行前 gate bash 命令（allow/ask/deny），工具本身保持纯函数：输入 → 输出。这是策略与机制分离——工具是机制，Hook 是策略。
+
+两种机制并存的原因：hook 是泛型、晚绑定（需要逐次传入 context）；工具是具体、构造一次（构造注入即可，`execute` 保持最小）。二者都保证 `coding-agent → cli` 永不发生。
 
 ## 包边界
 

@@ -71,7 +71,7 @@ CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共�
 ## 启动路径
 
 ```text
-createStreamFn → SessionManager → createHarness → CliFrontend
+createStreamFn → Session.create → createHarness → CliFrontend
 ```
 
 `main.ts` 加载环境变量，创建 `CliFrontend`（实现 `CodingHookUI`），通过 `createHarness` 组装 Agent，最后调用 `cli.run(harness)`。

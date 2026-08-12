@@ -7,7 +7,7 @@ import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
 import { AgentTool } from "../../src/agent/tools/types.js";
 import type { AgentEvent } from "../../src/agent/types.js";
 import { HookRegistry } from "../../src/agent/hooks/registry.js";
-import type { AgentHookEvent, AgentHookTrigger } from "../../src/agent/hooks/types.js";
+import type { AgentHookTrigger } from "../../src/agent/hooks/types.js";
 import type { HarnessConfig } from "../../src/agent/harness/types.js";
 import type {
   AssistantMessage,
@@ -328,7 +328,7 @@ test("abort during Agent streaming settles the Harness run", async () => {
 // ── Task 4: Harness Hook pass-through tests ──
 
 test("Harness passes one Hook trigger to Agent Loop", async () => {
-  const hooks = new HookRegistry<AgentHookEvent, { calls: string[] }>({
+  const hooks = new HookRegistry<{ calls: string[] }>({
     calls: [],
   });
   hooks.register("user_prompt", (_event, context) => {
@@ -350,7 +350,7 @@ test("Harness passes one Hook trigger to Agent Loop", async () => {
 
 test("user_prompt and context Hook failures reject prompt and restore idle", async () => {
   for (const type of ["user_prompt", "context"] as const) {
-    const hooks = new HookRegistry<AgentHookEvent, Record<string, never>>({});
+    const hooks = new HookRegistry<Record<string, never>>({});
     hooks.register(type, () => { throw new Error(`${type} failed`); });
     const harness = createHarness({ hooks });
 
@@ -360,7 +360,7 @@ test("user_prompt and context Hook failures reject prompt and restore idle", asy
 });
 
 test("stop Hook failure keeps the completed assistant message and restores idle", async () => {
-  const hooks = new HookRegistry<AgentHookEvent, Record<string, never>>({});
+  const hooks = new HookRegistry<Record<string, never>>({});
   hooks.register("stop", () => { throw new Error("stop failed"); });
   const harness = createHarness({ hooks });
 

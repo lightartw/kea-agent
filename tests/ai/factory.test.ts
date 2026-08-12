@@ -151,3 +151,27 @@ test("lazy adapter reuses the loaded adapter across stream calls", async () => {
 
   assert.equal(loads, 1);
 });
+
+test("lazy adapter loads on iteration and forwards failures", async () => {
+  const failure = new Error("load failed");
+  let loads = 0;
+  const adapter = lazyAdapter(async () => {
+    loads += 1;
+    throw failure;
+  });
+
+  const stream = adapter.stream(
+    "model",
+    { messages: [] },
+    { timeout: 120, maxTokens: 8000 },
+  );
+  assert.equal(loads, 0);
+
+  await assert.rejects(
+    (async () => {
+      for await (const event of stream) void event;
+    })(),
+    (error) => error === failure,
+  );
+  assert.equal(loads, 1);
+});

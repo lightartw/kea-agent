@@ -7,13 +7,12 @@ Harness 是拥有 Agent 生命周期的单线程运行时核心。它在内部�
 ```ts
 import { createStreamFn } from "./ai/factory.js";
 import { createHarness } from "./coding-agent/factory.js";
-import { SessionManager } from "./agent/harness/session/manager.js";
+import { Session } from "./agent/harness/session/session.js";
 
 const { stream, defaultModel } = createStreamFn();
 
 const project = { workDir: process.cwd(), storageDir: ".kea/sessions" };
-const sessionManager = await SessionManager.create(project);
-const session = await sessionManager.createSession();
+const session = await Session.create(project.storageDir);
 
 const harness = await createHarness({
   project,
@@ -33,7 +32,7 @@ await harness.prompt("Write a hello-world program.");
 
 Harness 分为三层：
 
-- **Session 管理层**（`SessionManager`）：管理一个 project 下多个 `Session` 文件的生命周期。负责 session 的创建、打开、列出和恢复。
+- **Session 管理层**（`SessionManager`）：管理一个 project 下多个 `Session` 文件的生命周期。负责 session 的列出和恢复；创建/打开单个 session 由 `Session.create()`/`Session.open()` 负责。
 - **通用运行时**（`AgentHarness`）：持有 Agent、Session 和监听器。消费 Agent 事件、持久化消息并发布给订阅者。绝不导入具体 coding 工具或 coding system prompt。
 - **Coding 组合**（`createHarness`）：将 `AgentHarness` 与 coding 工具集、coding system prompt 和 Hook 组装在一起的工厂函数。这是唯一导入具体工具和 `CODING_SYSTEM_PROMPT` 的文件。`session` 和 `model` 由调用方传入。
 
@@ -41,25 +40,25 @@ Harness 分为三层：
 
 管理一个 project（`cwd` → `storageDir` 映射）下所有 session JSONL 文件的生命周期。
 
-### 工厂方法
-
-| 工厂方法 | 描述 |
-|----------|------|
-| `SessionManager.create(project: HarnessProject): Promise<SessionManager>` | 确保 `storageDir/sessions/` 目录存在，返回 manager 实例。 |
+```ts
+class SessionManager {
+  constructor(project: HarnessProject);
+  continueRecent(): Promise<Session>;
+  listSessions(): Promise<string[]>;
+}
+```
 
 ### 方法
 
 | 方法 | 描述 |
 |------|------|
-| `createSession(): Promise<Session>` | 始终创建新 session。 |
-| `openSession(sessionId: string): Promise<Session>` | 按 ID（文件名去掉 `.jsonl`）打开已有 session。 |
 | `continueRecent(): Promise<Session>` | 打开最近修改的 session；若无则创建新 session。 |
 | `listSessions(): Promise<string[]>` | 返回所有 session ID，按修改时间倒序。 |
 
 ### 行为细节
 
-- `listSessions()` 只识别匹配 `^[A-Za-z0-9_-]+\.jsonl$` 的文件，忽略隐藏文件和非法文件名。
-- `continueRecent()` 内部调用 `listSessions()` 取最新，空目录时 fallback 到 `createSession()`。
+- `listSessions()` 只识别匹配 `^[A-Za-z0-9_-]+\.jsonl$` 的文件，忽略隐藏文件和非法文件名；当 `sessions/` 目录尚不存在时返回 `[]`。
+- `continueRecent()` 内部调用 `listSessions()` 取最新，空目录时 fallback 到 `Session.create()`。
 
 ## `AgentHarness`
 
@@ -98,7 +97,7 @@ interface HarnessConfig {
 | 方法 | 描述 |
 |------|------|
 | `prompt(input: string): Promise<void>` | 运行一次 agent 轮次。将消息持久化到 Session 并将 Agent 事件发布给所有订阅者。轮次完成后 resolve。 |
-| `subscribe(listener: HarnessEventListener): Unsubscribe` | 注册一个监听器。返回用于移除该监听器的函数。 |
+| `subscribe(listener: HarnessListener): Unsubscribe` | 注册一个监听器。返回用于移除该监听器的函数。 |
 | `abort(): void` | 请求中止正在运行的 prompt。空闲时无操作。 |
 | `switchModel(model: ModelConfig): Promise<void>` | 持久化模型变更并更新当前模型。仅空闲时允许调用。 |
 | `registerTool(tool: AgentTool): void` | 为下一次运行注册工具。仅空闲时允许调用。 |
@@ -137,7 +136,7 @@ interface HarnessProject {
 ```
 
 - `model` 为必填项。provider/default-model 的选择由 `ai.createStreamFn()` 处理。
-- `session` 为必填项。Session 的创建职责属于 `SessionManager`，`createHarness` 只负责组装。
+- `session` 为必填项。Session 的创建职责属于 `Session.create()`，`createHarness` 只负责组装。
 - 若 `systemPrompt` 为字符串，则通过 `defaultSystemPrompt()` 包装，支持 `{{cwd}}`/`{{date}}` 替换。
 - 若 `systemPrompt` 为函数，则直接作为 `SystemPromptBuilder` 使用。
 - 若省略 `systemPrompt`，则默认使用 `CODING_SYSTEM_PROMPT`。
@@ -147,8 +146,7 @@ interface HarnessProject {
 
 ```ts
 const project = { workDir: process.cwd(), storageDir: "~/.kea/projects/..." };
-const sessionManager = await SessionManager.create(project);
-const session = await sessionManager.createSession();
+const session = await Session.create(project.storageDir);
 const harness = await createHarness({ project, streamFn, model, session, ui: cli });
 ```
 
@@ -164,7 +162,7 @@ const harness = await createHarness({ project, streamFn, model, session, ui: cli
 | `Session.open(storageDir: string, sessionId: string): Promise<Session>` | 从磁盘重新打开 session。 |
 | `Session.inMemory(): Session` | 用于测试的临时 session。 |
 
-> **注意：** 应用层通常通过 `SessionManager` 间接使用这些工厂方法，而非直接调用。`Session.inMemory()` 在测试中仍然直接使用。
+> **注意：** 应用层直接调用 `Session.create()`/`Session.open()` 创建或恢复单个 session；`SessionManager.continueRecent()` 用于「恢复最近一次会话」。`Session.inMemory()` 在测试中直接使用。
 
 ### API
 
@@ -232,7 +230,7 @@ type SystemPromptBuilder = (ctx: SystemPromptContext) => string | Promise<string
 
 - `AgentHarness`、`Session`、`SessionError`、`SessionManager`
 - `defaultSystemPrompt`、`formatSystemPrompt`
-- `HarnessConfig`、`HarnessEventListener`、`HarnessProject`
+- `HarnessConfig`、`HarnessListener`、`HarnessProject`
 - `SystemPromptBuilder`、`SystemPromptContext`、`Unsubscribe`
 - `SessionContext`、`SessionErrorCode`
 

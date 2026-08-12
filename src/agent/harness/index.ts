@@ -9,7 +9,7 @@ export { SessionManager } from "./session/manager.js";
 
 export type {
   HarnessConfig,
-  HarnessEventListener,
+  HarnessListener,
   HarnessProject,
   SystemPromptBuilder,
   SystemPromptContext,

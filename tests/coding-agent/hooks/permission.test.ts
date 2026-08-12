@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HookRegistry } from "../../../src/agent/hooks/registry.js";
-import type { AgentHookEvent } from "../../../src/agent/hooks/types.js";
 import type {
   CodingHookContext,
   CodingHookUI,
@@ -70,10 +69,10 @@ class RecordingUI implements CodingHookUI {
   notify(): void {}
 }
 
-type CodingHookRegistry = HookRegistry<AgentHookEvent, CodingHookContext>;
+type CodingHookRegistry = HookRegistry<CodingHookContext>;
 
 function codingHooks(ui: CodingHookUI): CodingHookRegistry {
-  return new HookRegistry<AgentHookEvent, CodingHookContext>({
+  return new HookRegistry<CodingHookContext>({
     cwd: process.cwd(),
     ui,
   });

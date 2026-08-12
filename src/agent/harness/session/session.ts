@@ -133,11 +133,16 @@ function validateTree(entries: readonly SessionEntry[]): void {
   }
 }
 
+/** Directory where one project's session files live, relative to its storageDir. */
+export function sessionsDir(storageDir: string): string {
+  return join(storageDir, "sessions");
+}
+
 function sessionPath(storageDir: string, sessionId: string): string {
   if (!SESSION_ID_PATTERN.test(sessionId)) {
     throw new SessionError("invalid_session", "Session ID is invalid");
   }
-  return join(storageDir, "sessions", `${sessionId}.jsonl`);
+  return join(sessionsDir(storageDir), `${sessionId}.jsonl`);
 }
 
 function asStorageError(message: string, error: unknown): SessionError {
@@ -145,6 +150,11 @@ function asStorageError(message: string, error: unknown): SessionError {
 }
 
 export class Session {
+  // id/parentId/leafId below form a tree, not a flat list. Today the agent
+  // appends in one straight line (parentId always == the previous leaf), but
+  // the tree format is deliberate: it keeps the on-disk contract ready for
+  // fork conversations (branching from a historical node to test different
+  // models or paths) without a file-format migration later.
   private entries: SessionEntry[] = [];
   private byId = new Map<string, SessionEntry>();
   private leafId: string | null = null;
@@ -158,7 +168,7 @@ export class Session {
 
   static async create(storageDir: string): Promise<Session> {
     try {
-      await mkdir(join(storageDir, "sessions"), { recursive: true });
+      await mkdir(sessionsDir(storageDir), { recursive: true });
     } catch (error) {
       throw asStorageError("Could not create session storage", error);
     }

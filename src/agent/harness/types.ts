@@ -5,7 +5,7 @@ import type { AgentHookTrigger } from "../hooks/types.js";
 import type { ModelConfig, StreamFn } from "../../ai/types.js";
 import type { Session } from "./session/session.js";
 
-export type HarnessEventListener = (
+export type HarnessListener = (
   event: AgentEvent,
 ) => void | Promise<void>;
 

@@ -4,7 +4,7 @@ import test from "node:test";
 import { HookRegistry } from "../../../src/agent/hooks/registry.js";
 import type {
   AgentHookEvent,
-  HookObserver,
+  HookListener,
   Unregister,
 } from "../../../src/agent/hooks/types.js";
 
@@ -12,8 +12,8 @@ type TestContext = { label: string };
 
 function registry(
   context: TestContext = { label: "initial" },
-): HookRegistry<AgentHookEvent, TestContext> {
-  return new HookRegistry<AgentHookEvent, TestContext>(context);
+): HookRegistry<TestContext> {
+  return new HookRegistry<TestContext>(context);
 }
 
 // ── Step 1: Typed event-combination tests ──
@@ -114,9 +114,9 @@ test("stop uses the first continueWith result", async () => {
   );
 });
 
-// ── Step 2: Observer, snapshot, signal, and error tests ──
+// ── Step 2: Listener, snapshot, signal, and error tests ──
 
-test("observers run before handlers and cannot control the result", async () => {
+test("listeners run before handlers and cannot control the result", async () => {
   const hooks = registry();
   const calls: string[] = [];
   const unsafeObserver = ((
@@ -124,10 +124,10 @@ test("observers run before handlers and cannot control the result", async () => 
     context: TestContext,
     signal?: AbortSignal,
   ) => {
-    calls.push(`observer:${context.label}:${String(signal?.aborted)}`);
+    calls.push(`listener:${context.label}:${String(signal?.aborted)}`);
     return { block: true };
-  }) as unknown as HookObserver<AgentHookEvent, TestContext>;
-  hooks.registerObserver(unsafeObserver);
+  }) as unknown as HookListener<AgentHookEvent, TestContext>;
+  hooks.registerListener(unsafeObserver);
   hooks.register("tool_call", () => {
     calls.push("handler");
   });
@@ -139,15 +139,15 @@ test("observers run before handlers and cannot control the result", async () => 
     toolName: "bash",
     input: {},
   }, controller.signal), undefined);
-  assert.deepEqual(calls, ["observer:initial:false", "handler"]);
+  assert.deepEqual(calls, ["listener:initial:false", "handler"]);
 });
 
-test("trigger snapshots observers handlers and context", async () => {
+test("trigger snapshots listeners handlers and context", async () => {
   const hooks = registry();
   const calls: string[] = [];
   let removeSecond: Unregister = () => undefined;
-  hooks.registerObserver((_event, context) => {
-    calls.push(`observer:${context.label}`);
+  hooks.registerListener((_event, context) => {
+    calls.push(`listener:${context.label}`);
     hooks.setContext({ label: "next" });
     removeSecond();
     hooks.register("user_prompt", () => {
@@ -164,12 +164,12 @@ test("trigger snapshots observers handlers and context", async () => {
   await hooks.trigger({ type: "user_prompt", prompt: "one" });
   await hooks.trigger({ type: "user_prompt", prompt: "two" });
   assert.deepEqual(calls, [
-    "observer:initial", "first:initial", "second:initial",
-    "observer:next", "first:next", "late",
+    "listener:initial", "first:initial", "second:initial",
+    "listener:next", "first:next", "late",
   ]);
 });
 
-test("handler and observer errors propagate by identity", async () => {
+test("handler and listener errors propagate by identity", async () => {
   const handlerFailure = new Error("handler failed");
   const handlerHooks = registry();
   handlerHooks.register("stop", () => { throw handlerFailure; });
@@ -178,23 +178,23 @@ test("handler and observer errors propagate by identity", async () => {
     (error) => error === handlerFailure,
   );
 
-  const observerFailure = new Error("observer failed");
-  const observerHooks = registry();
-  observerHooks.registerObserver(() => { throw observerFailure; });
+  const listenerFailure = new Error("listener failed");
+  const listenerHooks = registry();
+  listenerHooks.registerListener(() => { throw listenerFailure; });
   await assert.rejects(
-    observerHooks.trigger({ type: "stop", messages: [] }),
-    (error) => error === observerFailure,
+    listenerHooks.trigger({ type: "stop", messages: [] }),
+    (error) => error === listenerFailure,
   );
 });
 
-test("handler and observer receive the exact AbortSignal object", async () => {
+test("handler and listener receive the exact AbortSignal object", async () => {
   const hooks = registry();
   const controller = new AbortController();
   const handlerSignal: AbortSignal[] = [];
-  const observerSignal: AbortSignal[] = [];
+  const listenerSignal: AbortSignal[] = [];
 
-  hooks.registerObserver((_event, _context, signal) => {
-    observerSignal.push(signal!);
+  hooks.registerListener((_event, _context, signal) => {
+    listenerSignal.push(signal!);
   });
   hooks.register("user_prompt", (_event, _context, signal) => {
     handlerSignal.push(signal!);
@@ -205,7 +205,7 @@ test("handler and observer receive the exact AbortSignal object", async () => {
     controller.signal,
   );
   assert.equal(handlerSignal[0], controller.signal);
-  assert.equal(observerSignal[0], controller.signal);
+  assert.equal(listenerSignal[0], controller.signal);
 });
 
 // ── Step 3: Unregister, cleanup, clear, and dispose tests ──
@@ -230,14 +230,14 @@ test("clear removes registrations, runs every cleanup in reverse, and is reusabl
   assert.deepEqual(calls, ["cleanup-2", "cleanup-1", "reused"]);
 });
 
-test("handler observer and cleanup unregister functions are idempotent", async () => {
+test("handler listener and cleanup unregister functions are idempotent", async () => {
   const hooks = registry();
   const calls: string[] = [];
   const removeHandler = hooks.register("user_prompt", () => {
     calls.push("handler");
   });
-  const removeObserver = hooks.registerObserver(() => {
-    calls.push("observer");
+  const removeObserver = hooks.registerListener(() => {
+    calls.push("listener");
   });
   const removeCleanup = hooks.addCleanup(() => {
     calls.push("cleanup");
@@ -278,7 +278,7 @@ test("dispose is idempotent and permanently rejects operations", async () => {
   await hooks.dispose();
 
   assert.throws(() => hooks.register("stop", () => undefined), /disposed/);
-  assert.throws(() => hooks.registerObserver(() => undefined), /disposed/);
+  assert.throws(() => hooks.registerListener(() => undefined), /disposed/);
   assert.throws(() => hooks.addCleanup(() => undefined), /disposed/);
   assert.throws(() => hooks.setContext({ label: "next" }), /disposed/);
   await assert.rejects(
@@ -294,12 +294,10 @@ test("clear rethrows one cleanup error by identity", async () => {
   await assert.rejects(hooks.clear(), (error) => error === failure);
 });
 
-test("runtime rejects event types outside AgentHookEvent", async () => {
+test("unknown event types return undefined (type system guards at compile time)", async () => {
   const hooks = registry();
-  await assert.rejects(
-    hooks.trigger(
-      { type: "custom" } as unknown as AgentHookEvent,
-    ),
-    /Unknown hook event 'custom'/,
+  const result = await hooks.trigger(
+    { type: "custom" } as unknown as AgentHookEvent,
   );
+  assert.equal(result, undefined);
 });

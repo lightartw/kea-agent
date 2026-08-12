@@ -1,5 +1,4 @@
 import type { AssistantMessageEvent, Context, ModelConfig, StreamFn, StreamOptions } from "./types.js";
-import { EventStream } from "./utils/event-stream.js";
 
 const DEFAULT_TIMEOUT = 120;
 const DEFAULT_MAX_TOKENS = 8000;
@@ -39,22 +38,9 @@ export function lazyAdapter(load: () => Promise<Adapter>): Adapter {
   };
 
   return {
-    stream(model, context, options) {
-      const stream = new EventStream<AssistantMessageEvent>();
-      getAdapter()
-        .then(async (real) => {
-          try {
-            for await (const event of real.stream(model, context, resolveOptions(options))) {
-              stream.push(event);
-            }
-          } catch (err) {
-            stream.error(err);
-            return;
-          }
-          stream.end();
-        })
-        .catch((err) => stream.error(err));
-      return stream;
+    async *stream(model, context, options) {
+      const adapter = await getAdapter();
+      yield* adapter.stream(model, context, options);
     },
   };
 }

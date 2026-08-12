@@ -18,13 +18,12 @@ import { AgentTool, type AgentToolResult } from "../../src/agent/tools/types.js"
 import type { AgentToolCall } from "../../src/agent/tools/types.js";
 import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
 import { HookRegistry } from "../../src/agent/hooks/registry.js";
-import type { AgentHookEvent } from "../../src/agent/hooks/types.js";
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 const testModel: ModelConfig = { provider: "test", model: "test-model" };
 
-function emptyHooks(): HookRegistry<AgentHookEvent, Record<string, never>> {
-  return new HookRegistry<AgentHookEvent, Record<string, never>>({});
+function emptyHooks(): HookRegistry<Record<string, never>> {
+  return new HookRegistry<Record<string, never>>({});
 }
 
 /** Minimal AgentLoopConfig with identity convertToLlm for test callers. */
@@ -588,7 +587,7 @@ test("tool_call block false continues and block true creates an error result", a
   };
   const hooks = emptyHooks();
   const calls: string[] = [];
-  hooks.registerObserver((event) => {
+  hooks.registerListener((event) => {
     if (event.type === "tool_call") calls.push("observed");
   });
   hooks.register("tool_call", () => ({ block: false, reason: "ignored" }));
@@ -742,7 +741,7 @@ test("Agent run signal reaches every Hook trigger", async () => {
   };
   const hooks = emptyHooks();
   const seen: Array<{ type: string; signal: AbortSignal | undefined }> = [];
-  hooks.registerObserver((event, _context, signal) => {
+  hooks.registerListener((event, _context, signal) => {
     seen.push({ type: event.type, signal });
   });
   const controller = new AbortController();

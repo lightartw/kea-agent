@@ -31,8 +31,8 @@ await harness.prompt("list files");
 |------|------|------|
 | Context Inject | `user_prompt` Handler | 通过 `ui.notify` 提示当前工作目录；不修改 prompt 或历史 |
 | Permission | `tool_call` Handler | Bash 命令的 allow/ask/deny 策略（见下文） |
-| Log | Observer | 记录每个 `tool_call` 尝试；在 Permission 阻止前执行 |
-| Large Output | Observer | `content.length > 100_000` 时发出 warning |
+| Log | Listener | 记录每个 `tool_call` 尝试；在 Permission 阻止前执行 |
+| Large Output | Listener | `content.length > 100_000` 时发出 warning |
 | Summary | `stop` Handler | 统计 tool message 数量并提示；不要求继续运行 |
 
 Context Inject 的类名保留教学含义，但其当前实现只通知 cwd（系统提示词已包含 cwd，无需重复注入）。

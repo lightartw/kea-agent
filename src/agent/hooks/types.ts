@@ -1,12 +1,7 @@
 import type { AgentMessage } from "../types.js";
 
-// ── Phantom result symbol ──
-
-declare const HookResult: unique symbol;
-
-export interface HookEvent<TType extends string, TResult = void> {
+export interface HookEvent<TType extends string> {
   readonly type: TType;
-  readonly [HookResult]?: TResult;
 }
 
 export type ResultOf<TEvent> =
@@ -25,7 +20,7 @@ export interface UserPromptResult {
 }
 
 export interface UserPromptEvent
-  extends HookEvent<"user_prompt", UserPromptResult> {
+  extends HookEvent<"user_prompt"> {
   readonly type: "user_prompt";
   readonly prompt: string;
 }
@@ -35,7 +30,7 @@ export interface ContextResult {
 }
 
 export interface ContextEvent
-  extends HookEvent<"context", ContextResult> {
+  extends HookEvent<"context"> {
   readonly type: "context";
   readonly messages: AgentMessage[];
 }
@@ -46,7 +41,7 @@ export interface ToolCallResult {
 }
 
 export interface ToolCallEvent
-  extends HookEvent<"tool_call", ToolCallResult> {
+  extends HookEvent<"tool_call"> {
   readonly type: "tool_call";
   readonly toolCallId: string;
   readonly toolName: string;
@@ -59,7 +54,7 @@ export interface ToolResultPatch {
 }
 
 export interface ToolResultEvent
-  extends HookEvent<"tool_result", ToolResultPatch> {
+  extends HookEvent<"tool_result"> {
   readonly type: "tool_result";
   readonly toolCallId: string;
   readonly toolName: string;
@@ -72,7 +67,7 @@ export interface StopResult {
   readonly continueWith?: AgentMessage;
 }
 
-export interface StopEvent extends HookEvent<"stop", StopResult> {
+export interface StopEvent extends HookEvent<"stop"> {
   readonly type: "stop";
   readonly messages: readonly AgentMessage[];
 }
@@ -97,7 +92,7 @@ export type HookHandler<TEvent, TContext> = (
   | void
   | Promise<ResultOf<TEvent> | void>;
 
-export type HookObserver<TEvent, TContext> = (
+export type HookListener<TEvent, TContext> = (
   event: TEvent,
   context: TContext,
   signal?: AbortSignal,
