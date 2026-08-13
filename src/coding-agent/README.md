@@ -137,7 +137,7 @@ code from accidentally becoming part of tool execution control.
 | Concept | Direction and timing | Purpose |
 | --- | --- | --- |
 | **Agent Hook** | control channel, before an Agent action commits | can block or change work; the built-in permission Hook gates Bash commands |
-| **interactions** | a Hook asks the frontend | `CodingAgentInteractions.confirm()` obtains permission; `notify()` reports an immediate Hook-originated notice |
+| **interactions** | Coding Agent asks the frontend | `CodingAgentInteractions.confirm()` obtains permission; `notify()` is an interaction-side notification and diagnostic channel for Hook-originated notices and presentation diagnostics |
 | **Harness Event** | passive fact stream after/while work happens | `runtime.harness.subscribe()` observes run, text, and tool facts; listener results cannot change the Agent |
 | **presentation** | a frontend turns a tool Harness Event into text | `CodingToolPresentationRegistry` selects a tool presentation and provides a safe fallback |
 
@@ -178,12 +178,8 @@ src/coding-agent/
 ```
 
 `tools/` and `hooks/` contain shared Coding Agent mechanisms. Their `builtin/` subdirectories
-contain the default Kea capabilities. UI source depends on this package, while this package does
-not import `src/ui`:
-
-```text
-ui -> coding-agent -> harness -> agent -> ai
-```
+contain the default Kea capabilities. Source dependencies flow from UI to Coding Agent, then to
+Harness, Agent, and AI; Coding Agent does not import `src/ui`.
 
 ## Complete public API
 
