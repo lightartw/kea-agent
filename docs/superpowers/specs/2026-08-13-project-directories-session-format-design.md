@@ -158,7 +158,7 @@ Session 继续使用一份追加写入的 JSONL 文件。新版文件由三类�
   "version": 1,
   "id": "session_123",
   "projectId": "project_123",
-  "title": null,
+  "title": "unknown",
   "directory": "D:\\projects\\research",
   "cwd": "src",
   "createdAt": "2026-08-13T12:00:00.000Z"
@@ -200,16 +200,29 @@ Repository 的存储目录已经由当前 Project 提供，因此无需在每次
 尚未追加对话树记录的 Session 是合法空 Session；一旦出现树记录，它们必须组成一棵且仅一棵
 有根树。
 
-### 标题记录
+### 标题生成与标题记录
 
-标题通常在首次对话后产生，因此使用追加记录修改：
+Session 创建时标题固定为 `"unknown"`。第一条真实用户消息成功写入 Session 后，Harness 在正式
+Agent Run 开始前触发标题生成；标题生成与正式回答并行执行，不阻塞 Agent Run，也不等待首轮
+assistant 回答完成。
+
+标题生成只接收第一条真实用户消息，使用无 Tool 的独立模型请求。它不读取首轮 assistant 回答、
+工具日志或完整 Session 历史。标题输出必须是非空单行文本，清理首尾空白后最长 100 个字符；
+超过限制时截断为 97 个字符并追加 `...`。
+
+生成成功后使用追加记录修改标题：
 
 ```json
 {"type":"session_title","createdAt":"2026-08-13T12:01:05.000Z","title":"重构 Agent 事件机制"}
 ```
 
 标题记录属于整个 Session，不包含树节点的 `id` 和 `parentId`。当前标题取文件中最后一条
-`session_title`；不存在标题记录时使用 Session 头中的 `title`，初始值允许为 `null`。
+`session_title`；不存在标题记录时使用 Session 头中的 `"unknown"`。
+
+自动标题只允许在当前标题仍为 `"unknown"` 时写入一次。标题生成期间如果用户手动设置标题，
+后台生成结果必须丢弃，不能覆盖用户标题。标题请求失败、超时或返回空内容时，保留
+`"unknown"`；这些错误可以记入诊断日志，但不能让正式 Agent Run 失败，也不能追加失败记录污染
+对话树。后续用户消息不会自动重新生成标题。
 
 ## Session 信息与排序
 
@@ -219,7 +232,7 @@ Repository 列举 Session 时返回元数据，而不是只有 ID：
 interface SessionInfo {
   readonly id: string;
   readonly projectId: string;
-  readonly title: string | null;
+  readonly title: string;
   readonly directory: string;
   readonly cwd: string;
   readonly createdAt: string;
@@ -250,6 +263,11 @@ cwd，不负责发现或修改 Project。
 4. coding-agent 根据 Session 的实际 cwd 组装 Harness、Tools 和 Hooks；
 5. Harness 驱动 Session，并将新记录追加到 JSONL。
 
+标题生成是 Harness 管理的 Session 辅助任务，不属于 Agent Hook、Tool 或 Agent Run。Harness 只
+依赖一个可选的标题生成函数，并负责触发时序、并发和不覆盖现有标题；coding-agent 负责选择模型、
+构造标题提示和组装该函数。没有配置标题生成函数时，Session 保持 `"unknown"`，Harness 的其他
+行为不受影响。
+
 ## 错误规则
 
 - Session 头缺失、不是第一行、重复出现或版本不支持时，返回 `invalid_session`；
@@ -258,6 +276,7 @@ cwd，不负责发现或修改 Project。
 - `directory` 不属于 Project 时拒绝打开；
 - `cwd` 是绝对路径、逃出 `directory` 或解析后不存在时拒绝打开；
 - 任意记录缺少合法 `createdAt` 时返回 `invalid_entry`；
+- Session 头标题必须是非空字符串；自动标题写入前必须再次确认当前标题仍为 `"unknown"`；
 - 追加失败时，内存状态和 `updatedAt` 一并回滚。
 
 ## 破坏性升级
@@ -277,8 +296,11 @@ cwd，不负责发现或修改 Project。
 7. 切换 Project 主目录不会改变已有 Session 的工作位置。
 8. Session 文件第一行是合法且不可变的 Session 头。
 9. 新 Session 创建后立即出现在 Repository 列表中。
-10. `SessionInfo` 提供 title、createdAt 和 updatedAt，列表按 updatedAt 排序。
-11. 修改标题使用追加记录，不回写 Session 头。
-12. 打开目录失效或归属不匹配的 Session 时明确失败，不自动改绑。
-13. 旧 Session 文件被明确拒绝。
-14. Harness、Tools 和 Hooks 不感知 Git，也不负责 Project 发现。
+10. `SessionInfo` 提供非空 title、createdAt 和 updatedAt，列表按 updatedAt 排序。
+11. 新 Session 的 title 是 `"unknown"`，修改标题使用追加记录，不回写 Session 头。
+12. 第一条真实用户消息写入后，标题生成与首轮 Agent Run 并行且互不阻塞。
+13. 自动标题只使用第一条用户消息；失败时保留 `"unknown"`，不得影响 Agent Run。
+14. 自动标题不得覆盖用户标题，也不得在后续轮次重复生成。
+15. 打开目录失效或归属不匹配的 Session 时明确失败，不自动改绑。
+16. 旧 Session 文件被明确拒绝。
+17. Harness、Tools 和 Hooks 不感知 Git，也不负责 Project 发现。
