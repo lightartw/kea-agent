@@ -62,6 +62,16 @@ src/harness/session/manager.ts
 - 发布 `HarnessEvent`；
 - 持有当前 Session 的 Tool、Hook 和运行状态。
 
+Harness 公开只读 `sessionId`，使调用者可以标识当前 Harness 绑定的 Session，而不暴露可写的
+`Session` 对象：
+
+```ts
+get sessionId(): string;
+```
+
+`sessionId` 不改变 Session 的持久化时机。当前磁盘 Session 仍在第一次 assistant 消息产生后
+创建文件；空 Session 是否出现在 Repository 列表中属于独立的持久化语义。
+
 Harness 不持有 `SessionRepository`，也不选择 Session。上层先通过 Repository 获得 Session，
 再用 Session 创建 Harness。
 
@@ -235,12 +245,13 @@ Coding Agent：
 ## 测试与验收
 
 1. Repository 能创建、列举并打开 Session，`list()` 按修改时间排序。
-2. `continueRecent()` 在空 Repository 中创建 Session，有历史时打开最近 Session。
-3. `createSession()` 和 `openSession()` 返回的 Harness 带有完整的 coding Tools、permission Hook
+2. Harness 的 `sessionId` 等于其绑定 Session 的 ID，且不公开可写 Session。
+3. `continueRecent()` 在空 Repository 中创建 Session，有历史时打开最近 Session。
+4. `createSession()` 和 `openSession()` 返回的 Harness 带有完整的 coding Tools、permission Hook
    和 presentation。
-4. 两个 Harness 不共享可变 Tool、Hook、Event 或模型状态。
-5. Project `workDir` 继续约束 Bash、文件和 Glob。
-6. CLI 通过 Coding Agent 选择 Session，再运行返回的 Harness。
-7. `SessionManager`、`HarnessProject`、`CodingAgentRuntime` 和旧路径没有残留引用。
-8. Harness 与 Coding Agent README 的接口清单分别与对应 `index.ts` 完全一致。
-9. TypeScript 类型检查和全部测试通过。
+5. 两个 Harness 不共享可变 Tool、Hook、Event 或模型状态。
+6. Project `workDir` 继续约束 Bash、文件和 Glob。
+7. CLI 通过 Coding Agent 选择 Session，再运行返回的 Harness。
+8. `SessionManager`、`HarnessProject`、`CodingAgentRuntime` 和旧路径没有残留引用。
+9. Harness 与 Coding Agent README 的接口清单分别与对应 `index.ts` 完全一致。
+10. TypeScript 类型检查和全部测试通过。
