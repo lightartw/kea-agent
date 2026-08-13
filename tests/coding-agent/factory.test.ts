@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { createCodingAgent } from "../../src/coding-agent/factory.js";
+import { SessionError } from "../../src/harness/session/types.js";
 import type {
   AssistantMessage,
   ModelConfig,
@@ -169,6 +170,29 @@ test("continueRecent creates a Session when the project has no history", async (
     const harness = await codingAgent.continueRecent();
     assert.ok(harness.sessionId.length > 0);
     assert.deepEqual(harness.messages, []);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
+test("continueRecent propagates an invalid newest Session without creating a replacement", async () => {
+  const storageDir = await tempStorage();
+  const sessionId = "20260813T120000_corrupt";
+  try {
+    const sessionsDir = join(storageDir, "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(join(sessionsDir, `${sessionId}.jsonl`), "not-json\n", "utf8");
+    const codingAgent = await createCodingAgent({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: oneTurnStream,
+      model,
+    });
+
+    await assert.rejects(
+      codingAgent.continueRecent(),
+      (error: unknown) => error instanceof SessionError && error.code === "invalid_session",
+    );
+    assert.deepEqual(await codingAgent.listSessions(), [sessionId]);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
