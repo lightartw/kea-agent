@@ -9,6 +9,7 @@ import type { AgentMessage } from "../../src/agent/types.js";
 import type { ModelConfig } from "../../src/ai/types.js";
 import { Session } from "../../src/agent/harness/session/session.js";
 import { SessionError } from "../../src/agent/harness/session/types.js";
+import { detailedToolResult } from "../ai/fixtures.js";
 
 const modelA: ModelConfig = { provider: "test-a", model: "model-a" };
 const modelB: ModelConfig = { provider: "test-b", model: "model-b" };
@@ -342,6 +343,71 @@ test("buildContext follows the current leaf parent chain", async () => {
 
     const session = await Session.open(storageDir, "branched");
     assert.deepEqual(session.buildContext().messages, [user, currentAssistant]);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
+test("tool message details round-trip and non-JSON details are rejected", async () => {
+  const session = Session.inMemory();
+  await session.appendMessage(detailedToolResult);
+  assert.deepEqual(session.buildContext().messages.at(-1), detailedToolResult);
+
+  const invalidDetails: AgentMessage = {
+    role: "tool",
+    toolCallId: "call-1",
+    name: "todo_write",
+    content: "Current tasks:\n1. [pending] test",
+    details: { invalid: BigInt(1) },
+    isError: false,
+  };
+  await assert.rejects(
+    session.appendMessage(invalidDetails),
+    /invalid message/,
+  );
+});
+
+test("JSONL session persists nested JSON-safe details and opens legacy tool messages", async () => {
+  const storageDir = await tempStorage();
+  try {
+    const session = await Session.create(storageDir);
+    const detailed: AgentMessage = {
+      role: "tool",
+      toolCallId: "call-9",
+      name: "todo_write",
+      content: "Current tasks:\n1. [pending] test",
+      details: {
+        todos: [{ content: "test", status: "pending" }],
+        flags: [true, false, null],
+        nested: { a: [1, 2] },
+      },
+      isError: false,
+    };
+    await session.appendMessage(user);
+    await session.appendMessage(assistant);
+    await session.appendMessage(detailed);
+
+    const reopened = await Session.open(storageDir, session.id);
+    assert.deepEqual(reopened.buildContext().messages.at(-1), detailed);
+
+    const legacyStorage = await tempStorage();
+    const legacy = await Session.create(legacyStorage);
+    await legacy.appendMessage(user);
+    await legacy.appendMessage(assistant);
+    await legacy.appendMessage({
+      role: "tool",
+      toolCallId: "call-9",
+      name: "bash",
+      content: "ok",
+    });
+    const reopenedLegacy = await Session.open(legacyStorage, legacy.id);
+    assert.deepEqual(reopenedLegacy.buildContext().messages.at(-1), {
+      role: "tool",
+      toolCallId: "call-9",
+      name: "bash",
+      content: "ok",
+    });
+    await rm(legacyStorage, { recursive: true, force: true });
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }

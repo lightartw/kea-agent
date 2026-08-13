@@ -30,6 +30,20 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function isJsonValue(value: unknown, seen = new Set<object>()): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  const valid = Array.isArray(value)
+    ? value.every((item) => isJsonValue(item, seen))
+    : Object.getPrototypeOf(value) === Object.prototype &&
+      Object.values(value as Record<string, unknown>).every((item) => isJsonValue(item, seen));
+  seen.delete(value);
+  return valid;
+}
+
 function isContentBlock(value: unknown): boolean {
   if (!isRecord(value) || !isString(value.type)) return false;
 
@@ -55,7 +69,8 @@ function isAgentMessage(value: unknown): value is AgentMessage {
     case "tool":
       return isString(value.toolCallId) && isString(value.name) &&
         isString(value.content) &&
-        (value.isError === undefined || typeof value.isError === "boolean");
+        (value.isError === undefined || typeof value.isError === "boolean") &&
+        (value.details === undefined || isJsonValue(value.details));
     case "assistant": {
       if (!Array.isArray(value.content) || !value.content.every(isContentBlock) ||
         !isString(value.model) || !isString(value.stopReason) ||

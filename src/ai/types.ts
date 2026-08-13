@@ -15,11 +15,12 @@ export interface ToolCall {
   readonly arguments: Record<string, unknown>;
 }
 
-export interface ToolResultMessage {
+export interface ToolResultMessage<TDetails = unknown> {
   readonly role: "tool";
   readonly toolCallId: string;
   readonly name: string;
   readonly content: string;
+  readonly details?: TDetails;
   readonly isError?: boolean;
 }
 

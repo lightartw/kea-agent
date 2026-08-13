@@ -4,8 +4,9 @@ import { Compile, type Validator } from "typebox/compile";
 import type { Tool } from "../../ai/types.js";
 
 /** The result returned by AgentTool.execute(), before being wrapped into a ToolResultMessage. */
-export interface AgentToolResult {
+export interface AgentToolResult<TDetails = unknown> {
   readonly content: string;
+  readonly details?: TDetails;
   readonly isError: boolean;
 }
 
@@ -18,7 +19,10 @@ export interface AgentToolCall {
 }
 
 /** Agent-side tool: schema + validation + execution. Implements the ai layer Tool interface. */
-export abstract class AgentTool<TParameters extends TObject = TObject> implements Tool {
+export abstract class AgentTool<
+  TParameters extends TObject = TObject,
+  TDetails = unknown,
+> implements Tool {
   private readonly validator: Validator;
 
   protected constructor(
@@ -38,6 +42,6 @@ export abstract class AgentTool<TParameters extends TObject = TObject> implement
   abstract execute(
     arguments_: Static<TParameters>,
     timeoutSignal: AbortSignal,
-  ): Promise<AgentToolResult>;
+  ): Promise<AgentToolResult<TDetails>>;
 }
 

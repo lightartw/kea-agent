@@ -29,6 +29,15 @@ export const commonHistory: Message[] = [
   },
 ];
 
+export const detailedToolResult: Message = {
+  role: "tool",
+  toolCallId: "call-1",
+  name: "todo_write",
+  content: "Current tasks:\n1. [pending] test",
+  details: { privateMarker: "must-not-reach-provider" },
+  isError: false,
+};
+
 export function makeAssistantMessage(
   content: AssistantMessage["content"],
   overrides: Partial<Pick<AssistantMessage, "model" | "stopReason" | "latencyMs">> = {},
