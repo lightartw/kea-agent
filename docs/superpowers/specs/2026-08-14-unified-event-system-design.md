@@ -1,4 +1,4 @@
-# 统一 Event System 设计
+# 统一事件机制设计
 
 ## 1. 目标
 
@@ -8,7 +8,7 @@ Kea 当前用三条链路处理运行过程：
 - Harness 通过 `publish()` 把事实交给 UI；
 - Hook 通过 `trigger()` 在行为发生前进行干预。
 
-这三条链路描述的是同一个运行过程，却拥有不同的注册、分发、错误和类型机制。新的设计用一套 Event System 同时承载事实通知和行为干预，并删除旧链路，而不是在旧架构旁增加第四套机制。
+这三条链路描述的是同一个运行过程，却拥有不同的注册、分发、错误和类型机制。新的设计用一个 `Events` 分发器同时承载事实通知和行为干预，并删除旧链路，而不是在旧架构旁增加第四套机制。
 
 本次改造只重建事件基础设施及其直接调用链。Todo、工具展示方式和整体 UI 架构不重新设计；Permission 用来验证可干预事件能够替代旧 Hook。
 
@@ -30,7 +30,7 @@ Kea 当前用三条链路处理运行过程：
 async function runAgentLoop(...): Promise<void>
 ```
 
-它通过 Event System 公布过程，通过 `AgentContext.appendMessage()` 提交消息，通过 Promise 表示本次调用是否结束。
+它通过 `Events` 公布过程，通过 `AgentContext.appendMessage()` 提交消息，通过 Promise 表示本次调用是否结束。
 
 ### Harness：一个 Session
 
@@ -38,13 +38,17 @@ Harness 持有 Session，启动 Agent Run，并管理 `sessionId`、`runId`、`l
 
 ### Coding Agent：一个 Project
 
-Coding Agent 管理 Project 及其多个 Session，并为这些 Session 组装 coding prompt、tools、Permission、interactions 和 presentation。一个 Project 只创建一个 Event System 实例。
+Coding Agent 管理 Project 及其多个 Session，并为这些 Session 组装 coding prompt、tools、Permission、interactions 和 presentation。一个 Project 只创建一个 `Events` 实例。
 
-## 3. 唯一的 Event System
+## 3. 静态契约与运行时分发器
 
-Event System 是跨层基础模块。一个 Project 中的所有 Harness 和 Agent Run 共用同一个实例。它不是进程级单例；两个 Project 的事件互不相通。
+`EventMap` 是整套代码的静态事件契约。Agent、Harness 和 Coding Agent 分别声明自己拥有的事件，TypeScript 在编译时把这些声明合并成一张类型表。`EventMap` 不创建对象，也不保存监听器。
 
-Agent、Harness 和 Coding Agent 可以声明和使用各自拥有的事件，但不能创建平行的 EventBus，也不能转发或重新包装下层事件。
+`Events` 是运行时分发器，保存监听器并执行 `emit()`、`ask()` 和 `transform()`。一个 Project 创建一个 `Events` 实例，该 Project 中的所有 Harness 和 Agent Run 共用它。它不是进程级单例；两个 Project 的事件互不相通。
+
+Agent、Harness 和 Coding Agent 可以声明和分发各自拥有的事件，但不能创建平行的 EventBus，也不能转发或重新包装下层事件。通用 `Events` 实现不保存一张 Agent Hook 名单，也不认识任何业务事件。
+
+事件扩展仍然需要真实的发生位置。新增 Agent 行为的事件，由 Agent 在该行为发生的位置分发；新增 Harness 行为的事件，只修改 Harness。事件名称不会变成 `AgentLoopConfig` 上的一组回调字段，也不会从 Coding Agent 或 Harness 透传进 Agent Loop。
 
 事件来源通过载荷区分：
 
@@ -52,11 +56,11 @@ Agent、Harness 和 Coding Agent 可以声明和使用各自拥有的事件，�
 - `runId` 表示事件属于该 Session 的哪一次 Agent Run；
 - `lane` 表示事件属于哪条运行通道，当前只有 `main`。
 
-Project 已经由 Event System 实例隔离，因此 Session 和 Run 事件不重复携带 `projectId`。
+Project 已经由 `Events` 实例隔离，因此 Session 和 Run 事件不重复携带 `projectId`。
 
 ## 4. 三种分发方式
 
-Event System 对外只有一套注册机制：
+`Events` 对外只有一套注册机制：
 
 ```ts
 events.on(name, listener): Unregister
@@ -101,11 +105,11 @@ async (value, next, signal) => next(modifiedValue)
 
 监听器调用 `next()` 时，修改后的值进入下一个监听器；直接返回而不调用 `next()` 时，变换在当前位置结束。这允许普通修改，也允许 Permission 之类的监听器作出不可被后续监听器推翻的拒绝。异常向调用者传播。
 
-`emit()`、`ask()` 和 `transform()` 是同一个 Event System 的三种分发语义，不是三个 EventBus。
+`emit()`、`ask()` 和 `transform()` 是同一个 `Events` 实例的三种分发语义，不是三个 EventBus。
 
 ## 5. 类型扩展
 
-通用 Event System 不包含 Agent 或 Harness 的事件名称，也不按事件名称编写 `switch`。每个事件契约在类型层声明：
+通用 `Events` 实现不包含 Agent 或 Harness 的事件名称，也不按事件名称编写 `switch`。每个事件契约在类型层声明：
 
 ```ts
 interface EventContract<TMode, TInput, TResult = void> {
@@ -114,14 +118,14 @@ interface EventContract<TMode, TInput, TResult = void> {
   readonly result: TResult;
 }
 
-interface Events {}
+interface EventMap {}
 ```
 
-各层通过 TypeScript 声明合并扩充 `Events`：
+各层通过 TypeScript 声明合并扩充 `EventMap`：
 
 ```ts
 declare module "../events/index.js" {
-  interface Events {
+  interface EventMap {
     "agent/tool-start": EventContract<"emit", ToolStartPayload>;
   }
 }
@@ -134,11 +138,11 @@ declare module "../events/index.js" {
 - `transform()` 只能接收 `mode: "transform"` 的事件；
 - `on()` 根据 mode 推导监听器签名。
 
-因此新增事件只需要在行为所属层声明契约，并在真实发生的位置分发。通用 Event System 不需要修改。
+因此新增事件只需要在行为所属层声明契约，并在真实发生的位置分发。通用 `Events` 实现不需要修改。
 
-## 6. Event System 的传递
+## 6. `Events` 的传递
 
-Coding Agent 的工厂创建 Event System，安装 Permission 等内置监听器，然后把同一实例交给所有 Harness。
+Coding Agent 的工厂创建 `Events`，安装 Permission 等内置监听器，然后把同一实例交给所有 Harness。
 
 Harness 启动 Run 时生成运行身份：
 
@@ -148,9 +152,9 @@ const run = { sessionId, runId, lane };
 
 Harness 用这套系统发布 `harness/run-start` 和 `harness/run-end`。Agent Loop 接收同一实例和运行身份，直接分发 Agent 事件。
 
-Agent 事件从产生时就带有完整身份，不再经过 `liftAgentEvent()`。UI 从 Project 暴露的 Event System 订阅事件，不再调用 `harness.subscribe()`。本次只迁移 UI 的事件输入，不改变其渲染结构或 Session 控制接口。
+Agent 事件从产生时就带有完整身份，不再经过 `liftAgentEvent()`。UI 从 Project 暴露的 `Events` 订阅事件，不再调用 `harness.subscribe()`。本次只迁移 UI 的事件输入，不改变其渲染结构或 Session 控制接口。
 
-独立使用 Harness 时，调用方必须提供一个 Event System；Harness 不隐式创建第二个实例。
+独立使用 Harness 时，调用方必须提供一个 `Events`；Harness 不隐式创建第二个实例。
 
 ## 7. Agent 与 Harness 事件
 
@@ -168,11 +172,11 @@ Agent 拥有 Run 内部事实：
 
 原来的 `agent_start` 和 `agent_end` 与 Harness Run 边界重复，因此删除。`runAgentLoop()` 的 Promise 是程序控制边界，`harness/run-end` 是提供给观察者的事实，两者不能互相替代。
 
-事件定义按行为所属层分别放置，但它们都注册到同一个 `Events` 类型，并通过同一个 Event System 实例分发。不存在 `AgentEvent -> HarnessEvent` 的类型转换。
+事件定义按行为所属层分别放置，但它们都扩充同一个 `EventMap`，并通过同一个 `Events` 实例分发。不存在 `AgentEvent -> HarnessEvent` 的类型转换。
 
 ## 8. 消息持久化
 
-Event System 负责实时分发，不负责保存 Session。Session 仍然保存用户消息、Assistant 消息、Tool Result、模型变更和标题。
+`Events` 负责实时分发，不负责保存 Session。Session 仍然保存用户消息、Assistant 消息、Tool Result、模型变更和标题。
 
 `AgentContext` 改为明确的消息提交接口：
 
@@ -226,7 +230,7 @@ type ToolCallDecision =
 
 ## 10. Permission
 
-Permission 不再实现 Hook。Coding Agent 在 Project Event System 上注册 `agent/tool-call` 监听器：
+Permission 不再实现 Hook。Coding Agent 在 Project 的 `Events` 上注册 `agent/tool-call` 监听器：
 
 - 非 Bash 调用继续传递；
 - 明确安全的 Bash 调用继续传递；
@@ -234,7 +238,7 @@ Permission 不再实现 Hook。Coding Agent 在 Project Event System 上注册 `
 - 需要用户决定时调用 `interactions.confirm()`；
 - 确认失败或用户拒绝时返回 `reject`。
 
-Permission UI 仍然由 `CodingAgentInteractions` 提供。本次不改造 interactions，也不把 UI 放进 Agent、Harness 或 Event System。
+Permission UI 仍然由 `CodingAgentInteractions` 提供。本次不改造 interactions，也不把 UI 放进 Agent、Harness 或 `Events`。
 
 ## 11. 错误与取消
 
@@ -260,7 +264,7 @@ Harness 一旦成功发布 `harness/run-start`，就必须恰好发布一次 `ha
 
 ## 12. 文件与删除范围
 
-通用实现放在顶层 `src/events/`。Agent 和 Harness 分别保留自己的事件契约；Coding Agent 的 `events/` 只负责安装 Project 级监听器，例如 Permission。
+通用实现放在顶层 `src/events/`。其中 `EventMap` 定义静态扩展点，`Events` 实现运行时分发。Agent 和 Harness 分别保留自己的事件契约；Coding Agent 的 `events/` 只负责安装 Project 级监听器，例如 Permission。
 
 删除以下旧机制：
 
@@ -277,11 +281,11 @@ Harness 一旦成功发布 `harness/run-start`，就必须恰好发布一次 `ha
 
 ## 13. 验收标准
 
-1. 一个 Project 只创建一个 Event System，所有 Session 和 Run 共用它。
+1. 整套代码只有一张静态 `EventMap`；一个 Project 只创建一个运行时 `Events`，其所有 Session 和 Run 共用它。
 2. 代码中不再存在 HookRegistry、Hook trigger、Agent Loop `yield`、Harness EventBus 或事件提升。
 3. `runAgentLoop()` 返回 `Promise<void>`。
 4. 所有运行时通知和干预都经过 `on()`、`emit()`、`ask()`、`transform()`。
-5. 新事件能够由所属层扩充类型，不修改通用 Event System。
+5. 新事件能够由所属层扩充 `EventMap`，不修改通用 `Events` 实现。
 6. UI 监听器失败不会中断 Run；干预监听器错误按事件拥有者的规则处理。
 7. 消息写入失败时不发布对应的完成事实，也不更新内存消息。
 8. `harness/run-start` 与 `harness/run-end` 一一对应。
@@ -292,4 +296,4 @@ Harness 一旦成功发布 `harness/run-start`，就必须恰好发布一次 `ha
 
 Kea 学习 DSH 的一套事件基础设施、多种分发语义和可扩展类型声明。两者的运行模型不同：DSH 的 Agent 是常驻驱动器，`followup()` 只入队，调用方用 `whenIdle()` 等待停稳，运行事实主要进入持久 Session Event Log；Kea 保留一次 `runAgentLoop()` 对应一次 Agent Run、Harness 管理 Session 的边界。
 
-因此 Kea 不复制 DSH 的 Inbox、常驻 Agent 或 fire-and-forget 通知。统一 Event System 服务于 Kea 已经确定的 AI Request、Agent Run、Harness Session、Coding Project 四层模型。
+因此 Kea 不复制 DSH 的 Inbox、常驻 Agent 或 fire-and-forget 通知。统一事件机制服务于 Kea 已经确定的 AI Request、Agent Run、Harness Session、Coding Project 四层模型。
