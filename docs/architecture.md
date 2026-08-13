@@ -9,15 +9,15 @@
 
 ```text
 main.ts
-  ├── UI (CliFrontend, CliHarnessRenderer, Tool renderers)
-  ├── Coding Agent (createHarness, 默认 permission Hook, Bash 策略, Todo 投影)
+  ├── UI (CliFrontend, CliHarnessRenderer, CliInteractions)
+  ├── Coding Agent (createCodingAgent, 默认 permission Hook, Bash 策略, Todo 投影)
   ├── Agent Harness (AgentHarness, Session, SessionManager)
   ├── Agent (runAgentLoop, HookRegistry, AgentToolRegistry)
   └── AI (StreamFn, ModelConfig, Message, Adapter)
 ```
 
 ```text
-ui -> coding-agent -> agent -> ai
+ui -> coding-agent -> harness -> agent -> ai
 ```
 
 ---
@@ -289,7 +289,7 @@ for await (const event of loop) { /* render */ }
 
 ## 3. Agent Harness — 有状态运行时
 
-位于 `src/agent/harness/`。依赖 Agent 层的 `runAgentLoop`、`AgentHookTrigger`、`AgentToolRegistry`。
+位于 `src/harness/`。依赖 Agent 层的 `runAgentLoop`、`AgentHookTrigger`、`AgentToolRegistry`。
 
 ### 3.1 AgentHarness
 
@@ -385,41 +385,51 @@ class SessionManager {
 
 位于 `src/coding-agent/`。依赖 Harness 层和 Agent 层。是 `coding-agent` → 下层的唯一组合点。
 
-### 4.1 createHarness
+### 4.1 `createCodingAgent`
 
 ```ts
-interface CreateHarnessConfig {
+interface CreateCodingAgentConfig {
   readonly project: HarnessProject;
   readonly streamFn: StreamFn;
   readonly model: ModelConfig;
-  readonly session?: Session;
+  readonly session: Session;
   readonly systemPrompt?: string | SystemPromptBuilder;  // 默认 CODING_SYSTEM_PROMPT
-  readonly ui?: CodingHookUI;                            // 默认 NO_HOOK_UI（fail-closed）
+  readonly interactions?: CodingAgentInteractions;      // 默认 NO_INTERACTIONS（fail-closed）
+  readonly onEventListenerError?: HarnessListenerErrorHandler;
 }
 
-function createHarness(config: CreateHarnessConfig): Promise<AgentHarness>;
+interface CodingAgentRuntime {
+  readonly harness: AgentHarness;
+  readonly presentations: CodingToolPresentationRegistry;
+}
+
+function createCodingAgent(
+  config: CreateCodingAgentConfig,
+): Promise<CodingAgentRuntime>;
 ```
 
-组装：创建默认工具集 → 创建默认 HookRegistry（注入 `ui`）→ `new AgentHarness(…)`。
+组装：创建内置 Tool Definition → 投影为 `AgentTool` 并注册 → 注册各 Tool 的
+presentation → 创建默认 HookRegistry（注入 `interactions`）→ `new AgentHarness(…)` → 返回
+Harness 和 presentation registry。
 
-### 4.2 CodingHookUI — UI 注入端口
+### 4.2 `CodingAgentInteractions` — UI 注入端口
 
 Coding Agent 定义此接口，UI 实现。coding-agent 永不导入 UI 代码。
 
 ```ts
-interface CodingHookUI {
+interface CodingAgentInteractions {
   readonly available: boolean;
-  confirm(confirmation: HookConfirmation, signal?: AbortSignal): Promise<boolean>;
-  notify(notification: HookNotification): void | Promise<void>;
+  confirm(request: ConfirmationRequest, signal?: AbortSignal): Promise<boolean>;
+  notify(notification: Notification): void | Promise<void>;
 }
 
-interface HookConfirmation {
+interface ConfirmationRequest {
   readonly source: string;
   readonly title: string;
   readonly message: string;
 }
 
-interface HookNotification {
+interface Notification {
   readonly source: string;
   readonly level: "info" | "warning" | "error";
   readonly message: string;
@@ -428,16 +438,16 @@ interface HookNotification {
 
 ### 4.3 默认 Hook：只有 permission
 
-`createCodingHookRegistry(context)` 只注册 permission。被动的 log、large-output、summary
-不再是 Hook，而是 UI 层针对 Harness `subscribe` 事件的 renderer 行为。
+`createDefaultCodingHookRegistry(context)` 只注册 permission。被动的 log、large-output、summary
+不再是 Hook，而是 UI 层针对 Harness `subscribe` 事件的 presentation 行为。
 
 | Hook | 事件 | 行为 |
 | ---- | ---- | ---- |
-| Permission | `tool_call` | Bash 的 allow/ask/deny；ask 时调 `ui.confirm()` |
+| Permission | `tool_call` | Bash 的 allow/ask/deny；ask 时调 `interactions.confirm()` |
 
 ### 4.4 Bash 安全策略
 
-位于 `bash-policy.ts`，是 Permission Hook 与 `BashTool` 的**单一共享来源**。
+位于 `tools/builtin/bash/policy.ts`，是 Permission Hook 与 Bash Tool Definition 的**单一共享来源**。
 
 ```ts
 function classifyBashCommand(command: string): BashDecision;
@@ -448,58 +458,56 @@ function hardDeniedBashReason(command: string): string | undefined;
 
 | 级别 | 示例 | 行为 |
 | ---- | ---- | ---- |
-| 硬拒绝 | `sudo`、`mkfs`、`dd if=`、`> /dev/`、`rm -rf /` | Hook 和 BashTool 均阻止，不询问 UI |
-| 询问 | `rm`、`> /etc/`、`chmod 777` | Hook 调用 `ui.confirm()`；无 UI 时 fail-closed |
+| 硬拒绝 | `sudo`、`mkfs`、`dd if=`、`> /dev/`、`rm -rf /` | Hook 和 Bash Tool Definition 均阻止，不询问 UI |
+| 询问 | `rm`、`> /etc/`、`chmod 777` | Hook 调用 `interactions.confirm()`；无交互 Adapter 时 fail-closed |
 | 允许 | `pwd`、`git status` | 直接放行 |
 
 ### 4.5 Todo 状态投影
 
 `todo_write` 无实例状态；`TodoItem`/`TodoDetails`/`formatTodoContent`/
-`findLatestTodoDetails` 位于 coding-agent 的 `tools/todo-state.ts`。Todo 真实状态定义为
+`findLatestTodoDetails` 位于 coding-agent 的 `tools/builtin/todo/projection.ts`。Todo 真实状态定义为
 「当前 Session 分支中最后一条有效 `todo_write` ToolResultMessage 的 `details.todos`」，
 由 `findLatestTodoDetails` 从 `AgentMessage[]` 投影，不在 UI 层。
 
 ### 组装用法
 
 ```ts
-const harness = await createHarness({
+const runtime = await createCodingAgent({
   project: { workDir, storageDir },
   streamFn: stream,
   model: defaultModel,
   session,
-  ui: myUI,   // 实现 CodingHookUI
+  interactions: myInteractions,   // 实现 CodingAgentInteractions
 });
-await harness.prompt("list files");
+await runtime.harness.prompt("list files");
 ```
 
 ---
 
 ## 5. UI — 具体前端
 
-位于 `src/ui/`。依赖 Harness 层（`AgentHarness`）和 Coding Agent（`CodingHookUI`）。
+位于 `src/ui/`。依赖 Harness 层（`AgentHarness`）和 Coding Agent（`CodingAgentRuntime`、
+`CodingAgentInteractions`）。
 `agent`、`harness`、`coding-agent` 不 import `src/ui`。
 
 ```text
 src/ui/
-  frontend.ts          # CliFrontend、输入循环、CodingHookUI 实现、装配
-  harness-renderer.ts  # 通用 Harness/Agent Event 展示（含大输出、工具计数）
-  tool-renderers.ts    # Tool renderer 接口、Registry、fallback、createDefaultToolRenderers
-  todo-renderer.ts     # 把已验证 TodoDetails 转成文本
+  cli-frontend.ts          # CliFrontend、输入循环、装配
+  cli-interactions.ts      # CodingAgentInteractions 的 readline Adapter
+  cli-harness-renderer.ts  # Harness Event 展示；调用 presentation registry
 ```
 
-### 5.1 CliFrontend
+### 5.1 CLI Adapter
 
-实现 `CodingHookUI`，通过 subscribe 消费 `AgentEvent` 并分发给 `CliHarnessRenderer`。
+`CliInteractions` 实现 `CodingAgentInteractions`；`CliFrontend` 通过
+`runtime.harness.subscribe()` 消费 `HarnessEvent`，并交给 `CliHarnessRenderer`。
 
 ```ts
-class CliFrontend implements CodingHookUI {
-  readonly available = true;
+class CliFrontend {
   constructor(options?: CliFrontendOptions);
 
-  confirm(confirmation: HookConfirmation, signal?: AbortSignal): Promise<boolean>;
-  notify(notification: HookNotification): void;
-
-  run(harness: AgentHarness): Promise<void>;
+  get interactions(): CodingAgentInteractions;
+  run(runtime: CodingAgentRuntime): Promise<void>;
   close(): void;
 }
 ```
@@ -507,31 +515,37 @@ class CliFrontend implements CodingHookUI {
 **行为：**
 
 - `>>` 提示符输入，`q`/`exit`/空行退出
-- ESC 中止流式响应（`harness.abort()`）
-- `confirm()` 期间暂停 ESC 监听器，展示 `[y/N]` 提示（空输入默认拒绝）；ESC 等同于 N
-- `confirm()` 支持外部 `AbortSignal`，与内部 ESC 通过 `AbortSignal.any()` 合并
-- `run()` 装配默认 Tool renderer Registry、`CliHarnessRenderer`，并 `harness.subscribe()`
+- ESC 中止流式响应（`runtime.harness.abort()`）
+- `CliInteractions.confirm()` 期间暂停 ESC 监听器，展示 `[y/N]` 提示（空输入默认拒绝）；ESC 等同于 N
+- `CliInteractions.confirm()` 支持外部 `AbortSignal`，与内部 ESC 通过 `AbortSignal.any()` 合并
+- `run()` 创建 `CliHarnessRenderer`，并订阅 `runtime.harness`
 
-### 5.2 Tool renderer 边界
+### 5.2 Tool presentation 边界
 
-`AgentTool` 不依赖 UI、不携带 renderer。UI 层按工具名注册：
+`AgentTool` 不依赖 UI、不携带 presentation。每个 Coding Tool Definition 可选地携带
+`CodingToolPresentation`；`createCodingAgent()` 将它们注册到 runtime 的
+`CodingToolPresentationRegistry`。UI 把 `HarnessToolEvent` 交给 registry：
 
 ```ts
-interface CliToolRenderer {
-  renderStart(call: AgentToolCall): string | undefined;
-  renderEnd(call: AgentToolCall, result: AgentToolResult<unknown>): string | undefined;
-  renderRejected?(event: ToolRejectedEvent): string | undefined;
+interface CodingToolPresentation<TArguments, TDetails> {
+  renderStart(call: ToolPresentationCall<TArguments>): string | undefined;
+  renderEnd(
+    call: ToolPresentationCall<TArguments>,
+    result: AgentToolResult<TDetails>,
+  ): string | undefined;
+  renderRejected?(event: ToolPresentationRejected<TArguments>): string | undefined;
 }
 ```
 
-行为：有专用 renderer 用专用展示；返回 `undefined`、抛错或 details 无效时回退到
-content fallback；renderer 错误只记录 UI error，绝不影响 Agent 执行。
+行为：有专用 presentation 用专用展示；返回 `undefined` 或抛错时回退到 content fallback；
+presentation 错误只报告诊断，绝不影响 Agent 执行。
 
 ### 运行示例
 
 ```ts
 const cli = new CliFrontend();
-await cli.run(harness);
+const runtime = await createCodingAgent({ ..., interactions: cli.interactions });
+await cli.run(runtime);
 ```
 
 ---
@@ -542,7 +556,7 @@ await cli.run(harness);
 
 ```text
 loadDotenv → createStreamFn → resolveProject → Session.create
-  → createHarness({ ..., ui: cli }) → cli.run(harness)
+  → createCodingAgent({ ..., interactions: cli.interactions }) → cli.run(runtime)
 ```
 
 ---
@@ -555,16 +569,17 @@ loadDotenv → createStreamFn → resolveProject → Session.create
 | `src/ai/index.ts` | `StreamFn`、`ModelConfig`、`Message`、`Context`、`Tool`、`ToolResultMessage`、`AssistantMessageEvent`、`createStreamFn` |
 | `src/agent/hooks/index.ts` | `HookRegistry`、`AgentHookTrigger`、`AgentHookCall` 及各 Call/Result 类型、`ResultOf`、`HookHandler` |
 | `src/agent/tools/index.ts` | `AgentTool`、`AgentToolRegistry`、`AgentToolCall`、`AgentToolResult` |
-| `src/agent/harness/index.ts` | `AgentHarness`、`Session`、`SessionError`、`SessionManager`、`defaultSystemPrompt`、`HarnessConfig` |
-| `src/coding-agent/index.ts` | `createHarness`、`createCodingHookRegistry`、`CodingHookUI`、`CodingHookContext`、`HookConfirmation`、`HookNotification`、`TodoItem`、`TodoDetails`、`CreateHarnessConfig` |
+| `src/harness/index.ts` | `AgentHarness`、`Session`、`SessionError`、`SessionManager`、`defaultSystemPrompt`、`HarnessConfig` |
+| `src/coding-agent/index.ts` | `createCodingAgent`、`createDefaultCodingHookRegistry`、`createDefaultToolDefinitions`、`toAgentTool`、`CODING_SYSTEM_PROMPT`、`NO_INTERACTIONS`、`CodingToolPresentationRegistry` 及其公开配置、Hook、interaction、Tool/presentation、Todo 类型 |
 
-`PreparedAgentToolCall`、`ToolPreparation`、CLI renderer 和 `NO_HOOK_UI` 不作为根入口的稳定公共 API 导出。
+`PreparedAgentToolCall`、`ToolPreparation`、具体 CLI Adapter、内置 Tool/Hook 实现和 Bash policy helpers
+不作为 Coding Agent 根入口的稳定公共 API。
 
 ## 边界约束
 
 - `ai` 不依赖 `agent`
 - `agent` 不依赖 `coding-agent` 或 `ui`
-- `coding-agent` 不依赖 `ui`（通过 `CodingHookUI` port 依赖倒置）
-- `ui -> coding-agent -> agent -> ai`
-- UI 解耦用两种机制：Hook 走泛型 `TContext`（运行时注入 `{ cwd, ui }`），Tool 走构造注入（组合根捕获依赖，`execute` 无 context）
+- `coding-agent` 不依赖 `ui`（通过 `CodingAgentInteractions` port 依赖倒置）
+- `ui -> coding-agent -> harness -> agent -> ai`
+- UI 解耦用两种机制：Hook 走泛型 `TContext`（运行时注入 `{ cwd, interactions }`），Tool 走构造注入（组合根捕获 `CodingToolContext`，`execute` 接收它）
 - `main.ts` 是唯一连接所有层的文件

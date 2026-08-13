@@ -1,10 +1,23 @@
 # Coding Agent
 
-`coding-agent` 将通用 Agent 层组装为可直接使用的 Coding Agent。它定义交互 port、Bash
-安全策略、默认 Hook 组合、Coding Tool 定义与 presentation，并通过 `createCodingAgent`
-暴露运行时。
+`coding-agent` builds a ready-to-run coding assistant on top of Harness. Harness owns a
+conversation run: it keeps the Session, drives the Agent loop, and publishes facts about
+what happened. Coding Agent adds the defaults that make that run useful for project work:
 
-## 最小用法
+- the coding system prompt;
+- built-in tools for Bash, files, globbing, and todos;
+- the default permission Hook for Bash commands;
+- two UI seams: interaction requests and tool-event presentation.
+
+It is a composition layer. It can use Agent Tool and Hook contracts while constructing the
+runtime, but neither Harness nor Agent depends on Coding Agent or a concrete UI.
+
+## Start with `createCodingAgent`
+
+Create a Session first, then pass it with the project and model dependencies to the factory.
+The optional `interactions` object is how a frontend handles confirmation requests. If it is
+not supplied, the fail-closed `NO_INTERACTIONS` adapter rejects commands that require
+confirmation.
 
 ```ts
 import { createCodingAgent } from "./coding-agent/index.js";
@@ -15,108 +28,95 @@ const runtime = await createCodingAgent({
   streamFn,
   model,
   session: Session.inMemory(),
-  interactions: myInteractions, // 可选；未传入时 fail-closed
+  interactions: myInteractions, // optional
 });
 
-await runtime.harness.prompt("list files");
+await runtime.harness.prompt("List the files in this project.");
 ```
 
-## 职责
+## `CodingAgentRuntime`
 
-- 将 `AgentHarness` 与 Coding Tool 定义、coding system prompt 和默认 Hook 组装，返回 `CodingAgentRuntime`。
-- 通过 `CodingAgentInteractions` 注入权限确认能力，不产生 `coding-agent -> ui` 的源码依赖。
-- UI 实现 `CodingAgentInteractions` port；Coding Agent 永不导入 UI 代码。
-- 运行时 UI 只知道 `CodingAgentRuntime`；Coding Agent 在**构造期**直接接触 `AgentTool` 与 `AgentHook` 契约。
-
-## `CodingAgentInteractions`
-
-通用但严格受限的交互 port。`source` 是稳定来源标识，不建立封闭的 Hook 名称联合。
+The factory returns the small runtime surface a frontend needs:
 
 ```ts
-interface CodingAgentInteractions {
-  readonly available: boolean;
-  confirm(request: ConfirmationRequest, signal?: AbortSignal): Promise<boolean>;
-  notify(notification: Notification): void | Promise<void>;
-}
-
-interface ConfirmationRequest {
-  readonly source: string;
-  readonly title: string;
-  readonly message: string;
-}
-
-interface Notification {
-  readonly source: string;
-  readonly level: "info" | "warning" | "error";
-  readonly message: string;
+interface CodingAgentRuntime {
+  readonly harness: AgentHarness;
+  readonly presentations: CodingToolPresentationRegistry;
 }
 ```
 
-`notify()` 只用于 Hook 自己产生、没有对应运行 Event 的即时说明；普通工具开始/结束、
-工具结果、工具计数和大输出提醒都走 Harness `subscribe`，不经 `notify()`。
+- Use `runtime.harness` to prompt, abort, inspect messages, and subscribe to `HarnessEvent`s.
+- Pass a tool execution event from that subscription to `runtime.presentations.render(event)`
+  when the frontend needs display text for it.
 
-## 默认 Hook：只有 permission
+`CliFrontend` is one current adapter that uses this surface. A CLI, TUI, or web adapter can
+use the same seams later.
 
-默认 `createDefaultCodingHookRegistry(context)` 只注册一个真正改变控制流的 Hook——permission。
-被动的展示（log、大输出提醒、工具计数 summary）不是 Hook，而是 UI 层针对 Harness
-`subscribe` 事件的 renderer 行为。
+## What the factory assembles
 
-| Hook | 类型 | 行为 |
-|------|------|------|
-| Permission | `tool_call` Handler | Bash 命令的 allow/ask/deny 策略；ask 时调用 `interactions.confirm()` |
+One `createCodingAgent()` call follows this assembly path:
 
-```ts
-interface CodingHookContext {
-  readonly cwd: string;
-  readonly interactions: CodingAgentInteractions;
-}
-```
+1. Resolve `project.workDir` into the `CodingToolContext` (`{ cwd }`).
+2. Create the built-in `CodingToolDefinition`s.
+3. Convert every definition with `toAgentTool(definition, context)` and register the resulting
+   `AgentTool` in an `AgentToolRegistry`.
+4. Register each definition's optional presentation in a
+   `CodingToolPresentationRegistry`.
+5. Create `createDefaultCodingHookRegistry({ cwd, interactions })`. Its default control Hook
+   is permission: it applies the shared Bash allow/ask/deny policy.
+6. Construct `AgentHarness` with the Session, tools, Hook registry, system prompt, and model;
+   return it together with the presentation registry.
 
-## Bash 安全策略
+This is why tool execution and presentation are related without making an `AgentTool` depend
+on UI code: the tool definition is projected once into an executable Agent Tool and separately
+into an optional presentation handler.
 
-位于 `bash-policy.ts`，是 Permission Hook 与 `bash` 工具定义共享的单一来源。
+## Tool definitions and data lifetimes
 
-| 级别 | 示例 | 行为 |
-|------|------|------|
-| 硬拒绝 | `sudo`、`shutdown`、`mkfs`、`dd if=`、`> /dev/`、`rm -rf /` | Hook 和 BashTool 均阻止；不询问 UI |
-| 询问 | `rm`、`> /etc/`、`chmod 777` | Permission Hook 调用 `interactions.confirm()` |
-| 允许 | `pwd`、`git status`、`npm test` | 直接放行 |
-
-Fail-closed：无 interactions 或 `available === false` → 询问类命令被拒绝；用户拒绝 → 拒绝；
-`confirm()` 抛出异常 → 拒绝；外部 `AbortSignal` 已触发时，Agent Loop 优先归类为 `aborted`。
-
-## Coding Tool：一处定义、两个投影
-
-工具在 coding-agent 定义一次，向两个方向投影：
-
-- **向下**：`toAgentTool(definition, { cwd })` → `AgentTool`（进入 agent 层，无 renderer）。
-- **侧向**：`CodingToolPresentationRegistry` 按工具名注册 `definition.presentation`，供 UI 渲染。
+A `CodingToolDefinition` names a tool, describes and validates its parameters, executes it,
+and may carry a presentation handler:
 
 ```ts
 interface CodingToolDefinition<TParameters, TDetails> {
   readonly name: string;
   readonly description: string;
   readonly parameters: TParameters;
-  execute(arguments_, signal, context: CodingToolContext): Promise<AgentToolResult<TDetails>>;
+  execute(
+    arguments_: Static<TParameters>,
+    signal: AbortSignal,
+    context: CodingToolContext,
+  ): Promise<AgentToolResult<TDetails>>;
   readonly presentation?: CodingToolPresentation<Static<TParameters>, TDetails>;
 }
 
-interface CodingToolContext { readonly cwd: string; }
-
-function toAgentTool<TParameters, TDetails>(
-  definition: CodingToolDefinition<TParameters, TDetails>,
-  context: CodingToolContext,
-): AgentTool<TParameters, TDetails>;
+interface CodingToolContext {
+  readonly cwd: string;
+}
 ```
 
-内置定义由 `createDefaultToolDefinitions()` 创建：`bash`、`read_file`、`write_file`、
-`edit_file`、`glob`、`todo_write`。Coding Agent 构造期把每个定义投影为 `AgentTool` 交给
-Harness 的工具注册表，并把 `presentation` 注册进 presentation registry。
+A Tool has no single universal state scope. Identify each piece of data by its owner instead:
 
-## 工具与 Todo 状态
+| Data | Owner | Lifetime |
+| --- | --- | --- |
+| Parameters, `AbortSignal`, and result of one execution | one **Tool Call** | ends with that call |
+| Tool definitions, execution adapters, and `CodingToolContext` | one **Runtime** | from `createCodingAgent()` until that `CodingAgentRuntime` is discarded |
+| Recoverable domain data in messages and `ToolResultMessage.details` | one **Session** | survives runs and restoration of that Session |
+| Files and command side effects beneath `cwd` | the **project environment** | can outlive any Runtime or Session |
 
-`todo_write` 是无状态工具。每次调用返回完整列表，`content`（模型可见）与
-`details.todos`（程序可见）由同一输入派生：
+Put recoverable domain state in Session messages, not in a hidden Tool instance. File contents,
+on the other hand, belong to the project environment: restoring a Session does not roll back a
+file written by `write_file` or a command run by `bash`.
+
+## Todo state is projected from the Session
+
+`todo_write` is stateless. Every call receives the complete todo list and returns both
+model-visible `content` and program-visible `details.todos` from that input. It does not retain
+the previous list in a Tool object.
+
+Harness persists the result as a Session message. `tools/builtin/todo/projection.ts` provides
+`findLatestTodoDetails(messages)`, which reconstructs the current todo domain state by finding
+the latest valid `todo_write` result in the current Session message history. This keeps todo
+state recoverable across runs without introducing a general Tool state container.
 
 ```ts
 interface TodoItem {
@@ -127,75 +127,89 @@ interface TodoItem {
 interface TodoDetails {
   readonly todos: readonly TodoItem[];
 }
-
-function formatTodoContent(todos: readonly TodoItem[]): string;
-function findLatestTodoDetails(messages: readonly AgentMessage[]): TodoDetails | undefined;
 ```
 
-Todo 的真实状态定义为「当前 Session 分支中最后一条有效 `todo_write` ToolResultMessage 的
-`details.todos`」，由 `findLatestTodoDetails` 投影，位于 coding-agent 而非具体 UI。
-`todo_write` 的 presentation（渲染 details 为逐行列表）在 `createTodoWriteToolDefinition().presentation`，
-不在 UI 包。
+## Four distinct extension points
 
-## 运行时
+These terms describe different directions of communication. Keeping them separate prevents UI
+code from accidentally becoming part of tool execution control.
 
-```ts
-interface CodingAgentRuntime {
-  readonly harness: AgentHarness;
-  readonly presentations: CodingToolPresentationRegistry;
-}
+| Concept | Direction and timing | Purpose |
+| --- | --- | --- |
+| **Agent Hook** | control channel, before an Agent action commits | can block or change work; the built-in permission Hook gates Bash commands |
+| **interactions** | a Hook asks the frontend | `CodingAgentInteractions.confirm()` obtains permission; `notify()` reports an immediate Hook-originated notice |
+| **Harness Event** | passive fact stream after/while work happens | `runtime.harness.subscribe()` observes run, text, and tool facts; listener results cannot change the Agent |
+| **presentation** | a frontend turns a tool Harness Event into text | `CodingToolPresentationRegistry` selects a tool presentation and provides a safe fallback |
 
-interface CreateCodingAgentConfig {
-  readonly project: HarnessProject;
-  readonly streamFn: StreamFn;
-  readonly model: ModelConfig;
-  readonly session: Session;
-  readonly systemPrompt?: string | SystemPromptBuilder;
-  readonly interactions?: CodingAgentInteractions;
-  readonly onEventListenerError?: HarnessListenerErrorHandler;
-}
+`interactions` lives at `ui/interactions/`; `presentation` lives at `ui/presentation/`.
+Neither is a UI implementation. A future CLI, TUI, or web adapter may implement the
+interaction port and consume presentation output, but this package does not claim those
+frontends already exist beyond the current CLI adapter.
 
-function createCodingAgent(config: CreateCodingAgentConfig): Promise<CodingAgentRuntime>;
-```
+The default permission Hook handles Bash policy as follows: hard-denied commands are blocked;
+ask-classified commands call `interactions.confirm()`; when interactions are unavailable,
+ask-classified commands are denied. Tool starts, ends, rejections, output-size notices, and
+tool counts are passive display concerns, so they come from Harness Events rather than Hooks.
 
-`session` 在类型上必填，运行时仍保留 `session is required` 守卫（JavaScript 调用方不会拿到属性崩溃）。
-
-## 完整公开导出
-
-从 `src/coding-agent/index.ts`：
-
-- `createCodingAgent`、`createDefaultCodingHookRegistry`、`createDefaultToolDefinitions`、`toAgentTool`
-- `CodingToolPresentationRegistry`、`NO_INTERACTIONS`、`CODING_SYSTEM_PROMPT`
-- `CodingAgentRuntime`、`CreateCodingAgentConfig`、`CodingHookContext`
-- `CodingAgentInteractions`、`ConfirmationRequest`、`Notification`
-- `CodingToolDefinition`、`CodingToolContext`、`CodingToolPresentation`、`ToolPresentationCall`、`ToolPresentationRejected`
-- `TodoItem`、`TodoDetails`
-
-## 内部实现
-
-以下名称仅供 coding-agent 内部使用，不作为稳定公共 API：
-
-- `NO_INTERACTIONS` — 默认 fail-closed 交互实现
-- `registerPermissionHook`
-- `classifyBashCommand`、`hardDeniedBashReason`
-
-## 依赖方向
+## Source layout and dependency direction
 
 ```text
-ui
-    │ 实现 CodingAgentInteractions；只消费 CodingAgentRuntime + HarnessEvent
-    ▼
-coding-agent
-    │ 创建默认 HookRegistry、Coding Tool 定义；向下投影 AgentTool/AgentHook
-    ▼
-harness
-    │ 消费 AgentEvent，发布平坦 HarnessEvent
-    ▼
-agent
-    │ 在控制点触发 Hook Call
-    ▼
-ai
+src/coding-agent/
+  factory.ts                 # createCodingAgent composition root
+  runtime.ts                 # CodingAgentRuntime
+  types.ts                   # factory configuration
+  coding-system-prompt.ts
+  tools/
+    definition.ts            # shared tool contract
+    wrapper.ts               # CodingToolDefinition -> AgentTool
+    builtin/                 # Kea's default tool set
+      bash/
+      files.ts
+      glob.ts
+      todo/
+        definition.ts
+        projection.ts
+  hooks/
+    types.ts                 # shared Hook context and registry type
+    builtin/                 # default permission Hook and factory
+  ui/
+    interactions/            # frontend confirmation/notification port
+    presentation/            # tool event-to-text contract and registry
 ```
 
-源码依赖始终向下：`ui -> coding-agent -> harness -> agent -> ai`。运行时 `PermissionHook ->
-injected CodingAgentInteractions` 是依赖倒置后的接口调用。
+`tools/` and `hooks/` contain shared Coding Agent mechanisms. Their `builtin/` subdirectories
+contain the default Kea capabilities. UI source depends on this package, while this package does
+not import `src/ui`:
+
+```text
+ui -> coding-agent -> harness -> agent -> ai
+```
+
+## Complete public API
+
+Import public Coding Agent APIs from `src/coding-agent/index.ts` (or the package root), not
+from the internal paths above.
+
+### Values
+
+- `createCodingAgent`
+- `createDefaultCodingHookRegistry`
+- `createDefaultToolDefinitions`
+- `toAgentTool`
+- `CODING_SYSTEM_PROMPT`
+- `NO_INTERACTIONS`
+- `CodingToolPresentationRegistry`
+
+### Types
+
+- `CodingAgentRuntime`, `CreateCodingAgentConfig`
+- `CodingHookContext`
+- `CodingAgentInteractions`, `ConfirmationRequest`, `Notification`
+- `CodingToolContext`, `CodingToolDefinition`
+- `CodingToolPresentation`, `ToolPresentationCall`, `ToolPresentationRejected`
+- `TodoItem`, `TodoDetails`
+
+The lower-level modules are internal or built-in implementation details, including the
+individual built-in tool factories, `registerPermissionHook`, the Bash policy helpers, and the
+concrete adapter classes. They are useful inside this repository but are not the stable public
+surface of `coding-agent`.
