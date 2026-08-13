@@ -318,14 +318,14 @@ agent 层（以及其上的 coding-agent 层）从不 import 任何 UI/CLI 类�
 
 `HookRegistry<TContext>` 是泛型——agent 的 hook 层只负责把不透明的 `TContext` 原样传给 handler，它**不知道**盒子里装了什么。
 
-- coding-agent 定义 `CodingHookContext = { cwd, interactions }`，把 `interactions`（一个 `CodingAgentInteractions`）塞进 context。
+- coding-agent 在 Permission Hook 模块内部定义 `{ cwd, interactions }` context，不把它作为公共类型。
 - 需要和用户交互的 hook（如 permission）从 `context.interactions` 取出 `confirm`/`notify` 调用。
 - UI 实现 `CodingAgentInteractions`；coding-agent 永不 import UI。
 
 ### Tool：构造注入（没有 context）
 
 `AgentTool.execute(args, timeoutSignal)` **没有** context/UI 参数。工具由 coding-agent 的
-`createDefaultToolDefinitions()` 定义，经 `toAgentTool()` 投影为 `AgentTool`；组合根捕获依赖。
+具体 `CodingToolDefinition` 在 `createCodingAgent()` 中经包内翻译成为 `AgentTool`；组合根捕获依赖。
 
 ### 关键原则：策略属于 Hook，不属于工具
 

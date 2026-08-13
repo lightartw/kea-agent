@@ -17,7 +17,8 @@ import {
 } from "../src/harness/index.js";
 
 import {
-  CodingToolPresentationRegistry,
+  CODING_SYSTEM_PROMPT,
+  NO_INTERACTIONS,
   createCodingAgent,
 } from "../src/coding-agent/index.js";
 
@@ -40,9 +41,16 @@ import type {
 import type {
   CodingAgentInteractions,
   CodingAgentRuntime,
+  CodingToolContext,
   CodingToolDefinition,
   CodingToolPresentation,
+  ConfirmationRequest,
   CreateCodingAgentConfig,
+  Notification,
+  TodoDetails,
+  TodoItem,
+  ToolPresentationCall,
+  ToolPresentationRejected,
 } from "../src/coding-agent/index.js";
 import type {
   CodingAgentRuntime as CodingAgentRuntimeFromTypes,
@@ -58,7 +66,8 @@ void [
   SessionManager,
   MAIN_LANE,
   createCodingAgent,
-  CodingToolPresentationRegistry,
+  CODING_SYSTEM_PROMPT,
+  NO_INTERACTIONS,
   CliFrontend,
 ];
 
@@ -82,8 +91,15 @@ type PublicCodingAgentTypes = [
   CodingAgentRuntimeFromTypes,
   CreateCodingAgentConfig,
   CodingAgentInteractions,
+  CodingToolContext,
   CodingToolDefinition,
   CodingToolPresentation<unknown, unknown>,
+  ConfirmationRequest,
+  Notification,
+  TodoDetails,
+  TodoItem,
+  ToolPresentationCall<unknown>,
+  ToolPresentationRejected<unknown>,
 ];
 
 void (null as PublicAgentTypes | null);

@@ -1,5 +1,8 @@
 # Coding Agent 目录与 README 重构设计
 
+> 本文记录第一次目录整理，当前设计已由
+> `2026-08-13-coding-agent-simplification-design.md` 取代。
+
 ## 目标
 
 让读者从目录和 README 就能区分：

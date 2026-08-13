@@ -2,13 +2,9 @@ export { createCodingAgent } from "./factory.js";
 export {
   CODING_SYSTEM_PROMPT,
 } from "./coding-system-prompt.js";
-export { toAgentTool } from "./tools/definition.js";
 export {
   NO_INTERACTIONS,
 } from "./ui/interactions.js";
-export {
-  CodingToolPresentationRegistry,
-} from "./ui/presentation.js";
 
 export type {
   CodingAgentRuntime,

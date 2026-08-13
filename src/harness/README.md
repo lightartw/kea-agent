@@ -305,8 +305,8 @@ Harness 使用下层提供的定义，但不重新定义它们：
 | Session、运行身份、`HarnessEvent` | harness | 管理跨运行状态并对外发布事实。 |
 
 Coding Agent 位于 Harness 之上，负责组装 coding 工具、Hook 和展示定义。UI 接收组装后的
-`CodingAgentRuntime`：从 `runtime.harness` 订阅运行事件，需要定制工具输出时再使用
-`runtime.presentations`。Harness 本身不依赖 Coding Agent 或 UI。
+`CodingAgentRuntime`：从 `runtime.harness` 订阅运行事件，需要展示工具输出时再调用
+`runtime.renderToolEvent(event)`。Harness 本身不依赖 Coding Agent 或 UI。
 
 ## 完整公开 API
 

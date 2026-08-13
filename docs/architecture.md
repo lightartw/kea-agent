@@ -400,7 +400,7 @@ interface CreateCodingAgentConfig {
 
 interface CodingAgentRuntime {
   readonly harness: AgentHarness;
-  readonly presentations: CodingToolPresentationRegistry;
+  readonly renderToolEvent: (event: HarnessToolEvent) => string;
 }
 
 function createCodingAgent(
@@ -408,9 +408,9 @@ function createCodingAgent(
 ): Promise<CodingAgentRuntime>;
 ```
 
-组装：创建内置 Tool Definition → 投影为 `AgentTool` 并注册 → 注册各 Tool 的
-presentation → 创建默认 HookRegistry（注入 `interactions`）→ `new AgentHarness(…)` → 返回
-Harness 和 presentation registry。
+组装：创建内置 Tool Definition → 投影为 `AgentTool` 并注册 → 保存各 Tool 的可选
+presentation → 创建 Permission HookRegistry（注入 `interactions`）→ `new AgentHarness(…)` →
+返回 Harness 和只读的工具事件渲染函数。
 
 ### 4.2 `CodingAgentInteractions` — UI 注入端口
 
@@ -418,7 +418,6 @@ Coding Agent 定义此接口，UI 实现。coding-agent 永不导入 UI 代码�
 
 ```ts
 interface CodingAgentInteractions {
-  readonly available: boolean;
   confirm(request: ConfirmationRequest, signal?: AbortSignal): Promise<boolean>;
   notify(notification: Notification): void | Promise<void>;
 }
@@ -438,8 +437,8 @@ interface Notification {
 
 ### 4.3 默认 Hook：只有 permission
 
-`createDefaultCodingHookRegistry(context)` 只注册 permission。被动的 log、large-output、summary
-不再是 Hook，而是 UI 层针对 Harness `subscribe` 事件的渲染/展示行为。
+Coding Agent 在组合根创建只含 permission 的 HookRegistry。被动的 log、large-output、summary
+不是 Hook，而是 UI 层针对 Harness `subscribe` 事件的渲染/展示行为。
 
 | Hook | 事件 | 行为 |
 | ---- | ---- | ---- |
@@ -447,7 +446,7 @@ interface Notification {
 
 ### 4.4 Bash 安全策略
 
-位于 `tools/builtin/bash/policy.ts`，是 Permission Hook 与 Bash Tool Definition 的**单一共享来源**。
+位于 `tools/builtin/bash-policy.ts`，是 Permission Hook 与 Bash Tool Definition 的**单一共享来源**。
 
 ```ts
 function classifyBashCommand(command: string): BashDecision;
@@ -462,12 +461,11 @@ function hardDeniedBashReason(command: string): string | undefined;
 | 询问 | `rm`、`> /etc/`、`chmod 777` | Hook 调用 `interactions.confirm()`；无交互 Adapter 时 fail-closed |
 | 允许 | `pwd`、`git status` | 直接放行 |
 
-### 4.5 Todo 状态投影
+### 4.5 Todo 状态
 
-`todo_write` 无实例状态；`TodoItem`/`TodoDetails`/`formatTodoContent`/
-`findLatestTodoDetails` 位于 coding-agent 的 `tools/builtin/todo/projection.ts`。Todo 真实状态定义为
-「当前 Session 分支中最后一条有效 `todo_write` ToolResultMessage 的 `details.todos`」，
-由 `findLatestTodoDetails` 从 `AgentMessage[]` 投影，不在 UI 层。
+`todo_write` 无实例状态，每次接收完整列表，并把它同时写入模型可见的 `content` 与程序可读的
+`details.todos`。Harness 将 Tool Result 写入 Session，因此 Todo 的可恢复状态属于 Session。
+当前没有常驻 Todo UI，不预先提供状态查询接口。
 
 ### 组装用法
 
@@ -494,7 +492,7 @@ await runtime.harness.prompt("list files");
 src/ui/
   cli-frontend.ts          # CliFrontend、输入循环、装配
   cli-interactions.ts      # CodingAgentInteractions 的 readline Adapter
-  cli-harness-renderer.ts  # Harness Event 展示；调用 presentation registry
+  cli-harness-renderer.ts  # Harness Event 展示；调用 runtime.renderToolEvent
 ```
 
 ### 5.1 CLI Adapter
@@ -523,8 +521,8 @@ class CliFrontend {
 ### 5.2 Tool presentation 边界
 
 `AgentTool` 不依赖 UI、不携带 presentation。每个 Coding Tool Definition 可选地携带
-`CodingToolPresentation`；`createCodingAgent()` 将它们注册到 runtime 的
-`CodingToolPresentationRegistry`。UI 把 `HarnessToolEvent` 交给 registry：
+`CodingToolPresentation`；`createCodingAgent()` 将它们保存在包内。UI 把 `HarnessToolEvent`
+交给 `runtime.renderToolEvent()`：
 
 ```ts
 interface CodingToolPresentation<TArguments, TDetails> {
@@ -570,7 +568,7 @@ loadDotenv → createStreamFn → resolveProject → Session.create
 | `src/agent/hooks/index.ts` | `HookRegistry`、`AgentHookTrigger`、`AgentHookCall` 及各 Call/Result 类型、`ResultOf`、`HookHandler` |
 | `src/agent/tools/index.ts` | `AgentTool`、`AgentToolRegistry`、`AgentToolCall`、`AgentToolResult` |
 | `src/harness/index.ts` | `AgentHarness`、`Session`、`SessionError`、`SessionManager`、`defaultSystemPrompt`、`HarnessConfig` |
-| `src/coding-agent/index.ts` | `createCodingAgent`、`createDefaultCodingHookRegistry`、`createDefaultToolDefinitions`、`toAgentTool`、`CODING_SYSTEM_PROMPT`、`NO_INTERACTIONS`、`CodingToolPresentationRegistry` 及其公开配置、Hook、interaction、Tool/presentation、Todo 类型 |
+| `src/coding-agent/index.ts` | `createCodingAgent`、`CODING_SYSTEM_PROMPT`、`NO_INTERACTIONS` 及其公开配置、interaction、Tool/presentation、Todo 类型 |
 
 `PreparedAgentToolCall`、`ToolPreparation`、具体 CLI Adapter、内置 Tool/Hook 实现和 Bash policy helpers
 不作为 Coding Agent 根入口的稳定公共 API。
@@ -581,5 +579,5 @@ loadDotenv → createStreamFn → resolveProject → Session.create
 - `agent` 不依赖 `coding-agent` 或 `ui`
 - `coding-agent` 不依赖 `ui`（通过 `CodingAgentInteractions` port 依赖倒置）
 - `ui -> coding-agent -> harness -> agent -> ai`
-- UI 解耦用两种机制：Hook 走泛型 `TContext`（运行时注入 `{ cwd, interactions }`），Tool 走构造注入（组合根捕获 `CodingToolContext`，`execute` 接收它）
+- UI 解耦用两种机制：Permission Hook 的包内 context 注入 interactions；Tool definition 的 `execute` 接收 `CodingToolContext`，presentation 留在 Coding Agent
 - `main.ts` 是唯一连接所有层的文件
