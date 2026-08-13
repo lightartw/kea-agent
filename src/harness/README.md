@@ -21,7 +21,11 @@ import {
 } from "./index.js";
 
 const { stream, defaultModel } = createStreamFn();
-const session = Session.inMemory();
+const session = Session.inMemory({
+  projectId: "test",
+  directory: process.cwd(),
+  cwd: ".",
+});
 const harness = new AgentHarness({
   session,
   model: defaultModel,
@@ -61,27 +65,41 @@ Run，空闲时调用则不产生效果。
 
 ## Session：一份会话的数据
 
-Session 拥有消息、模型变更和会话 ID。它把记录组织成一棵树；当前 Agent 沿当前叶节点线性追加。
-`buildContext()` 从根到当前叶重新构造可运行的上下文：返回新的消息数组，以及该分支最后保存的
-模型。Harness 初始化时读取这份上下文，运行后继续向同一个 Session 追加数据。
+Session 拥有版本化 JSONL 头、消息、模型变更、标题和会话 ID。文件第一行是 `session` header
+（`type`、`version: 1`、`id`、`projectId`、`directory`、`cwd`、`title`、`createdAt`）；后续行是
+记录：`message`、`model_change` 或 `session_title`。
+
+- `message` 和 `model_change` 组成一棵会话树；当前 Agent 沿当前叶节点线性追加。
+  `buildContext()` 从根到当前叶重新构造可运行的上下文。
+- `session_title` 是 Session 级记录，不影响会话树；`Session.info.title` 返回最新标题。
+- 新 Session 创建后**立即持久化** header，标题为 `"unknown"`；任何新增记录都会同步写入文件。
 
 ### 创建、恢复与内存模式
 
 ```ts
-const temporary = Session.inMemory();
-const persistent = await Session.create(".kea");
+const temporary = Session.inMemory({
+  projectId: "p",
+  directory: process.cwd(),
+  cwd: ".",
+});
+const persistent = await Session.create(".kea", {
+  projectId: "p",
+  directory: process.cwd(),
+  cwd: ".",
+});
 ```
 
-- `Session.inMemory()` 创建不写入文件的 Session，适合测试和临时运行；
-- `Session.create(storageDir)` 创建持久化 Session；
-- `Session.open(storageDir, sessionId)` 从 JSONL 文件恢复 Session；
+- `Session.inMemory(input)` 创建不写入文件的 Session，适合测试和临时运行；
+- `Session.create(storageDir, input)` 创建持久化 Session 并立即写入 header；
+- `Session.open(storageDir, sessionId)` 从 JSONL 文件恢复 Session，并拒绝无 header 的旧文件；
 - `appendMessage(message)` 追加消息；
 - `appendModelChange(model)` 追加模型变更；
+- `setTitle(title)` / `setTitleIfUnknown(title)` 修改标题；
+- `info` 返回不可变的 `SessionInfo`（含 `title`、`createdAt`、`updatedAt`）；
 - `buildContext()` 返回 `SessionContext`。
 
-持久化 Session 的文件位于 `<storageDir>/sessions/<sessionId>.jsonl`。`create()` 只分配 Session；
-文件会在第一次保存 assistant message 时建立，在此之前 `list()` 不会列出它，`open()` 也无法
-恢复它。`SessionError.code` 说明失败类别：`not_found`、
+持久化 Session 的文件位于 `<storageDir>/sessions/<sessionId>.jsonl`。`updatedAt` 等于最后成功
+追加记录的 `createdAt`。`SessionError.code` 说明失败类别：`not_found`、
 `invalid_session`、`invalid_entry` 或 `storage`。
 
 ## SessionRepository：管理多份 Session
@@ -89,20 +107,19 @@ const persistent = await Session.create(".kea");
 应用需要在一个存储目录中创建、打开或列举多份 Session 时，使用 `SessionRepository`：
 
 ```ts
-const repository = new SessionRepository(".kea");
-const ids = await repository.list();
-const recent = ids[0] === undefined
-  ? await repository.create()
-  : await repository.open(ids[0]);
+const repository = new SessionRepository(storageDir);
+const sessions = await repository.list();
+const recent = sessions[0] === undefined
+  ? await repository.create(input)
+  : await repository.open(sessions[0].id);
 ```
 
-`create()` 和 `open(id)` 返回 Session；`list()` 返回按文件最近修改时间从新到旧排列的 ID。
-目录不存在或尚无已持久化 Session 时，`list()` 返回空数组。上例先检查列表，因此不会尝试打开
-不存在的文件；应用把 `recent` 交给 Harness 后，第一次完成的回复会使新 Session 可被列举和恢复。
+`create(input)` 和 `open(id)` 返回 Session；`list()` 通过 `Session.open()` 读取每个候选文件，
+按存储的 `updatedAt` 从新到旧排列并返回 `SessionInfo[]`（相同时间按 ID 降序）。空目录返回空
+数组；损坏的 JSONL 会让 `list()` 以 `invalid_session` 拒绝，而不会静默忽略。
 
 `AgentHarness` 不持有 Repository。应用先用 Repository 取得 Session，再把该 Session 交给新的
 Harness。`harness.sessionId` 标识 Harness 当前绑定的 Session，但不暴露可写的 Session 对象。
-这样，上层可以用 ID 切换会话，同时消息和模型变更仍由 Harness 按运行顺序写入。
 
 ## Event Bus：报告运行事实
 
@@ -153,6 +170,7 @@ interface HarnessConfig {
   readonly cwd: string;
   readonly hooks?: AgentHookTrigger;
   readonly onEventListenerError?: HarnessListenerErrorHandler;
+  readonly titleGenerator?: SessionTitleGenerator;
 }
 ```
 
@@ -163,11 +181,19 @@ interface HarnessConfig {
 - `hooks` 是可选的 Hook Trigger，省略时 Harness 使用空 Registry；
 - `systemPrompt` 是每个 Run 开始前调用的 builder；
 - `cwd` 进入 `SystemPromptContext`，让 builder 描述当前工作目录；
-- `onEventListenerError` 接收被 Event Bus 隔离的 listener 错误。
+- `onEventListenerError` 接收被 Event Bus 隔离的 listener 错误；
+- `titleGenerator` 是可选的自动标题生成器（见下）。
 
 `SystemPromptBuilder` 接收当前 `model`、注册的 `tools`、`cwd` 和 `date`，返回字符串或
 `Promise<string>`。`defaultSystemPrompt(template)` 将模板包装成 builder；
 `formatSystemPrompt(content, options)` 替换 `{{cwd}}` 和 `{{date}}`。
+
+### 自动标题
+
+当 `titleGenerator` 存在、Session 标题仍为 `"unknown"` 且恢复历史中还没有 user 消息时，
+Harness 在第一个真实 user 消息持久化后启动一次后台标题请求。它只使用该消息与当前模型，
+无 Tools，返回单行 ≤100 字符标题，经 `setTitleIfUnknown()` 写入；失败、超长或晚到的结果都
+不会覆盖已修改的标题，也不会阻塞或失败 Agent Run。标题请求不产生 Harness Event。
 
 ### `AgentHarness` 的公开成员
 
@@ -180,7 +206,9 @@ class AgentHarness {
   switchModel(model: ModelConfig): Promise<void>;
   registerTool(tool: AgentTool): void;
   unregisterTool(name: string): void;
+  setTitle(title: string): Promise<void>;
   get sessionId(): string;
+  get title(): string;
   get messages(): readonly AgentMessage[];
   get model(): ModelConfig;
   get isRunning(): boolean;
@@ -225,8 +253,10 @@ Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 
 
 ### 类型
 
-- 配置与 system prompt：`HarnessConfig`、`SystemPromptBuilder`、`SystemPromptContext`；
-- Session：`SessionContext`、`SessionErrorCode`；
+- 配置与 system prompt：`HarnessConfig`、`SessionTitleGenerator`、
+  `SystemPromptBuilder`、`SystemPromptContext`；
+- Session：`CreateSessionInput`、`SessionHeader`、`SessionInfo`、`SessionContext`、
+  `SessionErrorCode`；
 - Event：`HarnessEvent`、`HarnessEventContext`、`HarnessOwnedEvent`、
   `HarnessRunEndEvent`、`HarnessToolEvent`、`LiftAgentEvent`；
 - 订阅：`HarnessListener`、`HarnessListenerErrorHandler`、`Unsubscribe`

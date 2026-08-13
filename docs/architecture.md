@@ -76,8 +76,8 @@ class SessionRepository {
 ```
 
 `SessionRepository` 是 Harness 层唯一管理多份 Session 的实体。它在一个 `storageDir` 中创建、
-打开和列举 Session；`list()` 按文件最近修改时间从新到旧返回 ID。Repository 不创建 Harness，
-也不保存“当前 Session”。
+打开和列举 Session；`list()` 通过 `Session.open()` 读取每个候选文件，按存储的 `updatedAt`
+从新到旧返回 `SessionInfo[]`。Repository 不创建 Harness，也不保存“当前 Session”。
 
 ### AgentHarness
 
@@ -112,24 +112,31 @@ listener 错误被 Event Bus 隔离，并交给可选的 `onEventListenerError`�
 
 ## 4. Coding Agent：Project 级所有者
 
-`src/coding-agent/` 管理代码 Project，并为每份打开的 Session 建立 coding Harness。
+`src/coding-agent/` 管理持久化 Project，并为每份打开的 Session 建立 coding Harness。
 
 ```ts
-interface CodingProject {
-  readonly workDir: string;
-  readonly storageDir: string;
+interface ProjectInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly directories: readonly string[];
+  readonly primaryDirectory: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
-interface CodingAgent {
-  listSessions(): Promise<readonly string[]>;
-  createSession(): Promise<AgentHarness>;
+interface Project extends ProjectInfo {
+  listSessions(): Promise<readonly SessionInfo[]>;
+  createSession(options?: CreateSessionOptions): Promise<AgentHarness>;
   openSession(sessionId: string): Promise<AgentHarness>;
   continueRecent(): Promise<AgentHarness>;
+  update(input: UpdateProjectInput): Promise<ProjectInfo>;
   renderToolEvent(event: HarnessToolEvent): string;
 }
 
-interface CreateCodingAgentConfig {
-  readonly project: CodingProject;
+interface CreateProjectConfig {
+  readonly keaHome: string;
+  readonly directory?: string;
+  readonly cwd?: string;
   readonly streamFn: StreamFn;
   readonly model: ModelConfig;
   readonly systemPrompt?: string | SystemPromptBuilder;
@@ -137,17 +144,28 @@ interface CreateCodingAgentConfig {
   readonly onEventListenerError?: HarnessListenerErrorHandler;
 }
 
-function createCodingAgent(config: CreateCodingAgentConfig): Promise<CodingAgent>;
+function createProject(config: CreateProjectConfig): Promise<Project>;
 ```
 
-`CodingAgent` 用 Project 的 `storageDir` 建立 `SessionRepository`，并拥有 Session 的列举和选择。
-`continueRecent()` 打开最近的 Session；没有历史时创建 Session。四个 Session 方法中的三个会
-返回 `AgentHarness`，调用方直接使用该 Harness。
+Project 元数据持久化在 `<keaHome>/projects/<id>/project.json`。`createProject()` 先扫描已注册
+Project：当启动目录位于某 Project 的 `directories` 之下时复用该 Project（嵌套时选最长）；
+否则显式 `directory` 成为新根；否则从 `git rev-parse --show-toplevel` 发现根，失败则回退为
+启动 `cwd`。Git 只影响发现；每个非 Git 根目录都有独立 Project 存储。
+
+`Project` 用 `keaHome/projects/<id>` 建立 `SessionRepository`。`continueRecent()` 打开最近的
+Session；没有历史时按启动 cwd 创建。Session 方法返回 `AgentHarness`，调用方直接使用它。
 
 每次 `createSession()`、`openSession()` 或 `continueRecent()` 分配 Harness 时，Coding Agent 都
-新建 Tool Registry、所有 Tool 实例、permission Hook Registry 和 AgentHarness；Harness 又建立
-自己的 Event Bus、模型与 run 状态。因此多份打开的 Session 之间没有共享的可变 Tool、Hook、
-Event、模型或运行状态。
+新建 Tool Registry、所有 Tool 实例、permission Hook Registry、标题生成器和 AgentHarness；
+Harness 又建立自己的 Event Bus、模型与 run 状态。因此多份打开的 Session 之间没有共享的可变
+Tool、Hook、Event、模型或运行状态。
+
+### Session 与 cwd
+
+一份 Session 存储一个选中的 Project 目录加相对 `cwd`。Coding Agent 给每份 Session 的 Harness
+以解析后的绝对 cwd，并把完整 `directories` 交给 Coding Tools；文件 Tool 用
+`safePath(cwd, directories, path)` 拒绝离开全部 Project 目录的路径。切换 `primaryDirectory`
+只影响之后创建的 Session，不改写已有 Session 文件。
 
 ### 默认 Coding 能力
 
@@ -158,6 +176,12 @@ Bash permission 策略分为 allow、ask、deny；ask 通过 `CodingAgentInterac
 
 Todo 每次接收完整列表，同时返回模型可见的 `content` 和结构化的 `details.todos`。Harness 将
 Tool Result 写入 Session，因此恢复状态属于 Session，而不是 Todo Tool 实例。
+
+### 自动标题
+
+`createProject()` 给每个 Harness 注入 `createSessionTitleGenerator(config.streamFn)`。新 Session
+立即以 `"unknown"` 标题持久化；第一个真实 user 消息持久化后，标题请求并发运行，用
+`setTitleIfUnknown()` 写入单行 ≤100 字符标题。它不阻塞或失败 Agent Run，也不覆盖已修改标题。
 
 ### 展示边界
 
@@ -175,13 +199,13 @@ Tool 执行结果。
 class CliFrontend {
   constructor(options?: CliFrontendOptions);
   get interactions(): CodingAgentInteractions;
-  run(codingAgent: CodingAgent, harness: AgentHarness): Promise<void>;
+  run(project: Project, harness: AgentHarness): Promise<void>;
   close(): void;
 }
 ```
 
-`run(codingAgent, harness)` 订阅传入 Harness；文本流和运行统计由 CLI 展示，Tool Event 交给
-`codingAgent.renderToolEvent()`。ESC 调用当前 Harness 的 `abort()`。`confirm()` 显示 `[y/N]`，
+`run(project, harness)` 订阅传入 Harness；文本流和运行统计由 CLI 展示，Tool Event 交给
+`project.renderToolEvent()`。ESC 调用当前 Harness 的 `abort()`。`confirm()` 显示 `[y/N]`，
 空输入或 ESC 都拒绝；外部 `AbortSignal` 与 ESC 信号合并。
 
 ## 6. main.ts：组合根
@@ -189,10 +213,10 @@ class CliFrontend {
 启动顺序如下：
 
 1. 加载环境变量并创建 `StreamFn` 与默认模型；
-2. 从当前工作目录解析 `CodingProject`；
-3. 创建 `CliFrontend`，把 `cli.interactions` 注入 `createCodingAgent()`；
-4. 调用 `codingAgent.continueRecent()` 选择 Session 并取得 Harness；
-5. 调用 `cli.run(codingAgent, harness)`。
+2. `createProject({ keaHome })` 打开或创建持久化 Project；
+3. 创建 `CliFrontend`，把 `cli.interactions` 注入 `createProject()`；
+4. 调用 `project.continueRecent()` 选择 Session 并取得 Harness；
+5. 调用 `cli.run(project, harness)`。
 
 Session 的选择发生在 Coding Agent；CLI 只运行已选择的 Harness。
 
@@ -201,8 +225,8 @@ Session 的选择发生在 Coding Agent；CLI 只运行已选择的 Harness。
 - `src/ai/index.ts`：AI 消息、模型、流和 provider 工厂；
 - `src/agent/index.ts`：`runAgentLoop`、Agent Event、Hook 和 Tool API；
 - `src/harness/index.ts`：`AgentHarness`、`Session`、`SessionRepository`、Session 错误、system
-  prompt 与 Harness Event API；
-- `src/coding-agent/index.ts`：`createCodingAgent`、`CodingAgent`、`CodingProject`、默认 prompt、
+  prompt、Harness Event 与 Session 元数据 API；
+- `src/coding-agent/index.ts`：`createProject`、`Project`、`ProjectInfo`、默认 prompt、
   interactions、Coding Tool/presentation 和 Todo API；
 - `src/ui/index.ts`：`CliFrontend`、`CliInteractions`、`CliHarnessRenderer`；
 - `src/index.ts`：汇总以上入口和通用 timeout/workspace helpers。
@@ -214,9 +238,9 @@ Session 的选择发生在 Coding Agent；CLI 只运行已选择的 Harness。
 
 - `ai` 不依赖 `agent`；
 - `agent` 不依赖 `harness`、`coding-agent` 或 `ui`；
-- `harness` 不依赖具体 coding Tool 或 UI；
+- `harness` 不依赖具体 coding Tool 或 UI，只定义 `SessionTitleGenerator` 类型；
 - `coding-agent` 不依赖 `src/ui`，只定义 `CodingAgentInteractions` 端口；
 - `SessionRepository` 管理 Session 集合，`AgentHarness` 只绑定一份 Session；
-- `CodingAgent` 选择 Project 中的 Session，并直接返回独立 Harness；
+- `Project` 选择 Project 中的 Session，并直接返回独立 Harness；
 - Hook 负责提交前控制，Harness Event 负责事实通知，presentation 负责 UI 文本；
 - `main.ts` 是唯一连接 provider、Project 和具体 CLI 的应用入口。

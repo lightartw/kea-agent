@@ -71,24 +71,25 @@ CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共�
 ## 启动路径
 
 ```text
-createStreamFn → createCodingAgent → continueRecent → cli.run(codingAgent, harness)
+createStreamFn → createProject → continueRecent → cli.run(project, harness)
 ```
 
 `main.ts` 加载环境变量并创建 `CliFrontend`（其 `interactions` 实现
-`CodingAgentInteractions`）。`createCodingAgent()` 组装 Project 级能力，`continueRecent()` 打开最近
-修改的 Session（没有历史时创建），最后 `cli.run(codingAgent, harness)` 进入交互循环。
+`CodingAgentInteractions`）。`createProject({ keaHome })` 打开或创建持久化 Project，
+`continueRecent()` 打开最近修改的 Session（没有历史时创建），最后 `cli.run(project, harness)`
+进入交互循环。
 
 ```ts
 const cli = new CliFrontend();
 const { stream, defaultModel } = createStreamFn();
-const codingAgent = await createCodingAgent({
-  project: { workDir: process.cwd(), storageDir: ".kea" },
+const project = await createProject({
+  keaHome: process.env.KEA_HOME ?? resolve(homedir(), ".kea"),
   streamFn: stream,
   model: defaultModel,
   interactions: cli.interactions,
 });
-const harness = await codingAgent.continueRecent();
-await cli.run(codingAgent, harness);
+const harness = await project.continueRecent();
+await cli.run(project, harness);
 ```
 
 ## 包结构
@@ -97,19 +98,19 @@ await cli.run(codingAgent, harness);
 |----|--------|------|
 | `ai` | [ai/README.md](src/ai/README.md) | LLM 客户端抽象、StreamFn、消息类型 |
 | `agent` | [agent/README.md](src/agent/README.md) | Agent loop、Hook Call、工具注册、AgentEvent |
-| `harness` | [harness/README.md](src/harness/README.md) | 运行时、Session、平坦 HarnessEvent、Hook 透传 |
-| `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | 默认工具定义、Bash 策略、permission Hook、交互 port |
+| `harness` | [harness/README.md](src/harness/README.md) | 运行时、版本化 Session、平坦 HarnessEvent、Hook 透传 |
+| `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | 持久化 Project、默认工具定义、Bash 策略、permission Hook、交互 port |
 | `ui` | — | 具体 CLI UI：交互适配、Harness event 渲染、Coding Tool presentation 消费 |
 
 源码依赖方向始终向下：`ui -> coding-agent -> harness -> agent -> ai`。
 
 ## 工具系统
 
-`createCodingAgent()` 在内部组装 `CodingToolDefinition`（可带 presentation），并为每个 Harness
+`createProject()` 在内部组装 `CodingToolDefinition`（可带 presentation），并为每个 Harness
 创建独立的 `AgentToolRegistry` 与工具实例。默认内置工具为：
 
-- `bash` — shell 命令执行
-- `read_file`、`write_file`、`edit_file` — 文件操作
+- `bash` — shell 命令执行（从 Session cwd 启动）
+- `read_file`、`write_file`、`edit_file` — 文件操作（受 Project 目录边界约束）
 - `glob` — 文件通配符匹配
 - `todo_write` — 任务列表管理（presentation 渲染 details）
 
@@ -128,7 +129,15 @@ Bash 安全策略分为三层：
 2. **询问**（`rm`、`> /etc/`、`chmod 777`）：通过交互 port 确认；无交互时 fail-closed
 3. **允许**：直接放行
 
-文件工具始终拒绝 workspace 路径逃逸。权限确认只是防误操作机制，不是完整沙箱。
+文件工具始终拒绝逃出全部 Project 目录的路径。权限确认只是防误操作机制，不是完整沙箱。
+
+## CLI 与核心边界
+
+`main.ts` 负责加载环境变量并组装 stream、Project、AgentHarness 和 CLI。`CliFrontend`
+（位于 `src/ui/cli-frontend.ts`）把自己的 `interactions` 注入 `createProject()`，并通过
+`run(project, harness)` 订阅 Harness 事件；工具事件由
+`project.renderToolEvent(event)` 使用对应 presentation 渲染。未来 TUI 可以消费相同的
+`HarnessEvent`、Session 和 details，而不改动 Agent loop。
 
 ## 三种 UI 的边界
 
@@ -140,14 +149,6 @@ Bash 安全策略分为三层：
 
 具体实现集中在 `src/ui`（`cli-frontend.ts`、`cli-harness-renderer.ts`、`cli-interactions.ts`），
 `agent`、`harness` 与 `coding-agent` 不 import `src/ui`；`src/ui` 也不 import `src/agent`。
-
-## CLI 与核心边界
-
-`main.ts` 负责加载环境变量并组装 stream、`CodingAgent`、`AgentHarness` 和 CLI。`CliFrontend`
-（位于 `src/ui/cli-frontend.ts`）把自己的 `interactions` 注入 `createCodingAgent()`，并通过
-`run(codingAgent, harness)` 订阅 Harness 事件；工具事件由
-`codingAgent.renderToolEvent(event)` 使用对应 presentation 渲染。未来 TUI 可以消费相同的
-`CodingAgent`、`HarnessEvent`、Session 和 details，而不改动 Agent loop。
 
 ## AI 层
 
