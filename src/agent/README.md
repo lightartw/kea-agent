@@ -319,8 +319,8 @@ agent 层（以及其上的 coding-agent 层）从不 import 任何 UI/CLI 类�
 
 `HookRegistry<TContext>` 是泛型——agent 的 hook 层只负责把不透明的 `TContext` 原样传给 handler，它**不知道**盒子里装了什么。
 
-- coding-agent 在 Permission Hook 模块内部定义 `{ cwd, interactions }` context，不把它作为公共类型。
-- 需要和用户交互的 hook（如 permission）从 `context.interactions` 取出 `confirm`/`notify` 调用。
+- coding-agent 的 Permission Hook 以 `CodingAgentInteractions` 本身作为 Registry context；handler
+  直接从 context 调用 `confirm`/`notify`。
 - UI 实现 `CodingAgentInteractions`；coding-agent 永不 import UI。
 
 ### Tool：构造注入（没有 context）
@@ -330,7 +330,9 @@ agent 层（以及其上的 coding-agent 层）从不 import 任何 UI/CLI 类�
 
 ### 关键原则：策略属于 Hook，不属于工具
 
-「用户确认」这类 UI 交互不是工具职责，而是**策略**职责。Permission Hook（持有 `context.interactions`）在工具执行前 gate bash 命令（allow/ask/deny），工具本身保持纯函数。这是策略与机制分离——工具是机制，Hook 是策略。
+「用户确认」这类 UI 交互不是工具职责，而是**策略**职责。Permission Hook（context 就是
+`CodingAgentInteractions`）在工具执行前执行 allow/ask 策略，也拒绝 hard-deny 命令；Bash Tool
+自身再次检查 hard-deny，形成纵深防御。工具执行机制不负责询问用户。
 
 ## 包边界
 

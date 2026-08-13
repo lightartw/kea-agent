@@ -12,7 +12,7 @@
 下面的 Session 只存在于内存中。订阅者接收运行事件，`prompt()` 则启动一次完整的 Run：
 
 ```ts
-import { createStreamFn } from "../ai/factory.js";
+import { createStreamFn } from "../ai/index.js";
 import { AgentToolRegistry } from "../agent/index.js";
 import {
   AgentHarness,
@@ -69,8 +69,7 @@ Session 拥有消息、模型变更和会话 ID。它把记录组织成一棵树
 
 ```ts
 const temporary = Session.inMemory();
-const created = await Session.create(".kea");
-const restored = await Session.open(".kea", created.id);
+const persistent = await Session.create(".kea");
 ```
 
 - `Session.inMemory()` 创建不写入文件的 Session，适合测试和临时运行；
@@ -80,8 +79,9 @@ const restored = await Session.open(".kea", created.id);
 - `appendModelChange(model)` 追加模型变更；
 - `buildContext()` 返回 `SessionContext`。
 
-持久化 Session 的文件位于 `<storageDir>/sessions/<sessionId>.jsonl`。文件会在第一次保存
-assistant message 时建立。`SessionError.code` 说明失败类别：`not_found`、
+持久化 Session 的文件位于 `<storageDir>/sessions/<sessionId>.jsonl`。`create()` 只分配 Session；
+文件会在第一次保存 assistant message 时建立，在此之前 `list()` 不会列出它，`open()` 也无法
+恢复它。`SessionError.code` 说明失败类别：`not_found`、
 `invalid_session`、`invalid_entry` 或 `storage`。
 
 ## SessionRepository：管理多份 Session
@@ -90,13 +90,15 @@ assistant message 时建立。`SessionError.code` 说明失败类别：`not_foun
 
 ```ts
 const repository = new SessionRepository(".kea");
-const session = await repository.create();
 const ids = await repository.list();
-const restored = await repository.open(ids[0]!);
+const recent = ids[0] === undefined
+  ? await repository.create()
+  : await repository.open(ids[0]);
 ```
 
 `create()` 和 `open(id)` 返回 Session；`list()` 返回按文件最近修改时间从新到旧排列的 ID。
-目录不存在时，`list()` 返回空数组。
+目录不存在或尚无已持久化 Session 时，`list()` 返回空数组。上例先检查列表，因此不会尝试打开
+不存在的文件；应用把 `recent` 交给 Harness 后，第一次完成的回复会使新 Session 可被列举和恢复。
 
 `AgentHarness` 不持有 Repository。应用先用 Repository 取得 Session，再把该 Session 交给新的
 Harness。`harness.sessionId` 标识 Harness 当前绑定的 Session，但不暴露可写的 Session 对象。

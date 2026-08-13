@@ -71,10 +71,25 @@ CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共�
 ## 启动路径
 
 ```text
-createStreamFn → Session.create → createCodingAgent → CliFrontend
+createStreamFn → createCodingAgent → continueRecent → cli.run(codingAgent, harness)
 ```
 
-`main.ts` 加载环境变量，创建 `CliFrontend`（其 `interactions` 实现 `CodingAgentInteractions`），通过 `createCodingAgent` 组装 Agent，最后调用 `cli.run(runtime)`。
+`main.ts` 加载环境变量并创建 `CliFrontend`（其 `interactions` 实现
+`CodingAgentInteractions`）。`createCodingAgent()` 组装 Project 级能力，`continueRecent()` 打开最近
+修改的 Session（没有历史时创建），最后 `cli.run(codingAgent, harness)` 进入交互循环。
+
+```ts
+const cli = new CliFrontend();
+const { stream, defaultModel } = createStreamFn();
+const codingAgent = await createCodingAgent({
+  project: { workDir: process.cwd(), storageDir: ".kea" },
+  streamFn: stream,
+  model: defaultModel,
+  interactions: cli.interactions,
+});
+const harness = await codingAgent.continueRecent();
+await cli.run(codingAgent, harness);
+```
 
 ## 包结构
 
@@ -90,8 +105,8 @@ createStreamFn → Session.create → createCodingAgent → CliFrontend
 
 ## 工具系统
 
-工具在 coding-agent 定义一次（`CodingToolDefinition`，含可选的 presentation），经
-`toAgentTool()` 向下投影为 `AgentTool`、`createDefaultToolDefinitions()` 提供默认集：
+`createCodingAgent()` 在内部组装 `CodingToolDefinition`（可带 presentation），并为每个 Harness
+创建独立的 `AgentToolRegistry` 与工具实例。默认内置工具为：
 
 - `bash` — shell 命令执行
 - `read_file`、`write_file`、`edit_file` — 文件操作
@@ -128,10 +143,11 @@ Bash 安全策略分为三层：
 
 ## CLI 与核心边界
 
-`main.ts` 负责加载环境变量并组装 stream、session、runtime 和 CLI。`CliFrontend`（位于
-`src/ui/cli-frontend.ts`）实现 `CodingAgentInteractions`，只消费 `CodingAgentRuntime`，
-通过 `runtime.harness.subscribe()` 消费事件并把工具事件分发给 `runtime.presentations`。
-未来 TUI 可以消费相同的 `HarnessEvent`、Session 和 details，而不改动 Agent loop。
+`main.ts` 负责加载环境变量并组装 stream、`CodingAgent`、`AgentHarness` 和 CLI。`CliFrontend`
+（位于 `src/ui/cli-frontend.ts`）把自己的 `interactions` 注入 `createCodingAgent()`，并通过
+`run(codingAgent, harness)` 订阅 Harness 事件；工具事件由
+`codingAgent.renderToolEvent(event)` 使用对应 presentation 渲染。未来 TUI 可以消费相同的
+`CodingAgent`、`HarnessEvent`、Session 和 details，而不改动 Agent loop。
 
 ## AI 层
 

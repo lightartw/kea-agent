@@ -201,9 +201,13 @@ test("continueRecent propagates an invalid newest Session without creating a rep
 test("Harnesses created for one Project do not share mutable state", async () => {
   const storageDir = await tempStorage();
   try {
+    const seenTools: string[][] = [];
     const codingAgent = await createCodingAgent({
       project: { workDir: process.cwd(), storageDir },
-      streamFn: oneTurnStream,
+      streamFn: async function* (_model, context) {
+        seenTools.push(context.tools?.map((tool) => tool.name) ?? []);
+        yield { type: "done", message: assistant };
+      },
       model,
     });
     const first = await codingAgent.createSession();
@@ -214,9 +218,15 @@ test("Harnesses created for one Project do not share mutable state", async () =>
 
     const secondEvents: string[] = [];
     second.subscribe((event) => { secondEvents.push(event.type); });
+    first.unregisterTool("bash");
     await first.prompt("only first");
     assert.deepEqual(secondEvents, []);
     assert.deepEqual(second.messages, []);
+    await second.prompt("only second");
+    assert.deepEqual(seenTools, [
+      ["read_file", "write_file", "edit_file", "glob", "todo_write"],
+      ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write"],
+    ]);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
