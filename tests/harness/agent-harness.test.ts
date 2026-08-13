@@ -52,6 +52,13 @@ function makeHarness(options: {
   return new AgentHarness(base);
 }
 
+test("sessionId exposes the bound Session identity", () => {
+  const session = Session.inMemory();
+  const harness = makeHarness({ session });
+
+  assert.equal(harness.sessionId, session.id);
+});
+
 // ── Step 1: Basic prompt/subscribe ──
 
 test("prompt resolves after publishing Harness events", async () => {

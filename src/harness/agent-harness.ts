@@ -212,6 +212,10 @@ export class AgentHarness {
 
   // ── State ──
 
+  get sessionId(): string {
+    return this.session.id;
+  }
+
   get messages(): readonly AgentMessage[] {
     return this._messages;
   }
