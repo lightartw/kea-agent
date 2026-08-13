@@ -13,29 +13,18 @@ const ASK_RULES = [
 ] as const;
 
 function isRecursiveForcedRootDelete(command: string): boolean {
-  // Match "rm" followed by both -r and -f (in any order: -rf, -fr, -r -f, -f -r)
-  // targeting "/" or "/*"
   if (!/\brm\b/.test(command)) return false;
   const tokens = command.split(/\s+/);
-  const flags = tokens.filter((t) => /^-[a-zA-Z]+$/.test(t)).join("");
-  const hasR = flags.includes("r");
-  const hasF = flags.includes("f");
-  const targetsRoot = tokens.some((t) => t === "/" || t === "/*");
-  return hasR && hasF && targetsRoot;
+  const flags = tokens.filter((token) => /^-[a-zA-Z]+$/.test(token)).join("");
+  return flags.includes("r") && flags.includes("f") &&
+    tokens.some((token) => token === "/" || token === "/*");
 }
 
-/**
- * Return a human-readable reason if `command` is unconditionally denied
- * regardless of Hook configuration. This is a backstop inside BashTool itself.
- */
 export function hardDeniedBashReason(command: string): string | undefined {
   if (isRecursiveForcedRootDelete(command)) {
     return "recursive forced root deletion is not allowed";
   }
-  for (const rule of HARD_DENY_RULES) {
-    if (rule.pattern.test(command)) return rule.reason;
-  }
-  return undefined;
+  return HARD_DENY_RULES.find((rule) => rule.pattern.test(command))?.reason;
 }
 
 type BashDecision =
@@ -43,17 +32,11 @@ type BashDecision =
   | { decision: "ask"; reason: string }
   | { decision: "deny"; reason: string };
 
-/**
- * Classify a Bash command into allow / ask / deny.
- * This is the single shared policy used by both the Permission Hook and BashTool.
- */
 export function classifyBashCommand(command: string): BashDecision {
-  const hardDeny = hardDeniedBashReason(command);
-  if (hardDeny !== undefined) return { decision: "deny", reason: hardDeny };
-
-  for (const rule of ASK_RULES) {
-    if (rule.pattern.test(command)) return { decision: "ask", reason: rule.reason };
-  }
-
-  return { decision: "allow" };
+  const denied = hardDeniedBashReason(command);
+  if (denied !== undefined) return { decision: "deny", reason: denied };
+  const ask = ASK_RULES.find((rule) => rule.pattern.test(command));
+  return ask === undefined
+    ? { decision: "allow" }
+    : { decision: "ask", reason: ask.reason };
 }

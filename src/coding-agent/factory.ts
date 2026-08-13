@@ -6,11 +6,11 @@ import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
 import { defaultSystemPrompt } from "../harness/system-prompt.js";
 import {
   createEditFileToolDefinition,
+  createGlobToolDefinition,
   createReadFileToolDefinition,
   createWriteFileToolDefinition,
 } from "./tools/builtin/files.js";
-import { createBashToolDefinition } from "./tools/builtin/bash/definition.js";
-import { createGlobToolDefinition } from "./tools/builtin/glob.js";
+import { createBashToolDefinition } from "./tools/builtin/bash.js";
 import { createTodoWriteToolDefinition } from "./tools/builtin/todo/definition.js";
 import { toAgentTool } from "./tools/definition.js";
 import { createPermissionHooks } from "./hooks/permission.js";

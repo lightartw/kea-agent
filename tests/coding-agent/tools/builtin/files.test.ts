@@ -8,8 +8,8 @@ import {
   createReadFileToolDefinition,
   createWriteFileToolDefinition,
   createEditFileToolDefinition,
+  createGlobToolDefinition,
 } from "../../../../src/coding-agent/tools/builtin/files.js";
-import { createGlobToolDefinition } from "../../../../src/coding-agent/tools/builtin/glob.js";
 
 function signal(): AbortSignal {
   return new AbortController().signal;

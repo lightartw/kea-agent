@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createBashToolDefinition } from "../../../../../src/coding-agent/tools/builtin/bash/definition.js";
-import type { BashOperations } from "../../../../../src/coding-agent/tools/builtin/bash/definition.js";
+import { createBashToolDefinition } from "../../../../src/coding-agent/tools/builtin/bash.js";
 
-class RecordingBashOperations implements BashOperations {
+class RecordingBashExecution {
   calls: string[] = [];
 
-  async exec(command: string): Promise<string> {
+  readonly execute = async (command: string): Promise<string> => {
     this.calls.push(command);
     return "executed";
-  }
+  };
 }
 
 function signal(): AbortSignal {
@@ -46,8 +45,8 @@ test("bash tool reports command failures", async () => {
 });
 
 test("bash tool independently blocks only hard-denied commands", async () => {
-  const ops = new RecordingBashOperations();
-  const definition = createBashToolDefinition(ops);
+  const execution = new RecordingBashExecution();
+  const definition = createBashToolDefinition(execution.execute);
   for (const command of [
     "rm -rf /",
     "sudo true",
@@ -61,12 +60,12 @@ test("bash tool independently blocks only hard-denied commands", async () => {
     assert.equal(result.isError, true, command);
     assert.match(result.content, /Permission denied/, command);
   }
-  assert.deepEqual(ops.calls, []);
+  assert.deepEqual(execution.calls, []);
 });
 
 test("bash tool leaves ask-class commands to the Hook layer", async () => {
-  const ops = new RecordingBashOperations();
-  const definition = createBashToolDefinition(ops);
+  const execution = new RecordingBashExecution();
+  const definition = createBashToolDefinition(execution.execute);
   for (const command of [
     "rm file.txt",
     "echo x > /etc/hosts",
@@ -74,7 +73,7 @@ test("bash tool leaves ask-class commands to the Hook layer", async () => {
   ]) {
     assert.equal((await definition.execute({ command }, signal(), context)).isError, false);
   }
-  assert.deepEqual(ops.calls, [
+  assert.deepEqual(execution.calls, [
     "rm file.txt",
     "echo x > /etc/hosts",
     "chmod 777 script.sh",
@@ -82,11 +81,11 @@ test("bash tool leaves ask-class commands to the Hook layer", async () => {
 });
 
 test("bash tool invokes its backend for a safe command", async () => {
-  const ops = new RecordingBashOperations();
-  const definition = createBashToolDefinition(ops);
+  const execution = new RecordingBashExecution();
+  const definition = createBashToolDefinition(execution.execute);
   assert.deepEqual(
     await definition.execute({ command: "pwd" }, signal(), context),
     { content: "executed", isError: false },
   );
-  assert.deepEqual(ops.calls, ["pwd"]);
+  assert.deepEqual(execution.calls, ["pwd"]);
 });
