@@ -153,6 +153,18 @@ tool_start / tool_end / tool_rejected
 
 `HarnessEvent` 是上层唯一的运行事实流。它包含 Agent 事实，并增加 run、lane、session、compaction 和 navigation 等 Harness 事实。
 
+`lane` 是 Harness 拥有的运行通道标识，`runId` 标识该通道中一次完整的 Harness 运行。同一条 lane 会先后产生多个 run，一个 run 也可能因重试或压缩包含多次 Agent 执行。因此 `(lane, runId)` 共同确定一次运行，UI 可以用它们将交错到达的 Event 归入正确的展示区域和运行实例。
+
+第一阶段只有 `main` lane，不实现后台通道或并行通道。现在保留 `lane` 是为了让 Event、Session 和 UI 从一开始使用完整、稳定的运行身份，不代表这些未来能力已经存在。
+
+认知边界如下：
+
+- Harness 创建并管理 `lane` 和 `runId`；
+- Coding Agent 通过 Harness 看到它们，不自行管理运行通道；
+- UI 将它们作为路由信息，不决定通道状态；
+- Session 在持久化运行状态时保留它们；
+- AI、Agent Loop、Agent Tool 和 Agent Hook 不知道 `lane` 或 `runId`。
+
 Harness 使用类型提升生成 Agent 部分，不手写复制每个事件：
 
 ```ts
@@ -334,7 +346,7 @@ interface CodingToolPresentationRegistry {
 }
 ```
 
-Registry 内部根据 tool name 找到强类型 Presentation。UI 不 import `AgentEvent`、`AgentToolCall` 或 `AgentToolResult`，也不负责在 Agent/Harness 两套事件之间转换。
+Registry 内部根据 tool name 找到强类型 Presentation。Coding Agent Presentation 使用 `AgentToolCall` 和 `AgentToolResult` 解释工具事实；UI 不直接构造或执行 Agent Tool，也不负责在 Agent/Harness 两套事件之间转换。只要工具语义没有改变，不再定义重复的 `HarnessToolCall` 或 `HarnessToolResult` 别名。
 
 ### 7.2 CodingAgentInteractions
 
@@ -463,7 +475,7 @@ Agent 与 Harness 是不同层，因此最终成为同级目录。目录迁移�
 9. Hook 只通过 `CodingAgentInteractions` 请求用户交互。
 10. `content` 与 `details` 保持同源和一致。
 11. Harness 不公开内部 Agent 实例，也不存在第二条上层 Agent Event 通道。
-12. 提升后的 Agent Event 都包含 `lane/runId`，Harness 自有事件名不与其冲突。
+12. 提升后的 Agent Event 都包含 `lane/runId`；第一阶段所有运行使用 `main` lane，Harness 自有事件名不与其冲突。
 13. 发布 Event 时，Harness 的可观察状态已经与该事实一致。
-14. Presentation Registry 只接收 `HarnessToolEvent`，UI 不处理 Agent 工具类型。
+14. Presentation Registry 接收 `HarnessToolEvent`；Agent Tool 数据的解释集中在 Coding Agent Presentation，UI 不直接装配或执行 Agent Tool。
 15. Agent Event 通过一个通用提升函数转发，不维护逐事件映射表。
