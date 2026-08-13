@@ -274,6 +274,7 @@ class AgentHarness {
   switchModel(model: ModelConfig): Promise<void>;
   registerTool(tool: AgentTool): void;
   unregisterTool(name: string): void;
+  get sessionId(): string;
   get messages(): readonly AgentMessage[];
   get model(): ModelConfig;
   get isRunning(): boolean;
@@ -304,9 +305,9 @@ class AgentHarness {
 - `ToolRejectedEvent`, `ToolRejectedReason`
 
 从 `src/harness/index.ts`：
-- `AgentHarness`, `Session`, `SessionError`, `SessionManager`
+- `AgentHarness`, `Session`, `SessionRepository`, `SessionError`
 - `defaultSystemPrompt`, `formatSystemPrompt`
-- `HarnessConfig`, `HarnessListener`, `HarnessProject`
+- `HarnessConfig`, `HarnessListener`
 - `SystemPromptBuilder`, `SystemPromptContext`, `Unsubscribe`
 - `SessionContext`, `SessionErrorCode`
 
