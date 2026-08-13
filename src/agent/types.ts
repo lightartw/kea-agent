@@ -28,7 +28,7 @@ export interface AgentLoopConfig {
   readonly model: ModelConfig;
   /** Convert agent messages to LLM-compatible messages before each stream call. */
   readonly convertToLlm: (messages: AgentMessage[]) => Message[];
-  /** Unified hook trigger for the five Agent Hook events. */
+  /** Unified hook trigger for the five Agent Hook Calls. */
   readonly hooks: AgentHookTrigger;
 }
 

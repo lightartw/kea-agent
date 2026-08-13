@@ -10,7 +10,7 @@ agent 核心分为四部分：
 1. `runAgentLoop`：纯函数，多 turn 事件循环。
 2. `HookRegistry`：类型化 Hook 注册与分发（控制通道）。
 3. `AgentTool` 与 `AgentToolRegistry`：工具定义、校验和执行。
-4. `AgentHarness`：有状态运行时的核心类，位于 `harness/` 子目录。
+4. `AgentHarness`：有状态运行时的核心类，位于 sibling 包 `harness/`（见 [harness/README.md](../harness/README.md)）。
 
 ## runAgentLoop
 
@@ -113,7 +113,8 @@ interface AgentLoopConfig {
 
 ### `AgentEvent` 与 `subscribe`：观察通道
 
-`AgentEvent` 描述已经发生或正在发生的运行事实。Harness 的 `subscribe` 让 UI 或其他消费者接收这些事件。
+`AgentEvent` 描述已经发生或正在发生的运行事实。Harness 把每个 `AgentEvent` 提升为
+`HarnessEvent`（附 `lane` 与 `runId`），并通过 `subscribe` 交付给 UI 或其他消费者。
 
 观察者的返回值被忽略。它不能阻止工具执行、改写上下文、修改工具结果或要求 Agent 继续运行。
 
@@ -261,7 +262,7 @@ timeout 和异常归一化，不重复 lookup 或 validate。`ToolPreparation` �
 
 ## AgentHarness
 
-位于 `agent/harness/`。持有 `_messages`、管理 `activeRun`、直接调用 `runAgentLoop()`、通过 `createLoopConfig()` 注入 `AgentHookTrigger`。
+位于 sibling 包 `harness/`。持有 `_messages`、管理 `activeRun`、直接调用 `runAgentLoop()`、通过 `createLoopConfig()` 注入 `AgentHookTrigger`。
 
 ```ts
 class AgentHarness {
@@ -278,7 +279,7 @@ class AgentHarness {
 }
 ```
 
-详见 [harness/README.md](harness/README.md)。
+详见 [harness/README.md](../harness/README.md)。
 
 ## 完整公开导出
 
@@ -301,7 +302,7 @@ class AgentHarness {
 - `AgentEvent`, `AgentContext`, `AgentLoopConfig`, `AgentMessage`
 - `ToolRejectedEvent`, `ToolRejectedReason`
 
-从 `src/agent/harness/index.ts`：
+从 `src/harness/index.ts`：
 - `AgentHarness`, `Session`, `SessionError`, `SessionManager`
 - `defaultSystemPrompt`, `formatSystemPrompt`
 - `HarnessConfig`, `HarnessListener`, `HarnessProject`
@@ -316,17 +317,18 @@ agent 层（以及其上的 coding-agent 层）从不 import 任何 UI/CLI 类�
 
 `HookRegistry<TContext>` 是泛型——agent 的 hook 层只负责把不透明的 `TContext` 原样传给 handler，它**不知道**盒子里装了什么。
 
-- coding-agent 定义 `CodingHookContext = { cwd, ui }`，把 `ui`（一个 `CodingHookUI`）塞进 context。
-- 需要和用户交互的 hook（如 permission）从 `context.ui` 取出 `confirm`/`notify` 调用。
-- CLI 实现 `CodingHookUI`；coding-agent 永不 import CLI。
+- coding-agent 定义 `CodingHookContext = { cwd, interactions }`，把 `interactions`（一个 `CodingAgentInteractions`）塞进 context。
+- 需要和用户交互的 hook（如 permission）从 `context.interactions` 取出 `confirm`/`notify` 调用。
+- UI 实现 `CodingAgentInteractions`；coding-agent 永不 import UI。
 
 ### Tool：构造注入（没有 context）
 
-`AgentTool.execute(args, timeoutSignal)` **没有** context/UI 参数。工具在组合根 `createToolRegistry(cwd)` 构造时就捕获自己的依赖。
+`AgentTool.execute(args, timeoutSignal)` **没有** context/UI 参数。工具由 coding-agent 的
+`createDefaultToolDefinitions()` 定义，经 `toAgentTool()` 投影为 `AgentTool`；组合根捕获依赖。
 
 ### 关键原则：策略属于 Hook，不属于工具
 
-「用户确认」这类 UI 交互不是工具职责，而是**策略**职责。Permission Hook（持有 `context.ui`）在工具执行前 gate bash 命令（allow/ask/deny），工具本身保持纯函数。这是策略与机制分离——工具是机制，Hook 是策略。
+「用户确认」这类 UI 交互不是工具职责，而是**策略**职责。Permission Hook（持有 `context.interactions`）在工具执行前 gate bash 命令（allow/ask/deny），工具本身保持纯函数。这是策略与机制分离——工具是机制，Hook 是策略。
 
 ## 包边界
 

@@ -81,7 +81,7 @@ export type AgentHookCall =
   | AfterToolCall
   | BeforeStopCall;
 
-// ── Handler / Observer / Lifecycle ──
+// ── Handler / Lifecycle ──
 
 export type HookHandler<TCall, TContext> = (
   call: TCall,

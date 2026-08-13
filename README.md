@@ -71,45 +71,46 @@ CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共�
 ## 启动路径
 
 ```text
-createStreamFn → Session.create → createHarness → CliFrontend
+createStreamFn → Session.create → createCodingAgent → CliFrontend
 ```
 
-`main.ts` 加载环境变量，创建 `CliFrontend`（实现 `CodingHookUI`），通过 `createHarness` 组装 Agent，最后调用 `cli.run(harness)`。
+`main.ts` 加载环境变量，创建 `CliFrontend`（其 `interactions` 实现 `CodingAgentInteractions`），通过 `createCodingAgent` 组装 Agent，最后调用 `cli.run(runtime)`。
 
 ## 包结构
 
 | 包 | README | 职责 |
 |----|--------|------|
 | `ai` | [ai/README.md](src/ai/README.md) | LLM 客户端抽象、StreamFn、消息类型 |
-| `agent` | [agent/README.md](src/agent/README.md) | Agent loop、Hook、工具注册、AgentEvent |
-| `agent/harness` | [harness/README.md](src/agent/harness/README.md) | 运行时、Session、订阅、Hook 透传 |
-| `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | 默认工具集、Bash 策略、permission Hook、UI port |
-| `ui` | — | 具体 CLI UI：Hook 交互实现、Harness event 渲染、Tool renderer |
+| `agent` | [agent/README.md](src/agent/README.md) | Agent loop、Hook Call、工具注册、AgentEvent |
+| `harness` | [harness/README.md](src/harness/README.md) | 运行时、Session、平坦 HarnessEvent、Hook 透传 |
+| `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | 默认工具定义、Bash 策略、permission Hook、交互 port |
+| `ui` | — | 具体 CLI UI：交互适配、Harness event 渲染、Coding Tool presentation 消费 |
 
-源码依赖方向始终向下：`ui -> coding-agent -> agent -> ai`。
+源码依赖方向始终向下：`ui -> coding-agent -> harness -> agent -> ai`。
 
 ## 工具系统
 
-工具通过 `AgentToolRegistry` 注册。每个工具继承 `AgentTool<TParameters>`，使用 TypeBox 定义参数 schema，并实现异步 `execute()`。默认工具集由 `createToolRegistry()` 创建，注册：
+工具在 coding-agent 定义一次（`CodingToolDefinition`，含可选的 presentation），经
+`toAgentTool()` 向下投影为 `AgentTool`、`createDefaultToolDefinitions()` 提供默认集：
 
-- `BashTool` — shell 命令执行
-- `ReadFileTool`、`WriteFileTool`、`EditFileTool` — 文件操作
-- `GlobTool` — 文件通配符匹配
-- `TodoWriteTool` — 任务列表管理
+- `bash` — shell 命令执行
+- `read_file`、`write_file`、`edit_file` — 文件操作
+- `glob` — 文件通配符匹配
+- `todo_write` — 任务列表管理（presentation 渲染 details）
 
 ## Hooks 与权限
 
-Hook 系统位于 `agent/hooks/`，提供类型化的控制通道。默认只注册一个真正改变控制流的
-Hook：
+Hook 系统位于 `agent/hooks/`，提供类型化的控制通道（`Hook Call` = 控制请求，返回结果；
+`AgentEvent` = 观察事实，无返回）。默认只注册一个真正改变控制流的 Hook：
 
-- **Permission** — Bash 命令的 allow/ask/deny 策略，通过 `CodingHookUI.confirm()` 询问
+- **Permission** — Bash 命令的 allow/ask/deny 策略，通过 `CodingAgentInteractions.confirm()` 询问
 
-被动的展示（工具调用日志、大输出提醒、工具计数 summary）不再是 Hook，而是 UI 层针对
+被动的展示（工具调用日志、大输出提醒、工具计数 summary）不是 Hook，而是 UI 层针对
 Harness `subscribe` 事件的 renderer 行为。
 
 Bash 安全策略分为三层：
-1. **硬拒绝**（`sudo`、`mkfs`、`> /dev/`、`rm -rf /` 等）：Hook 和 BashTool 均阻止，不询问 UI
-2. **询问**（`rm`、`> /etc/`、`chmod 777`）：通过 UI port 确认；无 UI 时 fail-closed
+1. **硬拒绝**（`sudo`、`mkfs`、`> /dev/`、`rm -rf /` 等）：Hook 和 bash 工具定义均阻止，不询问 UI
+2. **询问**（`rm`、`> /etc/`、`chmod 777`）：通过交互 port 确认；无交互时 fail-closed
 3. **允许**：直接放行
 
 文件工具始终拒绝 workspace 路径逃逸。权限确认只是防误操作机制，不是完整沙箱。
@@ -118,19 +119,19 @@ Bash 安全策略分为三层：
 
 三种相近但不同的能力对应三条通道，不要混淆：
 
-- **Hook UI**：Hook 需要用户决策时的交互端口（`CodingHookUI.confirm`/`notify`），属于控制通道。
-- **Harness UI**：订阅 `AgentEvent` 后渲染已确定的运行事实，属于观察通道。
-- **Tool UI**：Harness UI 内部针对工具事件按工具名分派的专用 renderer（如 `todo_write`），不是第四套运行机制。
+- **Hook UI（交互 port）**：Hook 需要用户决策时的交互端口（`CodingAgentInteractions.confirm`/`notify`），属于控制通道。
+- **Harness UI**：订阅 `HarnessEvent` 后渲染已确定的运行事实（含 `run_start`/`run_end`），属于观察通道。
+- **Tool UI（presentation）**：Harness UI 内部针对工具事件按工具名分派的专用 presentation（如 `todo_write`），不是第四套运行机制。
 
-具体实现集中在 `src/ui`（`frontend.ts`、`harness-renderer.ts`、`tool-renderers.ts`、
-`todo-renderer.ts`），`agent`、`harness` 与 `coding-agent` 不 import `src/ui`。
+具体实现集中在 `src/ui`（`cli-frontend.ts`、`cli-harness-renderer.ts`、`cli-interactions.ts`），
+`agent`、`harness` 与 `coding-agent` 不 import `src/ui`；`src/ui` 也不 import `src/agent`。
 
 ## CLI 与核心边界
 
-`main.ts` 负责加载环境变量并组装 stream、session、harness 和 CLI。`CliFrontend`（位于
-`src/ui/frontend.ts`）实现 `CodingHookUI`，通过 `harness.subscribe()` 消费事件并把工具
-事件分发给 Tool renderer。未来 TUI 可以消费相同的 `AgentEvent`、Session 和 details，
-而不改动 Agent loop。
+`main.ts` 负责加载环境变量并组装 stream、session、runtime 和 CLI。`CliFrontend`（位于
+`src/ui/cli-frontend.ts`）实现 `CodingAgentInteractions`，只消费 `CodingAgentRuntime`，
+通过 `runtime.harness.subscribe()` 消费事件并把工具事件分发给 `runtime.presentations`。
+未来 TUI 可以消费相同的 `HarnessEvent`、Session 和 details，而不改动 Agent loop。
 
 ## AI 层
 

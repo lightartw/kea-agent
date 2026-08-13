@@ -1,77 +1,51 @@
 # Coding Agent
 
-`coding-agent` 将通用 Agent 层组装为可直接使用的 Coding Agent。它定义 UI port、Bash 安全策略、默认 Hook 组合，并通过 `createHarness` 暴露。
+`coding-agent` 将通用 Agent 层组装为可直接使用的 Coding Agent。它定义交互 port、Bash
+安全策略、默认 Hook 组合、Coding Tool 定义与 presentation，并通过 `createCodingAgent`
+暴露运行时。
 
 ## 最小用法
 
 ```ts
-import { createHarness } from "./coding-agent/index.js";
-import { Session } from "./agent/harness/index.js";
+import { createCodingAgent } from "./coding-agent/index.js";
+import { Session } from "./harness/index.js";
 
-const harness = await createHarness({
+const runtime = await createCodingAgent({
   project: { workDir: process.cwd(), storageDir: ".sessions" },
   streamFn,
   model,
   session: Session.inMemory(),
-  ui: myUI, // 可选；未传入时 fail-closed
+  interactions: myInteractions, // 可选；未传入时 fail-closed
 });
 
-await harness.prompt("list files");
+await runtime.harness.prompt("list files");
 ```
 
 ## 职责
 
-- 将 `AgentHarness` 与 coding 工具集、coding system prompt 和默认 Hook 组装。
-- 通过 `CodingHookUI` 注入权限确认能力，不产生 `coding-agent -> ui` 的源码依赖。
-- UI 实现 `CodingHookUI` port；Coding Agent 永不导入 UI 代码。
+- 将 `AgentHarness` 与 Coding Tool 定义、coding system prompt 和默认 Hook 组装，返回 `CodingAgentRuntime`。
+- 通过 `CodingAgentInteractions` 注入权限确认能力，不产生 `coding-agent -> ui` 的源码依赖。
+- UI 实现 `CodingAgentInteractions` port；Coding Agent 永不导入 UI 代码。
+- 运行时 UI 只知道 `CodingAgentRuntime`；Coding Agent 在**构造期**直接接触 `AgentTool` 与 `AgentHook` 契约。
 
-## 默认 Hook：只有 permission
+## `CodingAgentInteractions`
 
-默认 `createCodingHookRegistry(context)` 只注册一个真正改变控制流的 Hook——permission。
-被动的展示（log、大输出提醒、工具计数 summary）不再是 Hook，而是 UI 层针对
-Harness `subscribe` 事件的 renderer 行为。
-
-| Hook | 类型 | 行为 |
-|------|------|------|
-| Permission | `tool_call` Handler | Bash 命令的 allow/ask/deny 策略；ask 时调用 `ui.confirm()` |
-
-## Bash 安全策略
-
-位于 `bash-policy.ts`，是 Permission Hook 与 `BashTool` 共享的单一来源。
-
-### 决策
-
-| 级别 | 示例 | 行为 |
-|------|------|------|
-| 硬拒绝 | `sudo`、`shutdown`、`mkfs`、`dd if=`、`> /dev/`、`rm -rf /` | Hook 和 BashTool 均阻止；不询问 UI |
-| 询问 | `rm`、`> /etc/`、`chmod 777` | Permission Hook 调用 `ui.confirm()` |
-| 允许 | `pwd`、`git status`、`npm test` | 直接放行 |
-
-### Fail-closed
-
-- 无 UI 或 `ui.available === false` → 询问类命令被拒绝。
-- 用户拒绝 → 拒绝。
-- `confirm()` 抛出异常 → 拒绝。
-- 外部 `AbortSignal` 已触发时，Agent Loop 优先归类为 `aborted`，不归类为 `blocked`。
-
-## `CodingHookUI`
-
-通用但严格受限的 UI port。`source` 是稳定来源标识，不建立封闭的 Hook 名称联合。
+通用但严格受限的交互 port。`source` 是稳定来源标识，不建立封闭的 Hook 名称联合。
 
 ```ts
-interface CodingHookUI {
+interface CodingAgentInteractions {
   readonly available: boolean;
-  confirm(confirmation: HookConfirmation, signal?: AbortSignal): Promise<boolean>;
-  notify(notification: HookNotification): void | Promise<void>;
+  confirm(request: ConfirmationRequest, signal?: AbortSignal): Promise<boolean>;
+  notify(notification: Notification): void | Promise<void>;
 }
 
-interface HookConfirmation {
+interface ConfirmationRequest {
   readonly source: string;
   readonly title: string;
   readonly message: string;
 }
 
-interface HookNotification {
+interface Notification {
   readonly source: string;
   readonly level: "info" | "warning" | "error";
   readonly message: string;
@@ -81,27 +55,65 @@ interface HookNotification {
 `notify()` 只用于 Hook 自己产生、没有对应运行 Event 的即时说明；普通工具开始/结束、
 工具结果、工具计数和大输出提醒都走 Harness `subscribe`，不经 `notify()`。
 
-## `createCodingHookRegistry`
+## 默认 Hook：只有 permission
 
-```ts
-function createCodingHookRegistry(
-  context: CodingHookContext,
-): HookRegistry<CodingHookContext>;
-```
+默认 `createCodingHookRegistry(context)` 只注册一个真正改变控制流的 Hook——permission。
+被动的展示（log、大输出提醒、工具计数 summary）不是 Hook，而是 UI 层针对 Harness
+`subscribe` 事件的 renderer 行为。
 
-创建预配置了 permission Hook 的 Registry。可用于自定义组合场景。
+| Hook | 类型 | 行为 |
+|------|------|------|
+| Permission | `tool_call` Handler | Bash 命令的 allow/ask/deny 策略；ask 时调用 `interactions.confirm()` |
 
 ```ts
 interface CodingHookContext {
   readonly cwd: string;
-  readonly ui: CodingHookUI;
+  readonly interactions: CodingAgentInteractions;
 }
 ```
 
-## 工具与 Todo 状态
+## Bash 安全策略
 
-默认工具集由 `createToolRegistry(cwd)` 创建：`bash`、`read_file`、`write_file`、
-`edit_file`、`glob`、`todo_write`。
+位于 `bash-policy.ts`，是 Permission Hook 与 `bash` 工具定义共享的单一来源。
+
+| 级别 | 示例 | 行为 |
+|------|------|------|
+| 硬拒绝 | `sudo`、`shutdown`、`mkfs`、`dd if=`、`> /dev/`、`rm -rf /` | Hook 和 BashTool 均阻止；不询问 UI |
+| 询问 | `rm`、`> /etc/`、`chmod 777` | Permission Hook 调用 `interactions.confirm()` |
+| 允许 | `pwd`、`git status`、`npm test` | 直接放行 |
+
+Fail-closed：无 interactions 或 `available === false` → 询问类命令被拒绝；用户拒绝 → 拒绝；
+`confirm()` 抛出异常 → 拒绝；外部 `AbortSignal` 已触发时，Agent Loop 优先归类为 `aborted`。
+
+## Coding Tool：一处定义、两个投影
+
+工具在 coding-agent 定义一次，向两个方向投影：
+
+- **向下**：`toAgentTool(definition, { cwd })` → `AgentTool`（进入 agent 层，无 renderer）。
+- **侧向**：`CodingToolPresentationRegistry` 按工具名注册 `definition.presentation`，供 UI 渲染。
+
+```ts
+interface CodingToolDefinition<TParameters, TDetails> {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: TParameters;
+  execute(arguments_, signal, context: CodingToolContext): Promise<AgentToolResult<TDetails>>;
+  readonly presentation?: CodingToolPresentation<Static<TParameters>, TDetails>;
+}
+
+interface CodingToolContext { readonly cwd: string; }
+
+function toAgentTool<TParameters, TDetails>(
+  definition: CodingToolDefinition<TParameters, TDetails>,
+  context: CodingToolContext,
+): AgentTool<TParameters, TDetails>;
+```
+
+内置定义由 `createDefaultToolDefinitions()` 创建：`bash`、`read_file`、`write_file`、
+`edit_file`、`glob`、`todo_write`。Coding Agent 构造期把每个定义投影为 `AgentTool` 交给
+Harness 的工具注册表，并把 `presentation` 注册进 presentation registry。
+
+## 工具与 Todo 状态
 
 `todo_write` 是无状态工具。每次调用返回完整列表，`content`（模型可见）与
 `details.todos`（程序可见）由同一输入派生：
@@ -122,23 +134,48 @@ function findLatestTodoDetails(messages: readonly AgentMessage[]): TodoDetails |
 
 Todo 的真实状态定义为「当前 Session 分支中最后一条有效 `todo_write` ToolResultMessage 的
 `details.todos`」，由 `findLatestTodoDetails` 投影，位于 coding-agent 而非具体 UI。
-重启、恢复和 switchModel 后新模型都能从 Provider 可见的 `content` 恢复完整列表。
+`todo_write` 的 presentation（渲染 details 为逐行列表）在 `createTodoWriteToolDefinition().presentation`，
+不在 UI 包。
+
+## 运行时
+
+```ts
+interface CodingAgentRuntime {
+  readonly harness: AgentHarness;
+  readonly presentations: CodingToolPresentationRegistry;
+}
+
+interface CreateCodingAgentConfig {
+  readonly project: HarnessProject;
+  readonly streamFn: StreamFn;
+  readonly model: ModelConfig;
+  readonly session: Session;
+  readonly systemPrompt?: string | SystemPromptBuilder;
+  readonly interactions?: CodingAgentInteractions;
+  readonly onEventListenerError?: HarnessListenerErrorHandler;
+}
+
+function createCodingAgent(config: CreateCodingAgentConfig): Promise<CodingAgentRuntime>;
+```
+
+`session` 在类型上必填，运行时仍保留 `session is required` 守卫（JavaScript 调用方不会拿到属性崩溃）。
 
 ## 完整公开导出
 
 从 `src/coding-agent/index.ts`：
 
-- `createHarness`、`createCodingHookRegistry`、`createToolRegistry`
-- `CODING_SYSTEM_PROMPT`
-- `CreateHarnessConfig`、`CodingHookContext`、`CodingHookUI`
-- `HookConfirmation`、`HookNotification`
+- `createCodingAgent`、`createCodingHookRegistry`、`createDefaultToolDefinitions`、`toAgentTool`
+- `CodingToolPresentationRegistry`、`NO_INTERACTIONS`、`CODING_SYSTEM_PROMPT`
+- `CodingAgentRuntime`、`CreateCodingAgentConfig`、`CodingHookContext`
+- `CodingAgentInteractions`、`ConfirmationRequest`、`Notification`
+- `CodingToolDefinition`、`CodingToolContext`、`CodingToolPresentation`、`ToolPresentationCall`、`ToolPresentationRejected`
 - `TodoItem`、`TodoDetails`
 
 ## 内部实现
 
 以下名称仅供 coding-agent 内部使用，不作为稳定公共 API：
 
-- `NO_HOOK_UI` — 默认 fail-closed UI 实现（不 root-export）
+- `NO_INTERACTIONS` — 默认 fail-closed 交互实现
 - `registerPermissionHook`
 - `classifyBashCommand`、`hardDeniedBashReason`
 
@@ -146,19 +183,19 @@ Todo 的真实状态定义为「当前 Session 分支中最后一条有效 `todo
 
 ```text
 ui
-    │ 实现 CodingHookUI；通过 subscribe 渲染
+    │ 实现 CodingAgentInteractions；只消费 CodingAgentRuntime + HarnessEvent
     ▼
 coding-agent
-    │ 创建默认 HookRegistry（只向下传 AgentHookTrigger）
+    │ 创建默认 HookRegistry、Coding Tool 定义；向下投影 AgentTool/AgentHook
     ▼
-agent/harness
-    │ 原样传递
+harness
+    │ 消费 AgentEvent，发布平坦 HarnessEvent
     ▼
-agent-loop
-    │ 在控制点触发 Hook
+agent
+    │ 在控制点触发 Hook Call
     ▼
-ai / tool registry
+ai
 ```
 
-源码依赖始终向下：`ui -> coding-agent -> agent -> ai`。运行时 `PermissionHook -> injected
-CodingHookUI` 是依赖倒置后的接口调用。
+源码依赖始终向下：`ui -> coding-agent -> harness -> agent -> ai`。运行时 `PermissionHook ->
+injected CodingAgentInteractions` 是依赖倒置后的接口调用。

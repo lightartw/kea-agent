@@ -3,138 +3,86 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
+  AgentTool,
+  AgentToolRegistry,
+  HookRegistry,
+  runAgentLoop,
+} from "../src/agent/index.js";
+
+import {
   AgentHarness,
+  MAIN_LANE,
   Session,
-  SessionError,
   SessionManager,
-  defaultSystemPrompt,
-  formatSystemPrompt,
 } from "../src/harness/index.js";
 
 import {
-  CODING_SYSTEM_PROMPT,
+  CodingToolPresentationRegistry,
   createCodingAgent,
-  createDefaultToolDefinitions,
 } from "../src/coding-agent/index.js";
 
-import { HookRegistry } from "../src/agent/hooks/index.js";
-import {
-  AgentTool,
-  AgentToolRegistry,
-} from "../src/agent/tools/index.js";
-import {
-  createCodingHookRegistry,
-} from "../src/coding-agent/index.js";
+import { CliFrontend } from "../src/ui/index.js";
+
+import type {
+  AgentEvent,
+  AgentHookCall,
+  AgentToolCall,
+  AgentToolResult,
+} from "../src/agent/index.js";
 
 import type {
   HarnessConfig,
-  HarnessListener,
-  HarnessProject,
-  SystemPromptBuilder,
-  SystemPromptContext,
-  Unsubscribe,
-} from "../src/harness/index.js";
-import type {
-  SessionContext,
-  SessionErrorCode,
+  HarnessEvent,
+  HarnessToolEvent,
 } from "../src/harness/index.js";
 
 import type {
-  CodingHookContext,
   CodingAgentInteractions,
   CodingAgentRuntime,
+  CodingToolDefinition,
+  CodingToolPresentation,
   CreateCodingAgentConfig,
-  ConfirmationRequest,
-  Notification,
-  TodoDetails,
-  TodoItem,
 } from "../src/coding-agent/index.js";
 
-import type {
-  AfterToolCall,
-  AfterToolCallPatch,
-  AgentHookCall,
-  AgentHookTrigger,
-  BeforeStopCall,
-  BeforeStopResult,
-  BeforeToolCall,
-  BeforeToolCallResult,
-  BeforeUserPromptCall,
-  BeforeUserPromptResult,
-  Cleanup,
-  HookHandler,
-  ResultOf,
-  TransformContextCall,
-  TransformContextResult,
-  Unregister,
-} from "../src/agent/hooks/index.js";
-
-import type {
-  AgentToolCall,
-  AgentToolResult,
-} from "../src/agent/tools/index.js";
-import type {
-  ToolRejectedEvent,
-  ToolRejectedReason,
-} from "../src/agent/types.js";
-
 void [
-  AgentHarness,
-  Session,
-  SessionError,
-  SessionManager,
-  defaultSystemPrompt,
-  formatSystemPrompt,
-  CODING_SYSTEM_PROMPT,
-  createCodingAgent,
-  createDefaultToolDefinitions,
-  HookRegistry,
+  runAgentLoop,
   AgentTool,
   AgentToolRegistry,
-  createCodingHookRegistry,
+  HookRegistry,
+  AgentHarness,
+  Session,
+  SessionManager,
+  MAIN_LANE,
+  createCodingAgent,
+  CodingToolPresentationRegistry,
+  CliFrontend,
 ];
 
 // Type-only assertions — keep imports from being tree-shaken
-type PublicAgentHookTypes = [
+type PublicAgentTypes = [
+  AgentEvent,
   AgentHookCall,
-  AgentHookTrigger,
-  AfterToolCall,
-  AfterToolCallPatch,
-  BeforeStopCall,
-  BeforeStopResult,
-  BeforeToolCall,
-  BeforeToolCallResult,
-  BeforeUserPromptCall,
-  BeforeUserPromptResult,
-  Cleanup,
-  HookHandler<BeforeUserPromptCall, Record<string, never>>,
-  ResultOf<BeforeUserPromptCall>,
-  TransformContextCall,
-  TransformContextResult,
-  Unregister,
+  AgentToolCall,
+  AgentToolResult,
+];
+
+type PublicHarnessTypes = [
+  HarnessEvent,
+  HarnessToolEvent,
+  HarnessConfig,
 ];
 
 type PublicCodingAgentTypes = [
-  CodingHookContext,
-  CodingAgentInteractions,
   CodingAgentRuntime,
-  ConfirmationRequest,
-  Notification,
-  TodoItem,
-  TodoDetails,
   CreateCodingAgentConfig,
+  CodingAgentInteractions,
+  CodingToolDefinition,
+  CodingToolPresentation<unknown, unknown>,
 ];
 
-type PublicAgentToolTypes = [
-  AgentToolCall,
-  AgentToolResult,
-  ToolRejectedEvent,
-  ToolRejectedReason,
-];
-
-void (null as PublicAgentHookTypes | null);
+void (null as PublicAgentTypes | null);
+void (null as PublicHarnessTypes | null);
 void (null as PublicCodingAgentTypes | null);
-void (null as PublicAgentToolTypes | null);
 
 test("public core imports without credentials or side effects", () => {
   const environment = { ...process.env };
