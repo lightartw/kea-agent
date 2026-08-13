@@ -1,6 +1,6 @@
 import type {
   AfterToolCall,
-  AfterToolCallPatch,
+  AfterToolCallResult,
   AgentHookCall,
   BeforeStopCall,
   BeforeStopResult,
@@ -16,12 +16,12 @@ import type {
   Unregister,
 } from "./types.js";
 
-function assertAfterToolCallPatch(value: unknown): asserts value is AfterToolCallPatch {
+function assertAfterToolCallResult(value: unknown): asserts value is AfterToolCallResult {
   if (typeof value !== "object" || value === null) return;
   if (!Object.hasOwn(value, "details")) return;
   if (!Object.hasOwn(value, "content") ||
     typeof (value as { content?: unknown }).content !== "string") {
-    throw new TypeError("AfterToolCall details patch requires string content");
+    throw new TypeError("AfterToolCallResult details requires string content");
   }
 }
 
@@ -235,11 +235,11 @@ export class HookRegistry<TContext> {
     handlers: HookHandler<AgentHookCall, TContext>[],
     context: TContext,
     signal: AbortSignal | undefined,
-  ): Promise<AfterToolCallPatch | undefined> {
+  ): Promise<AfterToolCallResult | undefined> {
     let currentContent = call.content;
     let currentIsError = call.isError;
     let currentDetails = call.details;
-    let hasPatch = false;
+    let hasResult = false;
     const accumulated: { content?: string; details?: unknown; isError?: boolean } = {};
     for (const handler of handlers) {
       const syntheticCall: AfterToolCall = {
@@ -257,26 +257,26 @@ export class HookRegistry<TContext> {
         signal,
       );
       if (result !== undefined && result !== null) {
-        assertAfterToolCallPatch(result);
-        const r = result as AfterToolCallPatch;
+        assertAfterToolCallResult(result);
+        const r = result as AfterToolCallResult;
         if (r.content !== undefined) {
           accumulated.content = r.content;
           currentContent = r.content;
-          hasPatch = true;
+          hasResult = true;
         }
         if (Object.hasOwn(r, "details")) {
           accumulated.details = r.details;
           currentDetails = r.details;
-          hasPatch = true;
+          hasResult = true;
         }
         if (r.isError !== undefined) {
           accumulated.isError = r.isError;
           currentIsError = r.isError;
-          hasPatch = true;
+          hasResult = true;
         }
       }
     }
-    return hasPatch ? (accumulated as AfterToolCallPatch) : undefined;
+    return hasResult ? (accumulated as AfterToolCallResult) : undefined;
   }
 
   private async triggerBeforeStop(

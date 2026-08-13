@@ -609,7 +609,7 @@ test("tool_call block false continues and block true creates an error result", a
   );
 });
 
-test("tool_result patch is identical in event history and next request", async () => {
+test("tool_result Hook result is identical in event history and next request", async () => {
   const tool = new NoopTool();
   const tools = new AgentToolRegistry();
   tools.register(tool);
@@ -821,7 +821,7 @@ test("successful execution ordering is hook → prepare → start → execute �
   ]);
 });
 
-test("AfterToolCall details patch reaches event, history, and next request", async () => {
+test("AfterToolCallResult details reach event, history, and next request", async () => {
   const tool = new NoopTool();
   const tools = new AgentToolRegistry();
   tools.register(tool);

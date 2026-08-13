@@ -28,7 +28,7 @@
 ### Agent control and execution
 
 - `src/agent/hooks/types.ts`: Hook Call/Result 契约，不包含观察者概念。
-- `src/agent/hooks/registry.ts`: 按注册顺序聚合 Handler 结果，校验 `AfterToolCallPatch`。
+- `src/agent/hooks/registry.ts`: 按注册顺序聚合 Handler 结果，校验 `AfterToolCallResult`。
 - `src/agent/tools/types.ts`: `AgentToolCall`、带 details 泛型的 `AgentToolResult` 和 `AgentTool`。
 - `src/agent/tools/registry.ts`: lookup/validate 的 `prepare()` 与 timeout/execute 的 `execute()`。
 - `src/agent/agent-loop.ts`: 唯一 Tool 调用时序与终态编排。
@@ -75,14 +75,14 @@
 
 **Interfaces:**
 - Consumes: 现有 `AgentMessage`、`HookRegistry<TContext>.register/trigger`、Bash policy。
-- Produces: `AgentHookCall`、五个 `*Call`、五个 Result/Patch、`CodingHookUI`、`HookConfirmation`、`HookNotification`、`NO_HOOK_UI`。
+- Produces: `AgentHookCall`、五个 `*Call`、五个 `*Result`、`CodingHookUI`、`HookConfirmation`、`HookNotification`、`NO_HOOK_UI`。
 
-- [ ] **Step 1: Rename the public Hook vocabulary in tests and add patch-invariant failures**
+- [ ] **Step 1: Rename the public Hook vocabulary in tests and add Result-invariant failures**
 
 Update type-only imports to the exact target names and add these registry cases:
 
 ```ts
-test("tool_result carries details through accumulated patches", async () => {
+test("tool_result carries details through accumulated results", async () => {
   const hooks = registry();
   hooks.register("tool_result", () => ({
     content: "normalized",
@@ -108,7 +108,7 @@ test("tool_result carries details through accumulated patches", async () => {
   });
 });
 
-test("tool_result rejects a details patch without string content", async () => {
+test("tool_result rejects details without string content", async () => {
   const hooks = registry();
   hooks.register("tool_result", (() => ({ details: { count: 1 } })) as never);
   await assert.rejects(
@@ -143,7 +143,7 @@ Run:
 npm run build
 ```
 
-Expected: TypeScript errors for missing `BeforeToolCall`、`AfterToolCallPatch`、`HookConfirmation` and the old permission request signature.
+Expected: TypeScript errors for missing `BeforeToolCall`、`AfterToolCallResult`、`HookConfirmation` and the old permission request signature.
 
 - [ ] **Step 3: Define the exact Hook Call and result types**
 
@@ -195,7 +195,7 @@ export interface BeforeToolCallResult {
   readonly reason?: string;
 }
 
-export type AfterToolCallPatch =
+export type AfterToolCallResult =
   | { readonly content?: string; readonly details?: never; readonly isError?: boolean }
   | { readonly content: string; readonly details: unknown; readonly isError?: boolean };
 
@@ -218,12 +218,12 @@ Update `ResultOf<TCall>`、`HookHandler`、`AgentHookTrigger` and Registry reduc
 Before applying each `tool_result` Handler output, validate it with:
 
 ```ts
-function assertAfterToolCallPatch(value: unknown): asserts value is AfterToolCallPatch {
+function assertAfterToolCallResult(value: unknown): asserts value is AfterToolCallResult {
   if (typeof value !== "object" || value === null) return;
   if (!Object.hasOwn(value, "details")) return;
   if (!Object.hasOwn(value, "content") ||
     typeof (value as { content?: unknown }).content !== "string") {
-    throw new TypeError("AfterToolCall details patch requires string content");
+    throw new TypeError("AfterToolCallResult details requires string content");
   }
 }
 ```
@@ -616,7 +616,7 @@ git commit -m "refactor: prepare tool calls before execution"
 - Consumes: `BeforeToolCall`、`AfterToolCall`、`AgentToolRegistry.prepare/execute`、Harness persistence-before-publish behavior.
 - Produces: `ToolRejectedReason`, `ToolRejectedEvent`, final-argument `tool_start/tool_end`, complete synthetic ToolResult messages and exactly-one-terminal-event behavior.
 
-- [ ] **Step 1: Add successful execution ordering and details-patch tests**
+- [ ] **Step 1: Add successful execution ordering and AfterToolCallResult details tests**
 
 Record an ordered trace and assert:
 
@@ -731,17 +731,17 @@ function toToolResultMessage(
 }
 ```
 
-- [ ] **Step 7: Apply AfterToolCall patches without losing fields**
+- [ ] **Step 7: Apply AfterToolCallResult without losing fields**
 
-Build the Hook call from the effective input and current result. When a patch exists, use own-property checks:
+Build the Hook call from the effective input and current result. When a Hook result exists, use own-property checks:
 
 ```ts
 result = {
-  content: patch.content ?? result.content,
-  ...(Object.hasOwn(patch, "details")
-    ? { details: patch.details }
+  content: hookResult.content ?? result.content,
+  ...(Object.hasOwn(hookResult, "details")
+    ? { details: hookResult.details }
     : result.details === undefined ? {} : { details: result.details }),
-  isError: patch.isError ?? result.isError,
+  isError: hookResult.isError ?? result.isError,
 };
 ```
 
@@ -1150,7 +1150,7 @@ type PublicAgentHookTypes = [
   AgentHookCall,
   AgentHookTrigger,
   AfterToolCall,
-  AfterToolCallPatch,
+  AfterToolCallResult,
   BeforeStopCall,
   BeforeStopResult,
   BeforeToolCall,

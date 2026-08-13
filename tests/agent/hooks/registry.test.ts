@@ -77,7 +77,7 @@ test("tool_call shares mutable input and exits only on block true", async () => 
   assert.equal(input.command, "echo changed");
 });
 
-test("tool_result handlers see and return the accumulated patch", async () => {
+test("tool_result handlers see and return the accumulated result", async () => {
   const hooks = registry();
   hooks.register("tool_result", () => ({ content: "changed" }));
   hooks.register("tool_result", (event) => {
@@ -110,7 +110,7 @@ test("stop uses the first continueWith result", async () => {
   );
 });
 
-test("tool_result carries details through accumulated patches", async () => {
+test("tool_result carries details through accumulated results", async () => {
   const hooks = registry();
   hooks.register("tool_result", () => ({
     content: "normalized",
@@ -136,7 +136,7 @@ test("tool_result carries details through accumulated patches", async () => {
   });
 });
 
-test("tool_result rejects a details patch without string content", async () => {
+test("tool_result rejects details without string content", async () => {
   const hooks = registry();
   hooks.register("tool_result", (() => ({ details: { count: 1 } })) as never);
   await assert.rejects(

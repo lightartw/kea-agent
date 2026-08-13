@@ -188,7 +188,7 @@ interface BeforeStopResult {
 }
 ```
 
-`BeforeToolCall.input` 是唯一允许原地修改的字段。它不是模型产出的原始 arguments 对象；Agent Loop 必须先保存不可变的原始 call，再创建工作副本交给 Hook。`AfterToolCall` 全部只读，Handler 只能通过第 8.3 节的 `AfterToolCallPatch` 修改结果。各 Result 的顺序聚合和 early-exit 规则沿用已实现语义。
+`BeforeToolCall.input` 是唯一允许原地修改的字段。它不是模型产出的原始 arguments 对象；Agent Loop 必须先保存不可变的原始 call，再创建工作副本交给 Hook。`AfterToolCall` 全部只读，Handler 只能通过第 8.3 节的 `AfterToolCallResult` 修改结果。各 Result 的顺序聚合和 early-exit 规则沿用已实现语义。
 
 ### 5.2 Registry API
 
@@ -373,10 +373,10 @@ abstract class AgentTool<
 
 ### 8.3 最终结果一致性
 
-`AfterToolCall` 和对应 patch 支持 details。为避免 UI 状态与模型可见状态静默发散，只要 Handler 修改 details，就必须同时明确返回与新 details 语义一致的完整 content：
+`AfterToolCall` 和对应 Result 支持 details。为避免 UI 状态与模型可见状态静默发散，只要 Handler 修改 details，就必须同时明确返回与新 details 语义一致的完整 content：
 
 ```ts
-type AfterToolCallPatch =
+type AfterToolCallResult =
   | {
       readonly content?: string;
       readonly details?: never;
@@ -391,7 +391,7 @@ type AfterToolCallPatch =
 
 这允许 Hook 只修改 content 或错误状态；但不允许只修改模型不可见的 details。当前不提供删除已有 details 的特殊 sentinel，出现真实需求后再扩展。
 
-类型约束之外，Registry 还必须校验运行时 Handler 输出：只要 patch 拥有 `details` 自有属性，就必须同时拥有字符串类型的 `content` 自有属性；否则按非法 Hook 输出处理，遵循 AfterToolCall Handler 异常策略。通用 Registry 无法判断 content 与任意 details 在业务语义上是否相等；具体领域 Hook 必须复用该领域的 formatter，并由领域测试保证。
+类型约束之外，Registry 还必须校验运行时 Handler 输出：只要 Result 拥有 `details` 自有属性，就必须同时拥有字符串类型的 `content` 自有属性；否则按非法 Hook 输出处理，遵循 AfterToolCall Handler 异常策略。通用 Registry 无法判断 content 与任意 details 在业务语义上是否相等；具体领域 Hook 必须复用该领域的 formatter，并由领域测试保证。
 
 Agent Loop 必须保证同一个 Hook 处理后的最终结果用于：
 
@@ -744,7 +744,7 @@ Pi 是重要设计参考，但不是无需判断的规范：
 
 - Session 读取时允许 ToolResultMessage 携带 JSON-safe details；
 - 模型需要的 Tool 状态必须完整出现在 content，不能只存在 details；
-- 修改 details 的 AfterToolCall patch 必须同时返回同步后的完整 content；
+- 修改 details 的 AfterToolCallResult 必须同时返回同步后的完整 content；
 - Todo renderer 在使用前验证 details 结构；
 - 旧 Session 没有 details 时使用通用 content；
 - renderer 错误局限在 UI，并回退到 fallback。
@@ -777,7 +777,7 @@ Pi 是重要设计参考，但不是无需判断的规范：
 - `tool_rejected.call` 保留原始参数，`effectiveArguments` 保存可用的 Hook 后参数；
 - 真实 Tool 执行产生匹配的 `tool_start` / `tool_end`；
 - `prepare()` 在 `tool_start` 前完成 lookup 和最终参数验证，`execute(prepared)` 不重复验证；
-- details 经过 AfterToolCall patch 后一致进入 Event、Session 和下一次请求的内存 Message；
+- details 经过 AfterToolCallResult 处理后一致进入 Event、Session 和下一次请求的内存 Message；
 - 修改 details 时类型要求同步返回 content；
 - ToolResultMessage details 不进入 Provider wire payload。
 

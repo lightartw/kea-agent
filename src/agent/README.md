@@ -63,7 +63,7 @@ BeforeToolCall/prepare 被拒绝 -> ToolResultMessage -> tool_rejected
   `ToolResultMessage` 并发射恰好一个 `tool_rejected`，不会静默丢失。
 - 批处理中途 Abort 时，已开始的调用照常 `tool_end`，其余调用各得一个 `aborted`
   的 `tool_rejected`。
-- 只修改 `details` 的 `AfterToolCall` patch 必须同时返回完整 `content`（Registry 运行时校验）。
+- `AfterToolCallResult` 修改 `details` 时必须同时返回完整 `content`（Registry 运行时校验）。
 
 ### Message 与 Event
 
@@ -134,7 +134,7 @@ Hook 在状态或动作提交前被调用，可以根据调用契约阻止、转
 | `user_prompt` | `BeforeUserPromptCall` | 顺序执行；第一个 `block: true` 获胜并提前结束 |
 | `context` | `TransformContextCall` | 顺序应用 `messages`；后一个看到前一个结果；只影响本次请求 |
 | `tool_call` | `BeforeToolCall` | 顺序执行与共享可变 `input`；第一个 `block: true` 获胜 |
-| `tool_result` | `AfterToolCall` | 顺序应用 patch；后一个看到前一个结果 |
+| `tool_result` | `AfterToolCall` | 顺序应用 Result；后一个看到前一个结果 |
 | `stop` | `BeforeStopCall` | 第一个 `continueWith` 获胜并提前结束 |
 
 ### 公开 API
@@ -169,10 +169,10 @@ export class HookRegistry<TContext> {
 - `Unregister` 幂等；`clear` 逆序执行 Cleanup 后可复用；`dispose` 永久销毁。
 - Handler 错误原样穿透，不包装。
 
-### `AfterToolCall` patch 不变量
+### `AfterToolCallResult` 不变量
 
-`AfterToolCallPatch` 是联合类型：只改 `content`/`isError` 允许省略 `details`；但一旦
-patch 带 `details` 自有属性，就必须同时带字符串 `content`。Registry 在应用每个 Handler
+`AfterToolCallResult` 是联合类型：只改 `content`/`isError` 允许省略 `details`；但一旦
+Result 带 `details` 自有属性，就必须同时带字符串 `content`。Registry 在应用每个 Handler
 输出前运行时校验，违规按 AfterToolCall 异常策略处理。
 
 ## AgentHookTrigger
@@ -292,7 +292,7 @@ class AgentHarness {
 - `BeforeUserPromptCall`, `BeforeUserPromptResult`
 - `TransformContextCall`, `TransformContextResult`
 - `BeforeToolCall`, `BeforeToolCallResult`
-- `AfterToolCall`, `AfterToolCallPatch`
+- `AfterToolCall`, `AfterToolCallResult`
 - `BeforeStopCall`, `BeforeStopResult`
 
 从 `src/agent/tools/index.ts`：

@@ -152,7 +152,7 @@ BeforeToolCall/prepare 被拒绝 -> ToolResultMessage -> tool_rejected
 - 被 block、参数无效、工具不存在或已 Abort 的调用合成 synthetic `ToolResultMessage` 并
   发射恰好一个 `tool_rejected`，不会静默丢失。
 - 批处理中途 Abort：已开始的调用照常 `tool_end`，其余调用各得一个 `aborted` 的 `tool_rejected`。
-- 修改 `details` 的 `AfterToolCall` patch 必须同时返回完整 `content`。
+- `AfterToolCallResult` 修改 `details` 时必须同时返回完整 `content`。
 
 ### 2.2 AgentEvent
 
@@ -217,7 +217,7 @@ class HookRegistry<TContext> {
 | `user_prompt` | `BeforeUserPromptCall` | 顺序；首个 `block: true` 提前结束 | `{ block?; reason? }` |
 | `context` | `TransformContextCall` | 顺序应用 `messages`；后一个看到前一个结果 | `{ messages? }` |
 | `tool_call` | `BeforeToolCall` | 顺序共享可变 `input`；首个 `block: true` 提前结束 | `{ block?; reason? }` |
-| `tool_result` | `AfterToolCall` | 顺序应用 patch；后一个看到前一个结果 | `AfterToolCallPatch` |
+| `tool_result` | `AfterToolCall` | 顺序应用 Result；后一个看到前一个结果 | `AfterToolCallResult` |
 | `stop` | `BeforeStopCall` | 首个 `continueWith` 提前结束 | `{ continueWith? }` |
 
 **语义：** 每次 `trigger()` 进入时快照 context/handler 列表；触发期间注册/注销只影响下次 trigger；`Unregister` 幂等；Handler 错误原样穿透。

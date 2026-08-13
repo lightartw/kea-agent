@@ -1,7 +1,7 @@
 export { HookRegistry } from "./registry.js";
 export type {
   AfterToolCall,
-  AfterToolCallPatch,
+  AfterToolCallResult,
   AgentHookCall,
   AgentHookTrigger,
   BeforeStopCall,

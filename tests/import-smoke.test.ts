@@ -26,6 +26,7 @@ import { CliFrontend } from "../src/ui/index.js";
 import type {
   AgentEvent,
   AgentHookCall,
+  AfterToolCallResult,
   AgentToolCall,
   AgentToolResult,
 } from "../src/agent/index.js";
@@ -62,6 +63,7 @@ void [
 type PublicAgentTypes = [
   AgentEvent,
   AgentHookCall,
+  AfterToolCallResult,
   AgentToolCall,
   AgentToolResult,
 ];

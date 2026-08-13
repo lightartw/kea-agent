@@ -8,7 +8,7 @@ export type ResultOf<TCall> =
   TCall extends BeforeUserPromptCall ? BeforeUserPromptResult :
   TCall extends TransformContextCall ? TransformContextResult :
   TCall extends BeforeToolCall ? BeforeToolCallResult :
-  TCall extends AfterToolCall ? AfterToolCallPatch :
+  TCall extends AfterToolCall ? AfterToolCallResult :
   TCall extends BeforeStopCall ? BeforeStopResult :
   void;
 
@@ -48,7 +48,7 @@ export interface BeforeToolCall
   input: Record<string, unknown>;
 }
 
-export type AfterToolCallPatch =
+export type AfterToolCallResult =
   | { readonly content?: string; readonly details?: never; readonly isError?: boolean }
   | { readonly content: string; readonly details: unknown; readonly isError?: boolean };
 

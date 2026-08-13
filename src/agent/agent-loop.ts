@@ -184,7 +184,7 @@ export async function* runAgentLoop(
 
               if (!signal?.aborted) {
                 try {
-                  const patch = await config.hooks.trigger({
+                  const hookResult = await config.hooks.trigger({
                     type: "tool_result",
                     toolCallId: effectiveCall.id,
                     toolName: effectiveCall.name,
@@ -193,13 +193,13 @@ export async function* runAgentLoop(
                     ...(result.details === undefined ? {} : { details: result.details }),
                     isError: result.isError,
                   }, signal);
-                  if (patch !== undefined) {
+                  if (hookResult !== undefined) {
                     result = {
-                      content: patch.content ?? result.content,
-                      ...(Object.hasOwn(patch, "details")
-                        ? { details: patch.details }
+                      content: hookResult.content ?? result.content,
+                      ...(Object.hasOwn(hookResult, "details")
+                        ? { details: hookResult.details }
                         : result.details === undefined ? {} : { details: result.details }),
-                      isError: patch.isError ?? result.isError,
+                      isError: hookResult.isError ?? result.isError,
                     };
                   }
                 } catch (error) {
