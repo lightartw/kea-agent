@@ -15,5 +15,4 @@ export type {
   ResultOf,
   TransformContextCall,
   TransformContextResult,
-  Unregister,
 } from "./types.js";

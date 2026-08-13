@@ -1,3 +1,4 @@
+export * from "./events/index.js";
 export * from "./ai/index.js";
 export * from "./agent/index.js";
 export * from "./harness/index.js";
