@@ -6,8 +6,8 @@ import type {
   CodingAgentInteractions,
   ConfirmationRequest,
 } from "../../../src/coding-agent/index.js";
-import { registerPermissionHook } from "../../../src/coding-agent/hooks/permission.js";
-import { classifyBashCommand, hardDeniedBashReason } from "../../../src/coding-agent/tools/builtin/bash-policy.js";
+import { registerPermissionHook } from "../../../src/coding-agent/hooks/builtin/permission.js";
+import { classifyBashCommand, hardDeniedBashReason } from "../../../src/coding-agent/tools/builtin/bash/bash-policy.js";
 
 // ── Step 1: Bash classification tests ──
 

@@ -1,5 +1,5 @@
 import { HookRegistry } from "../../agent/hooks/registry.js";
-import { registerPermissionHook } from "./permission.js";
+import { registerPermissionHook } from "./builtin/permission.js";
 import type { CodingAgentInteractions } from "../ui/interactions.js";
 
 export function createCodingHooks(

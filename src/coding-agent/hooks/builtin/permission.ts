@@ -1,10 +1,10 @@
-import { HookRegistry } from "../../agent/hooks/registry.js";
+import { HookRegistry } from "../../../agent/hooks/registry.js";
 import type {
   BeforeToolCall,
   BeforeToolCallResult,
-} from "../../agent/hooks/types.js";
-import { classifyBashCommand } from "../tools/builtin/bash-policy.js";
-import type { CodingAgentInteractions } from "../ui/interactions.js";
+} from "../../../agent/hooks/types.js";
+import { classifyBashCommand } from "../../tools/builtin/bash/bash-policy.js";
+import type { CodingAgentInteractions } from "../../ui/interactions.js";
 
 export function registerPermissionHook(
   hooks: HookRegistry<CodingAgentInteractions>,
