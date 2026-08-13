@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 
 import { config as loadDotenv } from "dotenv";
 
-import { CliFrontend } from "./ui/frontend.js";
+import { CliFrontend } from "./ui/cli-frontend.js";
 import { createCodingAgent } from "./coding-agent/factory.js";
 import { Session } from "./harness/session/session.js";
 import { createStreamFn } from "./ai/factory.js";
@@ -27,7 +27,7 @@ export async function asyncMain(): Promise<void> {
       streamFn: stream,
       model: defaultModel,
       session,
-      interactions: cli,
+      interactions: cli.interactions,
     });
     await cli.run(runtime);
   } finally {

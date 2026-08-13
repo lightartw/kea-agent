@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CliHarnessRenderer } from "../../src/ui/harness-renderer.js";
+import { CliHarnessRenderer } from "../../src/ui/cli-harness-renderer.js";
 import { CodingToolPresentationRegistry } from "../../src/coding-agent/ui/presentation-registry.js";
 import type { AgentToolCall } from "../../src/agent/tools/types.js";
 
