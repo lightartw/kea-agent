@@ -1,0 +1,86 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { CodingToolPresentationRegistry } from "../../../src/coding-agent/ui/presentation-registry.js";
+import type { AgentToolCall } from "../../../src/agent/tools/types.js";
+import type { HarnessToolEvent } from "../../../src/harness/events/types.js";
+
+const context = { lane: "main", runId: "run-1" } as const;
+const todoCall: AgentToolCall = {
+  type: "toolCall", id: "c1", name: "todo_write", arguments: {},
+};
+const bashCall: AgentToolCall = {
+  type: "toolCall", id: "c2", name: "bash", arguments: {},
+};
+
+function todoEnd(result: { content: string; isError: boolean }): HarnessToolEvent {
+  return { type: "tool_end", call: todoCall, result, ...context };
+}
+
+test("registry matches by tool name and falls back for unknown tools", () => {
+  const errors: string[] = [];
+  const registry = new CodingToolPresentationRegistry((message) => errors.push(message));
+  registry.register("todo_write", {
+    renderStart: () => "todo start",
+    renderEnd: () => "todo end",
+    renderRejected: () => "todo rejected",
+  });
+
+  assert.equal(registry.render({ type: "tool_start", call: todoCall, ...context }), "todo start");
+  assert.equal(registry.render(todoEnd({ content: "ok", isError: false })), "todo end");
+  assert.equal(registry.render({
+    type: "tool_rejected",
+    call: todoCall,
+    result: { content: "no", isError: true },
+    reason: "blocked",
+    ...context,
+  }), "todo rejected");
+  assert.equal(registry.render({ type: "tool_start", call: bashCall, ...context }), "[exec] bash: {}");
+  assert.deepEqual(errors, []);
+});
+
+test("registry falls back when presentation returns undefined or throws", () => {
+  const errors: string[] = [];
+  const registry = new CodingToolPresentationRegistry((message) => errors.push(message));
+  registry.register("todo_write", {
+    renderStart: () => undefined,
+    renderEnd: () => { throw new Error("boom"); },
+  });
+
+  assert.equal(
+    registry.render({ type: "tool_start", call: todoCall, ...context }),
+    "[exec] todo_write: {}",
+  );
+  assert.equal(
+    registry.render(todoEnd({ content: "ok", isError: false })),
+    "[done] todo_write: ok",
+  );
+  assert.deepEqual(errors, ["boom"]);
+});
+
+test("tool_end fallback reflects the error flag and rejected uses the reason", () => {
+  const registry = new CodingToolPresentationRegistry();
+  assert.equal(
+    registry.render(todoEnd({ content: "failed", isError: true })),
+    "[error] todo_write: failed",
+  );
+  assert.equal(
+    registry.render({
+      type: "tool_rejected",
+      call: todoCall,
+      result: { content: "denied", isError: true },
+      reason: "blocked",
+      ...context,
+    }),
+    "[rejected:blocked] todo_write: denied",
+  );
+});
+
+test("duplicate registration throws", () => {
+  const registry = new CodingToolPresentationRegistry();
+  registry.register("todo_write", { renderStart: () => "x", renderEnd: () => "y" });
+  assert.throws(
+    () => registry.register("todo_write", { renderStart: () => "z", renderEnd: () => "w" }),
+    /already registered/,
+  );
+});

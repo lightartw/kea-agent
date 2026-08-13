@@ -7,6 +7,9 @@ export { createToolRegistry } from "./tools/factory.js";
 export {
   NO_INTERACTIONS,
 } from "./ui/interactions.js";
+export {
+  CodingToolPresentationRegistry,
+} from "./ui/presentation-registry.js";
 
 export type { CreateHarnessConfig } from "./types.js";
 export type { CodingHookContext } from "./hooks/types.js";
@@ -15,6 +18,11 @@ export type {
   ConfirmationRequest,
   Notification,
 } from "./ui/interactions.js";
+export type {
+  CodingToolPresentation,
+  ToolPresentationCall,
+  ToolPresentationRejected,
+} from "./ui/tool-presentation.js";
 export type {
   TodoItem,
   TodoDetails,
