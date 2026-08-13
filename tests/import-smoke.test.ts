@@ -8,9 +8,10 @@ import {
   runAgentLoop,
 } from "../src/agent/index.js";
 
+import { Events } from "../src/events/index.js";
+
 import {
   AgentHarness,
-  MAIN_LANE,
   Session,
   SessionRepository,
 } from "../src/harness/index.js";
@@ -22,27 +23,17 @@ import {
 
 import { CliFrontend } from "../src/ui/index.js";
 
-import type { StreamChunk } from "../src/ai/index.js";
-
-import { Events } from "../src/events/index.js";
-
 import type {
   AgentRunIdentity,
+  AgentToolCall,
+  AgentToolResult,
   ToolCallDecision,
 } from "../src/agent/index.js";
 
 import type {
-  AgentToolCall,
-  AgentToolResult,
-} from "../src/agent/index.js";
-
-import type {
+  CreateSessionInput,
   HarnessConfig,
   HarnessRunEndInput,
-} from "../src/harness/index.js";
-
-import type {
-  CreateSessionInput,
   SessionHeader,
   SessionInfo,
 } from "../src/harness/index.js";
@@ -54,17 +45,21 @@ import type {
   CreateProjectConfig,
   Project,
   ProjectInfo,
+  ToolPresentationInput,
 } from "../src/coding-agent/index.js";
 
+import type { StreamChunk } from "../src/ai/index.js";
+
+import type { EventContract, EventMap } from "../src/events/index.js";
+
 void [
+  Events,
   runAgentLoop,
   AgentTool,
   AgentToolRegistry,
-  Events,
   AgentHarness,
   Session,
   SessionRepository,
-  MAIN_LANE,
   createProject,
   CodingToolPresentationRegistry,
   CliFrontend,
@@ -93,13 +88,16 @@ type PublicCodingAgentTypes = [
   CodingAgentInteractions,
   CodingToolDefinition,
   CodingToolPresentation<unknown, unknown>,
+  ToolPresentationInput,
 ];
 
+type PublicEventTypes = [EventContract<"emit", unknown>, EventMap];
 type PublicAiTypes = [StreamChunk];
 
 void (null as PublicAgentTypes | null);
 void (null as PublicHarnessTypes | null);
 void (null as PublicCodingAgentTypes | null);
+void (null as PublicEventTypes | null);
 void (null as PublicAiTypes | null);
 
 test("public core imports without credentials or side effects", () => {

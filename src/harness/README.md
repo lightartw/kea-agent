@@ -7,13 +7,18 @@
 - AgentHarness 运行这个 Session；
 - SessionRepository 创建、打开和列举多个 Session。
 
+Harness 没有 `subscribe()`，也没有私有的 EventBus。运行事实通过 **Project 提供的共享
+`Events`** 实例发布；Session 和 Run 的身份（`sessionId`、`runId`、`lane`）让 UI 可以从多个
+并发 Session 中选择自己要渲染的那一个。
+
 ## 最小用法
 
-下面的 Session 只存在于内存中。订阅者接收运行事件，`prompt()` 则启动一次完整的 Run：
+下面的 Session 只存在于内存中。UI 订阅 `events` 后，`prompt()` 启动一次完整的 Run：
 
 ```ts
 import { createStreamFn } from "../ai/index.js";
 import { AgentToolRegistry } from "../agent/index.js";
+import { Events } from "../events/index.js";
 import {
   AgentHarness,
   Session,
@@ -26,6 +31,7 @@ const session = Session.inMemory({
   directory: process.cwd(),
   cwd: ".",
 });
+const events = new Events();
 const harness = new AgentHarness({
   session,
   model: defaultModel,
@@ -33,10 +39,11 @@ const harness = new AgentHarness({
   toolRegistry: new AgentToolRegistry(),
   systemPrompt: defaultSystemPrompt("You are a helpful assistant."),
   cwd: process.cwd(),
+  events,
 });
 
-const unsubscribe = harness.subscribe((event) => {
-  if (event.type === "text_delta") process.stdout.write(event.text);
+const unsubscribe = events.on("agent/text-delta", (input) => {
+  if (input.sessionId === harness.sessionId) process.stdout.write(input.text);
 });
 
 await harness.prompt("Explain what a session is.");
@@ -51,17 +58,22 @@ unsubscribe();
 
 运行时，Harness 依次完成这些工作：
 
-1. 根据当前模型、工具、工作目录和日期生成 system prompt；
-2. 发布带有新 `runId` 的 `run_start`；
-3. 调用 `runAgentLoop()`，持久化它新增的消息，并发布提升后的 Agent Event；
-4. 发布 `run_end`，其 `reason` 为 `completed`、`aborted` 或 `error`。
+1. 创建 Run 的 `AbortController` 和身份 `run = { sessionId, runId, lane }`；
+2. 根据当前模型、工具、工作目录和日期生成 system prompt；
+3. 通过 `events.emit("harness/run-start", run)` 发布 run 开始；
+4. 调用一次 `runAgentLoop()`，把 `_messages` 本身作为只读视图交给 Agent，并实现
+   `appendMessage`（先 `session.appendMessage` 落盘，再更新内存视图）；
+5. 在 `finally` 中清理 `activeRun` 并发布恰好一个 `harness/run-end`，其 `reason` 为
+   `completed`、`aborted` 或 `error`。
 
-Harness 把新消息写回构造时绑定的 Session。下一次调用 `prompt()` 时，Agent 继续使用同一份历史。
-如果 system prompt 尚未生成就失败，Run 还没有开始，因此不会发布 `run_start` 或 `run_end`。
+Agent 每次 `appendMessage` 都同步写入 Session；只有完整消息持久化成功后，Agent 才发布对应
+的事实事件。如果 system prompt 尚未生成就失败，Run 还没有开始，因此不会发布 `run_start`
+或 `run_end`。
 
 同一个 Harness 同时只运行一个 `prompt()`。忙碌时调用 `prompt()`、`switchModel()`、
 `registerTool()` 或 `unregisterTool()` 会抛出 `AgentHarness is busy`；`abort()` 可以请求中止当前
-Run，空闲时调用则不产生效果。
+Run，空闲时调用则不产生效果。中止信号优先于迟到的 listener 答案：Run 按 `aborted` 分类，
+取消类错误不会重新抛出。
 
 ## Session：一份会话的数据
 
@@ -121,42 +133,54 @@ const recent = sessions[0] === undefined
 `AgentHarness` 不持有 Repository。应用先用 Repository 取得 Session，再把该 Session 交给新的
 Harness。`harness.sessionId` 标识 Harness 当前绑定的 Session，但不暴露可写的 Session 对象。
 
-## Event Bus：报告运行事实
+## Events：共享的运行事实通道
 
-`AgentHarness.subscribe(listener)` 把 listener 注册到内部 `HarnessEventBus`，并返回幂等的
-`unsubscribe()`。每个 `HarnessEvent` 都带有：
-
-- `runId`：一次 `prompt()` 的唯一 ID；
-- `lane`：运行通道；当前值为常量 `MAIN_LANE`，即 `main`；
-- `type`：发生的事实，例如 `run_start`、`text_delta`、`tool_end` 或 `run_end`。
-
-Harness 自己发布 `run_start` 和 `run_end`。`runAgentLoop()` 产生的 `AgentEvent` 由
-`liftAgentEvent()` 加上 `runId` 和 `lane` 后发布。常见事件包括：
-
-- Run：`run_start`、`run_end`；
-- Agent 与 LLM 请求：`agent_start`、`agent_end`、`turn_start`、`turn_end`；
-- 流式内容：`text_delta`、`thinking_delta`；
-- Tool call 生成：`toolcall_start`、`toolcall_delta`、`toolcall_end`；
-- Tool 执行：`tool_start`、`tool_end`、`tool_rejected`。
-
-Listener 按订阅顺序执行，异步结果也会被等待。某个 listener 抛错不会中断 Run 或阻止其他
-listener；Harness 把错误交给 `onEventListenerError`。一次发布使用当时的 listener 快照，
-订阅变化从下一个 Event 开始生效。
-
-直接使用 Event Bus 时，它的公开接口是：
+Harness 构造时接收 `events: Events`——它是 Project 拥有的唯一实例，一份 Project 的所有
+Session 共享。Harness 发布两个 Run 边界事件，Agent 层发布其余事实：
 
 ```ts
-class HarnessEventBus {
-  constructor(onListenerError?: HarnessListenerErrorHandler);
-  subscribe(listener: HarnessListener): Unsubscribe;
-  publish(event: HarnessEvent): Promise<void>;
-}
+export const MAIN_LANE = "main";
+
+export type HarnessRunEndInput = AgentRunIdentity & (
+  | { reason: "completed" | "aborted" }
+  | { reason: "error"; errorMessage: string }
+);
+
+// "harness/run-start": EventContract<"emit", AgentRunIdentity>;
+// "harness/run-end":   EventContract<"emit", HarnessRunEndInput>;
 ```
 
-Event 和 Hook 作用于不同阶段。Event 通过 `subscribe()` 报告已经发生的事实，listener 的
-返回值会被忽略。Hook 通过 `AgentHookTrigger.trigger()` 在提交前执行，可以按具体 Hook 契约
-阻止或转换 user prompt、上下文、Tool call、Tool result 或停止行为。Harness 从
-`HarnessConfig.hooks` 接收这个窄触发接口；它不定义另一套 Hook 类型。
+没有 `HarnessEvent` 联合类型，也没有 `liftAgentEvent`。每个事实事件都携带
+`AgentRunIdentity`（`sessionId`、`runId`、`lane`），UI 用它过滤：
+
+```ts
+events.on("agent/turn-end", (input) => {
+  if (input.sessionId !== selectedSessionId) return;
+  render(input.message);
+});
+```
+
+常见事实事件（均由 `src/agent/events.ts` 声明）：
+
+- Run 边界：`harness/run-start`、`harness/run-end`；
+- Turn：`agent/turn-start`、`agent/turn-end`；
+- 流式内容：`agent/text-delta`、`agent/thinking-delta`；
+- Tool call 生成：`agent/toolcall-start`、`agent/toolcall-delta`、`agent/toolcall-end`；
+- Tool 执行：`agent/tool-start`、`agent/tool-end`、`agent/tool-rejected`。
+
+### `EventMap` 与 `Events`
+
+`EventMap` 是编译期契约：各包通过模块扩充把 `EventContract` 加入 `EventMap`，`Events.on()`
+从选定事件自动推导 listener 签名。运行时 `Events` 提供四种方法：
+
+- `on(name, listener)`：注册 listener，返回幂等的 `Unregister`；
+- `emit(name, input)`：按顺序调用全部 listener，逐个隔离异常并交给 `onListenerError`；
+- `ask(name, input, signal?)`：返回第一个非 `undefined` 答案，不调用后续 listener；
+- `transform(name, input, signal?)`：把每个返回值传给下一个 listener；listener 不调用
+  `next()` 时终止链。
+
+`emit` 的 listener 错误被隔离，不会中断 Run；`ask`/`transform` 的 listener 错误原样穿透。
+控制（`ask`/`transform`）在状态提交前执行，事实（`emit`）报告已经发生的事实——两者是不同通道。
 
 ## 配置 `AgentHarness`
 
@@ -168,8 +192,7 @@ interface HarnessConfig {
   readonly toolRegistry: AgentToolRegistry;
   readonly systemPrompt: SystemPromptBuilder;
   readonly cwd: string;
-  readonly hooks?: AgentHookTrigger;
-  readonly onEventListenerError?: HarnessListenerErrorHandler;
+  readonly events: Events;
   readonly titleGenerator?: SessionTitleGenerator;
 }
 ```
@@ -178,10 +201,9 @@ interface HarnessConfig {
 - `model` 是 Session 没有保存模型时的初始 `ModelConfig`；
 - `streamFn` 完成一次对指定 provider/model 的流式 LLM 请求；
 - `toolRegistry` 提供本次 Agent 可以看见和执行的 Tool；
-- `hooks` 是可选的 Hook Trigger，省略时 Harness 使用空 Registry；
+- `events` 是共享的 `Events` 实例，Harness 发布 `harness/*` 并把同一实例传给 Agent；
 - `systemPrompt` 是每个 Run 开始前调用的 builder；
 - `cwd` 进入 `SystemPromptContext`，让 builder 描述当前工作目录；
-- `onEventListenerError` 接收被 Event Bus 隔离的 listener 错误；
 - `titleGenerator` 是可选的自动标题生成器（见下）。
 
 `SystemPromptBuilder` 接收当前 `model`、注册的 `tools`、`cwd` 和 `date`，返回字符串或
@@ -193,7 +215,7 @@ interface HarnessConfig {
 当 `titleGenerator` 存在、Session 标题仍为 `"unknown"` 且恢复历史中还没有 user 消息时，
 Harness 在第一个真实 user 消息持久化后启动一次后台标题请求。它只使用该消息与当前模型，
 无 Tools，返回单行 ≤100 字符标题，经 `setTitleIfUnknown()` 写入；失败、超长或晚到的结果都
-不会覆盖已修改的标题，也不会阻塞或失败 Agent Run。标题请求不产生 Harness Event。
+不会覆盖已修改的标题，也不会阻塞或失败 Agent Run。标题请求不产生任何事件。
 
 ### `AgentHarness` 的公开成员
 
@@ -201,7 +223,6 @@ Harness 在第一个真实 user 消息持久化后启动一次后台标题请求
 class AgentHarness {
   constructor(config: HarnessConfig);
   prompt(input: string): Promise<void>;
-  subscribe(listener: HarnessListener): Unsubscribe;
   abort(): void;
   switchModel(model: ModelConfig): Promise<void>;
   registerTool(tool: AgentTool): void;
@@ -222,15 +243,14 @@ class AgentHarness {
 ## 包边界和源码位置
 
 Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 提供
-`runAgentLoop()`、消息、Event、Tool Registry 和 Hook Trigger。具体 coding tools、交互 UI 和
-项目级组装属于 Harness 上层。
+`runAgentLoop()`、消息、`AgentRunIdentity` 和 Tool Registry；`events` 提供共享 dispatcher。
+具体 coding tools、交互 UI 和项目级组装属于 Harness 上层。
 
 - `index.ts`：包入口；
 - `agent-harness.ts`：Session 的运行与控制；
 - `types.ts`：`HarnessConfig` 与 system prompt 类型；
 - `system-prompt.ts`：默认 builder 与模板格式化；
-- `events/event-bus.ts`：订阅和发布；
-- `events/types.ts`：Harness Event 类型与提升函数；
+- `events.ts`：Run 边界事件契约（`MAIN_LANE`、`HarnessRunEndInput`）；
 - `session/session.ts`：单份 Session 的数据和持久化；
 - `session/repository.ts`：多份 Session 的 `create/open/list`；
 - `session/types.ts`：`SessionContext`、错误和存储记录类型。
@@ -245,11 +265,9 @@ Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 
 - `Session`：保存和重建一份会话；
 - `SessionRepository`：在一个存储目录中创建、打开和列举 Session；
 - `SessionError`：带有 `SessionErrorCode` 的会话错误；
-- `HarnessEventBus`：订阅并顺序发布 `HarnessEvent`；
 - `defaultSystemPrompt`：把模板包装为 `SystemPromptBuilder`；
 - `formatSystemPrompt`：替换模板的 `{{cwd}}` 和 `{{date}}`；
-- `MAIN_LANE`：当前 lane 值 `main`；
-- `liftAgentEvent`：给 `AgentEvent` 加上 `HarnessEventContext`。
+- `MAIN_LANE`：当前 lane 值 `main`。
 
 ### 类型
 
@@ -257,6 +275,5 @@ Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 
   `SystemPromptBuilder`、`SystemPromptContext`；
 - Session：`CreateSessionInput`、`SessionHeader`、`SessionInfo`、`SessionContext`、
   `SessionErrorCode`；
-- Event：`HarnessEvent`、`HarnessEventContext`、`HarnessOwnedEvent`、
-  `HarnessRunEndEvent`、`HarnessToolEvent`、`LiftAgentEvent`；
-- 订阅：`HarnessListener`、`HarnessListenerErrorHandler`、`Unsubscribe`
+- 事件：`HarnessRunEndInput`；
+- `AgentRunIdentity` 来自 `agent` 包，是所有事件共用的身份类型。
