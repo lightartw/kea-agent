@@ -5,7 +5,7 @@ import type { Interface } from "node:readline/promises";
 
 import { CliFrontend } from "../../src/ui/frontend.js";
 import type { HookConfirmation } from "../../src/coding-agent/types.js";
-import type { AgentHarness } from "../../src/agent/harness/agent-harness.js";
+import type { AgentHarness } from "../../src/harness/agent-harness.js";
 
 type QuestionFn = (
   query: string,

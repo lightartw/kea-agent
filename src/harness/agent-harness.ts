@@ -1,10 +1,10 @@
-import { runAgentLoop } from "../agent-loop.js";
-import type { AgentLoopConfig, AgentEvent, AgentMessage } from "../types.js";
-import type { AgentTool } from "../tools/types.js";
-import type { AgentToolRegistry } from "../tools/registry.js";
-import { HookRegistry } from "../hooks/registry.js";
-import type { AgentHookTrigger } from "../hooks/types.js";
-import type { Message, ModelConfig, StreamFn } from "../../ai/types.js";
+import { runAgentLoop } from "../agent/agent-loop.js";
+import type { AgentLoopConfig, AgentEvent, AgentMessage } from "../agent/types.js";
+import type { AgentTool } from "../agent/tools/types.js";
+import type { AgentToolRegistry } from "../agent/tools/registry.js";
+import { HookRegistry } from "../agent/hooks/registry.js";
+import type { AgentHookTrigger } from "../agent/hooks/types.js";
+import type { Message, ModelConfig, StreamFn } from "../ai/types.js";
 import { Session } from "./session/session.js";
 import type {
   HarnessConfig,

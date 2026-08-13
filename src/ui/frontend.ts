@@ -1,6 +1,6 @@
 import { createInterface, type Interface } from "node:readline/promises";
 
-import type { AgentHarness } from "../agent/harness/agent-harness.js";
+import type { AgentHarness } from "../harness/agent-harness.js";
 import type {
   CodingHookUI,
   HookConfirmation,

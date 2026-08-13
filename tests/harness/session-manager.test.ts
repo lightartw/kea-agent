@@ -6,8 +6,8 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import type { AgentMessage } from "../../src/agent/types.js";
-import { Session } from "../../src/agent/harness/session/session.js";
-import { SessionManager } from "../../src/agent/harness/session/manager.js";
+import { Session } from "../../src/harness/session/session.js";
+import { SessionManager } from "../../src/harness/session/manager.js";
 
 const user: AgentMessage = { role: "user", content: "hello" };
 const assistant: AgentMessage = {

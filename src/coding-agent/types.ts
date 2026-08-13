@@ -1,6 +1,6 @@
-import type { HarnessProject, SystemPromptBuilder } from "../agent/harness/types.js";
+import type { HarnessProject, SystemPromptBuilder } from "../harness/types.js";
 import type { StreamFn, ModelConfig } from "../ai/types.js";
-import type { Session } from "../agent/harness/session/session.js";
+import type { Session } from "../harness/session/session.js";
 import type { CodingHookUI } from "./hooks/types.js";
 
 export type {

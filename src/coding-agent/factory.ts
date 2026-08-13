@@ -1,10 +1,10 @@
-import { AgentHarness } from "../agent/harness/agent-harness.js";
+import { AgentHarness } from "../harness/agent-harness.js";
 import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
-import { defaultSystemPrompt } from "../agent/harness/system-prompt.js";
+import { defaultSystemPrompt } from "../harness/system-prompt.js";
 import { createToolRegistry } from "./tools/factory.js";
 import { createCodingHookRegistry } from "./hooks/factory.js";
 import { NO_HOOK_UI } from "./hooks/types.js";
-import type { SystemPromptBuilder } from "../agent/harness/types.js";
+import type { SystemPromptBuilder } from "../harness/types.js";
 import type { CreateHarnessConfig } from "./types.js";
 
 function resolveSystemPrompt(

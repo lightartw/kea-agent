@@ -1,8 +1,8 @@
-import type { AgentEvent } from "../types.js";
-import type { AgentTool } from "../tools/types.js";
-import type { AgentToolRegistry } from "../tools/registry.js";
-import type { AgentHookTrigger } from "../hooks/types.js";
-import type { ModelConfig, StreamFn } from "../../ai/types.js";
+import type { AgentEvent } from "../agent/types.js";
+import type { AgentTool } from "../agent/tools/types.js";
+import type { AgentToolRegistry } from "../agent/tools/registry.js";
+import type { AgentHookTrigger } from "../agent/hooks/types.js";
+import type { ModelConfig, StreamFn } from "../ai/types.js";
 import type { Session } from "./session/session.js";
 
 export type HarnessListener = (

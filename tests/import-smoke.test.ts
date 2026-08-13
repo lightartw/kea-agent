@@ -9,7 +9,7 @@ import {
   SessionManager,
   defaultSystemPrompt,
   formatSystemPrompt,
-} from "../src/agent/harness/index.js";
+} from "../src/harness/index.js";
 
 import {
   CODING_SYSTEM_PROMPT,
@@ -33,11 +33,11 @@ import type {
   SystemPromptBuilder,
   SystemPromptContext,
   Unsubscribe,
-} from "../src/agent/harness/index.js";
+} from "../src/harness/index.js";
 import type {
   SessionContext,
   SessionErrorCode,
-} from "../src/agent/harness/index.js";
+} from "../src/harness/index.js";
 
 import type {
   CodingHookContext,

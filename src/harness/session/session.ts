@@ -1,8 +1,8 @@
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { AgentMessage } from "../../types.js";
-import type { ModelConfig } from "../../../ai/types.js";
+import type { AgentMessage } from "../../agent/types.js";
+import type { ModelConfig } from "../../ai/types.js";
 import {
   type SessionContext,
   type SessionEntry,

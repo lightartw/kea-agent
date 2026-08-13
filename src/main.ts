@@ -6,7 +6,7 @@ import { config as loadDotenv } from "dotenv";
 
 import { CliFrontend } from "./ui/frontend.js";
 import { createHarness } from "./coding-agent/factory.js";
-import { Session } from "./agent/harness/session/session.js";
+import { Session } from "./harness/session/session.js";
 import { createStreamFn } from "./ai/factory.js";
 
 function resolveProject(cwd: string) {

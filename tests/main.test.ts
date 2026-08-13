@@ -3,8 +3,8 @@ import test from "node:test";
 
 import { CliHarnessRenderer } from "../src/ui/harness-renderer.js";
 import { createDefaultToolRenderers } from "../src/ui/tool-renderers.js";
-import { AgentHarness } from "../src/agent/harness/agent-harness.js";
-import { Session } from "../src/agent/harness/session/session.js";
+import { AgentHarness } from "../src/harness/agent-harness.js";
+import { Session } from "../src/harness/session/session.js";
 import { AgentToolRegistry } from "../src/agent/tools/registry.js";
 import type { AssistantMessage, StreamFn } from "../src/ai/types.js";
 

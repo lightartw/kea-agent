@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { createHarness } from "../../src/coding-agent/factory.js";
-import { Session } from "../../src/agent/harness/session/session.js";
+import { Session } from "../../src/harness/session/session.js";
 import type {
   AssistantMessage,
   ModelConfig,
