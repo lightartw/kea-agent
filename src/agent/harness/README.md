@@ -90,7 +90,13 @@ interface HarnessConfig {
 | 观察 | `subscribe(listener)` → `AgentEvent` | 渲染、日志；返回值被忽略 |
 | 控制 | `HarnessConfig.hooks` → `AgentHookTrigger` | 阻止/转换/修补/续跑 |
 
-二者不是两套同义回调——`subscribe` 的返回值被忽略，只能观察运行事实；Hook 在动作提交前触发，只有事件定义的结果可以阻止、转换、修补或续跑。
+二者不是两套同义回调——`subscribe` 的返回值被忽略，只能观察运行事实；Hook 在动作提交前触发，只有调用定义的结果可以阻止、转换、修补或续跑。
+
+`subscribe()` 交付的是**已经持久化的最终事实**：`prompt()` 在发布每个事件前先调用
+`persistNewMessages()`，因此订阅者读到 `tool_end` / `tool_rejected` 时，对应的
+`ToolResultMessage` 已经在 Session 里。Harness 没有 `HarnessUI` 反向接口——UI 通过
+`subscribe` 消费事实，Hook 通过 `HarnessConfig.hooks` 向下注入以控制 Agent，两条方向
+互不经过对方。
 
 ### 方法
 
@@ -140,7 +146,7 @@ interface HarnessProject {
 - 若 `systemPrompt` 为字符串，则通过 `defaultSystemPrompt()` 包装，支持 `{{cwd}}`/`{{date}}` 替换。
 - 若 `systemPrompt` 为函数，则直接作为 `SystemPromptBuilder` 使用。
 - 若省略 `systemPrompt`，则默认使用 `CODING_SYSTEM_PROMPT`。
-- `ui` 可选；未传入时使用内部 `NO_UI`（fail-closed）。
+- `ui` 可选；未传入时使用内部 `NO_HOOK_UI`（fail-closed）。
 
 ### 典型调用链
 

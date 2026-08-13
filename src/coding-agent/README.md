@@ -22,20 +22,18 @@ await harness.prompt("list files");
 ## 职责
 
 - 将 `AgentHarness` 与 coding 工具集、coding system prompt 和默认 Hook 组装。
-- 通过 `CodingHookUI` 注入权限确认能力，不产生 `coding-agent -> cli` 的源码依赖。
-- CLI 实现 UI port；Coding Agent 永不导入 CLI 代码。
+- 通过 `CodingHookUI` 注入权限确认能力，不产生 `coding-agent -> ui` 的源码依赖。
+- UI 实现 `CodingHookUI` port；Coding Agent 永不导入 UI 代码。
 
-## 五个默认 Hook
+## 默认 Hook：只有 permission
+
+默认 `createCodingHookRegistry(context)` 只注册一个真正改变控制流的 Hook——permission。
+被动的展示（log、大输出提醒、工具计数 summary）不再是 Hook，而是 UI 层针对
+Harness `subscribe` 事件的 renderer 行为。
 
 | Hook | 类型 | 行为 |
 |------|------|------|
-| Context Inject | `user_prompt` Handler | 通过 `ui.notify` 提示当前工作目录；不修改 prompt 或历史 |
-| Permission | `tool_call` Handler | Bash 命令的 allow/ask/deny 策略（见下文） |
-| Log | Listener | 记录每个 `tool_call` 尝试；在 Permission 阻止前执行 |
-| Large Output | Listener | `content.length > 100_000` 时发出 warning |
-| Summary | `stop` Handler | 统计 tool message 数量并提示；不要求继续运行 |
-
-Context Inject 的类名保留教学含义，但其当前实现只通知 cwd（系统提示词已包含 cwd，无需重复注入）。
+| Permission | `tool_call` Handler | Bash 命令的 allow/ask/deny 策略；ask 时调用 `ui.confirm()` |
 
 ## Bash 安全策略
 
@@ -54,39 +52,77 @@ Context Inject 的类名保留教学含义，但其当前实现只通知 cwd（�
 - 无 UI 或 `ui.available === false` → 询问类命令被拒绝。
 - 用户拒绝 → 拒绝。
 - `confirm()` 抛出异常 → 拒绝。
+- 外部 `AbortSignal` 已触发时，Agent Loop 优先归类为 `aborted`，不归类为 `blocked`。
 
 ## `CodingHookUI`
+
+通用但严格受限的 UI port。`source` 是稳定来源标识，不建立封闭的 Hook 名称联合。
 
 ```ts
 interface CodingHookUI {
   readonly available: boolean;
-  confirm(request: PermissionRequest, signal?: AbortSignal): Promise<boolean>;
+  confirm(confirmation: HookConfirmation, signal?: AbortSignal): Promise<boolean>;
   notify(notification: HookNotification): void | Promise<void>;
 }
 
-interface PermissionRequest {
-  readonly toolCallId: string;
-  readonly toolName: string;
-  readonly input: Readonly<Record<string, unknown>>;
-  readonly reason: string;
+interface HookConfirmation {
+  readonly source: string;
+  readonly title: string;
+  readonly message: string;
 }
 
 interface HookNotification {
-  readonly source: "context_inject" | "tool_log" | "large_output" | "summary";
+  readonly source: string;
   readonly level: "info" | "warning" | "error";
   readonly message: string;
 }
 ```
+
+`notify()` 只用于 Hook 自己产生、没有对应运行 Event 的即时说明；普通工具开始/结束、
+工具结果、工具计数和大输出提醒都走 Harness `subscribe`，不经 `notify()`。
 
 ## `createCodingHookRegistry`
 
 ```ts
 function createCodingHookRegistry(
   context: CodingHookContext,
-): HookRegistry<AgentHookEvent, CodingHookContext>;
+): HookRegistry<CodingHookContext>;
 ```
 
-创建预配置了五个默认 Hook 的 Registry。可用于自定义组合场景。
+创建预配置了 permission Hook 的 Registry。可用于自定义组合场景。
+
+```ts
+interface CodingHookContext {
+  readonly cwd: string;
+  readonly ui: CodingHookUI;
+}
+```
+
+## 工具与 Todo 状态
+
+默认工具集由 `createToolRegistry(cwd)` 创建：`bash`、`read_file`、`write_file`、
+`edit_file`、`glob`、`todo_write`。
+
+`todo_write` 是无状态工具。每次调用返回完整列表，`content`（模型可见）与
+`details.todos`（程序可见）由同一输入派生：
+
+```ts
+interface TodoItem {
+  readonly content: string;
+  readonly status: "pending" | "in_progress" | "completed";
+}
+
+interface TodoDetails {
+  readonly todos: readonly TodoItem[];
+}
+
+function formatTodoContent(todos: readonly TodoItem[]): string;
+function findLatestTodoDetails(messages: readonly AgentMessage[]): TodoDetails | undefined;
+```
+
+Todo 的真实状态定义为「当前 Session 分支中最后一条有效 `todo_write` ToolResultMessage 的
+`details.todos`」，由 `findLatestTodoDetails` 投影，位于 coding-agent 而非具体 UI。
+重启、恢复和 switchModel 后新模型都能从 Provider 可见的 `content` 恢复完整列表。
 
 ## 完整公开导出
 
@@ -95,25 +131,25 @@ function createCodingHookRegistry(
 - `createHarness`、`createCodingHookRegistry`、`createToolRegistry`
 - `CODING_SYSTEM_PROMPT`
 - `CreateHarnessConfig`、`CodingHookContext`、`CodingHookUI`
-- `HookNotification`、`PermissionRequest`
+- `HookConfirmation`、`HookNotification`
+- `TodoItem`、`TodoDetails`
 
 ## 内部实现
 
 以下名称仅供 coding-agent 内部使用，不作为稳定公共 API：
 
-- `NO_UI` — 默认 fail-closed UI 实现
-- `registerContextInjectHook`、`registerLogHook`、`registerLargeOutputHook`
-- `registerPermissionHook`、`registerSummaryHook`
+- `NO_HOOK_UI` — 默认 fail-closed UI 实现（不 root-export）
+- `registerPermissionHook`
 - `classifyBashCommand`、`hardDeniedBashReason`
 
 ## 依赖方向
 
 ```text
-CLI/TUI
-    │ 实现 CodingHookUI
+ui
+    │ 实现 CodingHookUI；通过 subscribe 渲染
     ▼
 coding-agent
-    │ 创建默认 HookRegistry，只向下传 AgentHookTrigger
+    │ 创建默认 HookRegistry（只向下传 AgentHookTrigger）
     ▼
 agent/harness
     │ 原样传递
@@ -124,4 +160,5 @@ agent-loop
 ai / tool registry
 ```
 
-源码依赖始终向下。运行时 `PermissionHook -> injected UI` 是依赖倒置后的接口调用。
+源码依赖始终向下：`ui -> coding-agent -> agent -> ai`。运行时 `PermissionHook -> injected
+CodingHookUI` 是依赖倒置后的接口调用。

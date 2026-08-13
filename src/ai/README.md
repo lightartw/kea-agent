@@ -153,11 +153,12 @@ interface AssistantMessage {
   readonly latencyMs: number;
 }
 
-interface ToolResultMessage {
+interface ToolResultMessage<TDetails = unknown> {
   readonly role: "tool";
   readonly toolCallId: string;
   readonly name: string;
   readonly content: string;
+  readonly details?: TDetails;
   readonly isError?: boolean;
 }
 
@@ -202,6 +203,27 @@ interface ToolCall {
 
 `Tool` 只有模型可见的 schema。agent 的 `AgentTool` 实现它并增加校验和执行。
 `ToolCall` 也是一种 `ContentBlock`；进入 agent loop 后会转换为 `AgentToolCall`。
+
+### `content` 与 `details` 的分层
+
+`ToolResultMessage<TDetails>` 是一条内部消息，同时携带两层事实：
+
+```text
+content  → 模型可见的文本（写入 Provider wire payload）
+details  → 程序可见的结构化数据（留在 Session / UI / 内存）
+```
+
+Provider adapter 只投影对应 Provider 需要的字段，`details` 永远不进网络请求：
+
+```ts
+// anthropic 投影：只取 content 和协议字段
+messages.push({ role: "user", content: [
+  { type: "tool_result", tool_use_id: message.toolCallId, content: message.content },
+] });
+```
+
+因此凡是模型下一轮需要知道的状态都必须出现在 `content`；`details` 只提供同一事实的
+结构化表示，供 Session、UI 和程序消费。
 
 ### Stream event
 

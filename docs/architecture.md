@@ -2,20 +2,22 @@
 
 **更新：** 2026-08-13
 
-> 本文描述当前已实现的代码架构，因此仍会列出当前存在的
-> `HookListener/registerListener`、Event 类型名和 `src/cli`。这些接口已经在
-> [Hook、Harness 与 Tool UI 边界设计](superpowers/specs/2026-08-13-hook-harness-tool-ui-design.md)
-> 中确定替换方案；代码实现完成时必须同步更新本文，不能提前把目标设计写成当前事实。
+> 本文描述当前已实现的代码架构。Hook 输入使用 `Call` 命名，passive listener/observer
+> 已删除，被动展示统一走 Harness `subscribe`，具体 CLI UI 位于 `src/ui`。
 
 依赖从底层往上，每层只依赖它的下层。源码箭头始终向下：
 
 ```text
 main.ts
-  ├── CLI (CliFrontend)
-  ├── Coding Agent (createHarness, 默认 Hook, Bash 策略)
+  ├── UI (CliFrontend, CliHarnessRenderer, Tool renderers)
+  ├── Coding Agent (createHarness, 默认 permission Hook, Bash 策略, Todo 投影)
   ├── Agent Harness (AgentHarness, Session, SessionManager)
   ├── Agent (runAgentLoop, HookRegistry, AgentToolRegistry)
   └── AI (StreamFn, ModelConfig, Message, Adapter)
+```
+
+```text
+ui -> coding-agent -> agent -> ai
 ```
 
 ---
@@ -34,7 +36,7 @@ type StreamFn = (
 ) => AsyncIterable<AssistantMessageEvent>;
 
 interface ModelConfig {
-  readonly provider: string;   // "anthropic" | "openai" | "gemini"
+  readonly provider: string;
   readonly model: string;
 }
 
@@ -65,21 +67,34 @@ type AssistantMessageEvent =
 ### 核心函数
 
 ```ts
-// 工厂：从环境变量或显式配置创建路由函数
 function createStreamFn(options?: {
   providers?: ProviderConfig[];
   env?: Environment;
 }): { stream: StreamFn; defaultModel: ModelConfig };
 ```
 
-### 用法
+`createStreamFn` 只检查 API key 环境变量，不根据模型名猜测。provider adapter 首次被迭代时才动态 `import()`，之后复用。
+
+### `ToolResultMessage` 的 `content` / `details` 分层
 
 ```ts
-const { stream, defaultModel } = createStreamFn();
-// stream({ provider: "anthropic", model: "claude-sonnet-5" }, context);
+interface ToolResultMessage<TDetails = unknown> {
+  readonly role: "tool";
+  readonly toolCallId: string;
+  readonly name: string;
+  readonly content: string;
+  readonly details?: TDetails;
+  readonly isError?: boolean;
+}
 ```
 
-`createStreamFn` 只检查 API key 环境变量，不根据模型名猜测。provider adapter 首次被迭代时才动态 `import()`，之后复用。
+`content` 是模型可见文本；`details` 是程序可见的结构化数据。Provider adapter 只投影
+对应 Provider 需要的字段，`details` 永远不进网络请求：
+
+```text
+content  -> Provider wire payload
+details  -> Session / Agent / UI 内存消息
+```
 
 ---
 
@@ -119,13 +134,41 @@ interface AgentLoopConfig {
 2. 每 turn 复制消息 → `context` hook 变换请求消息（只影响本次 LLM 请求）
 3. 调用 `StreamFn`，转发 text/thinking/tool-call 增量
 4. 无 tool call → `stop` hook（可 `continueWith` 续跑）→ 结束
-5. 有 tool call → `tool_call` hook（可 block/改 input）→ 执行 → `tool_result` hook（可 patch 结果）→ 结果一致存入 history + `tool_end`
+5. 有 tool call → 逐个按下方生命周期处理
+
+### 工具调用生命周期
+
+每个来自最终 assistant message 的 `AgentToolCall` 恰好产生一个终态：
+
+```text
+BeforeToolCall -> prepare -> tool_start -> execute -> AfterToolCall
+               -> ToolResultMessage -> tool_end
+
+BeforeToolCall/prepare 被拒绝 -> ToolResultMessage -> tool_rejected
+```
+
+- 原始 call 的 `arguments` 先 `structuredClone` 成工作副本，再交给 `BeforeToolCall` 修改。
+- `prepare()` 完成 lookup 和最终参数验证；只有 `ready` 才发射 `tool_start` 并执行。
+- 被 block、参数无效、工具不存在或已 Abort 的调用合成 synthetic `ToolResultMessage` 并
+  发射恰好一个 `tool_rejected`，不会静默丢失。
+- 批处理中途 Abort：已开始的调用照常 `tool_end`，其余调用各得一个 `aborted` 的 `tool_rejected`。
+- 修改 `details` 的 `AfterToolCall` patch 必须同时返回完整 `content`。
 
 ### 2.2 AgentEvent
 
 观察通道。Harness 的 `subscribe()` 发布这些事件，返回值被忽略。
 
 ```ts
+type ToolRejectedReason = "blocked" | "invalid" | "unknown" | "aborted";
+
+interface ToolRejectedEvent {
+  readonly type: "tool_rejected";
+  readonly call: AgentToolCall;                          // 模型原始请求
+  readonly effectiveArguments?: Readonly<Record<string, unknown>>;
+  readonly result: AgentToolResult;
+  readonly reason: ToolRejectedReason;
+}
+
 type AgentEvent =
   | { type: "agent_start" }
   | { type: "agent_end"; messages: readonly AgentMessage[] }
@@ -137,12 +180,13 @@ type AgentEvent =
   | { type: "toolcall_delta"; id: string; argumentsDelta: string }
   | { type: "toolcall_end"; toolCall: AgentToolCall }
   | { type: "tool_start"; call: AgentToolCall }
-  | { type: "tool_end"; call: AgentToolCall; result: AgentToolResult };
+  | { type: "tool_end"; call: AgentToolCall; result: AgentToolResult }
+  | ToolRejectedEvent;
 ```
 
 ### 2.3 HookRegistry — 控制通道
 
-位于 `src/agent/hooks/`。与 `AgentEvent` 互补：Hook 在动作提交**前**触发，可阻止/变换/修补/续跑。
+位于 `src/agent/hooks/`。与 `AgentEvent` 互补：Hook 在动作提交**前**触发，可阻止/变换/修补/续跑。没有 passive listener/observer。
 
 ```ts
 class HookRegistry<TContext> {
@@ -150,14 +194,15 @@ class HookRegistry<TContext> {
   get context(): TContext;
   setContext(context: TContext): void;
 
-  register<TType extends AgentHookEvent["type"]>(
+  register<TType extends AgentHookCall["type"]>(
     type: TType,
-    handler: HookHandler<Extract<AgentHookEvent, { type: TType }>, TContext>,
+    handler: HookHandler<Extract<AgentHookCall, { type: TType }>, TContext>,
   ): Unregister;
 
-  registerListener(listener: HookListener<AgentHookEvent, TContext>): Unregister;
-
-  trigger<T extends AgentHookEvent>(event: T, signal?: AbortSignal): Promise<ResultOf<T> | undefined>;
+  trigger<T extends AgentHookCall>(
+    call: T,
+    signal?: AbortSignal,
+  ): Promise<ResultOf<T> | undefined>;
 
   addCleanup(cleanup: Cleanup): Unregister;
   clear(): Promise<void>;    // 逆序执行 cleanup，可复用
@@ -165,65 +210,45 @@ class HookRegistry<TContext> {
 }
 ```
 
-**Handler 与 Listener 的区别：**
+**五种 Agent Hook Call：**
 
-| | Handler | Listener |
-| --- | --- | --- |
-| 注册方式 | `register(事件名, fn)` — 绑定单个事件类型 | `registerListener(fn)` — 绑定所有事件类型 |
-| 能控制流程？ | ✅ 能 block/修改（返回值被合并） | ❌ 只能旁观（返回值被忽略） |
-| 典型用途 | 权限校验、内容过滤、消息注入 | 打日志、发通知、度量统计 |
+| Call | 类型 | Handler 组合规则 | 结果类型 |
+| ---- | ---- | ---------------- | -------- |
+| `user_prompt` | `BeforeUserPromptCall` | 顺序；首个 `block: true` 提前结束 | `{ block?; reason? }` |
+| `context` | `TransformContextCall` | 顺序应用 `messages`；后一个看到前一个结果 | `{ messages? }` |
+| `tool_call` | `BeforeToolCall` | 顺序共享可变 `input`；首个 `block: true` 提前结束 | `{ block?; reason? }` |
+| `tool_result` | `AfterToolCall` | 顺序应用 patch；后一个看到前一个结果 | `AfterToolCallPatch` |
+| `stop` | `BeforeStopCall` | 首个 `continueWith` 提前结束 | `{ continueWith? }` |
 
-每次 `trigger()` 执行时：先通知所有 Listener → 再按注册顺序调用 Handler → 根据事件类型应用不同的组合规则。
-
-**五种 Agent Hook 事件：**
-
-| 事件 | Handler 组合规则 | 结果类型 |
-| ------ | ----------------- | --------- |
-| `user_prompt` | 顺序；首个 `block: true` 提前结束 | `{ block?: boolean; reason?: string }` |
-| `context` | 顺序应用 `messages`；后一个看到前一个结果 | `{ messages?: AgentMessage[] }` |
-| `tool_call` | 顺序共享可变 `input`；首个 `block: true` 提前结束 | `{ block?: boolean; reason?: string }` |
-| `tool_result` | 顺序应用 patch；后一个看到前一个结果 | `{ content?: string; isError?: boolean }` |
-| `stop` | 首个 `continueWith` 提前结束 | `{ continueWith?: AgentMessage }` |
-
-**语义：** 每次 `trigger()` 进入时快照 context/listener/handler 列表；触发期间注册/注销只影响下次 trigger；`Unregister` 幂等；Handler/Listener 错误原样穿透。
+**语义：** 每次 `trigger()` 进入时快照 context/handler 列表；触发期间注册/注销只影响下次 trigger；`Unregister` 幂等；Handler 错误原样穿透。
 
 ### 2.4 AgentHookTrigger — 接口收窄
 
-`HookRegistry` 提供了完整的配置面（`register`、`registerListener`、`setContext`、`clear`、`dispose`），但运行时（Loop / Harness）只需要触发能力。如果给 Loop 传整个 `HookRegistry`，Loop 就能调用 `hooks.clear()` 把别人的 handler 全删掉——这不应该发生。
-
-因此用 `AgentHookTrigger` 收窄到**只暴露 `trigger` 一个方法**：
+`HookRegistry` 提供完整配置面，但运行时（Loop / Harness）只需要触发能力，因此用
+`AgentHookTrigger` 收窄到只暴露 `trigger`：
 
 ```ts
 interface AgentHookTrigger {
-  trigger<TEvent extends AgentHookEvent>(
-    event: TEvent,
+  trigger<TCall extends AgentHookCall>(
+    call: TCall,
     signal?: AbortSignal,
-  ): Promise<ResultOf<TEvent> | undefined>;
+  ): Promise<ResultOf<TCall> | undefined>;
 }
 ```
-
-分工明确：
-
-```text
-工厂代码（装配阶段）              运行时（Loop / Harness）
-─────────────────                ───────────────────────
-new HookRegistry(context)        config.hooks.trigger(...)
-  ↓ 完整 API                        ↓ 只看到一个 trigger
-hooks.register("tool_call",...)  不能 register、不能 clear
-hooks.registerListener(...)      只能 trigger
-  ↓
-传 hooks 给 AgentLoopConfig
-```
-
-这是面向对象的**接口隔离原则**：调用方看到什么接口，取决于它需要什么能力；不需要的能力就不暴露，避免误用。
 
 ### 2.5 工具系统
 
 ```ts
-abstract class AgentTool<TParameters extends TObject = TObject> implements Tool {
+abstract class AgentTool<
+  TParameters extends TObject = TObject,
+  TDetails = unknown,
+> implements Tool {
   protected constructor(name: string, description: string, parameters: TParameters);
   validate(arguments_: unknown): string | undefined;
-  abstract execute(args: Static<TParameters>, timeoutSignal: AbortSignal): Promise<AgentToolResult>;
+  abstract execute(
+    args: Static<TParameters>,
+    timeoutSignal: AbortSignal,
+  ): Promise<AgentToolResult<TDetails>>;
 }
 
 class AgentToolRegistry {
@@ -232,17 +257,27 @@ class AgentToolRegistry {
   unregister(name: string): void;
   schemas(): Tool[];
   all(): AgentTool[];
-  execute(call: AgentToolCall): Promise<AgentToolResult>;
+  prepare(call: AgentToolCall): ToolPreparation;
+  execute(prepared: PreparedAgentToolCall, signal?: AbortSignal): Promise<AgentToolResult<unknown>>;
 }
 
-interface AgentToolResult { readonly content: string; readonly isError: boolean; }
+interface AgentToolResult<TDetails = unknown> {
+  readonly content: string;
+  readonly details?: TDetails;
+  readonly isError: boolean;
+}
 ```
+
+Registry 拆成两阶段：`prepare(call)` 返回 `ready`（携带 `prepared`）或 `rejected`
+（携带 `reason: "unknown" | "invalid"` 与 synthetic result）。`execute(prepared)` 只负责
+timeout 和异常归一化，不重复 lookup 或 validate。`ToolPreparation` 与
+`PreparedAgentToolCall` 是模块内部类型，不从公开入口导出。
 
 ### 典型用法
 
 ```ts
 const hooks = new HookRegistry<MyContext>(ctx);
-hooks.register("tool_call", async (event, ctx) => {
+hooks.register("tool_call", async (call, ctx) => {
   if (dangerous) return { block: true, reason: "not allowed" };
 });
 
@@ -285,7 +320,10 @@ interface HarnessConfig {
 }
 ```
 
-`switchModel`、`registerTool`、`unregisterTool` 仅在 idle 时可用；`isRunning` 为 true 时调用抛错。
+`switchModel`、`registerTool`、`unregisterTool` 仅在 idle 时可用。
+
+`prompt()` 在发布每个事件前先 `persistNewMessages()`，因此 `subscribe` 观察到的
+`tool_end` / `tool_rejected` 时，对应的 `ToolResultMessage` 已经在 Session 里。
 
 ### 3.2 System Prompt
 
@@ -299,7 +337,6 @@ interface SystemPromptContext {
   readonly date: Date;
 }
 
-// 工具函数
 function formatSystemPrompt(content: string, options?: { cwd?: string; date?: Date }): string;
 function defaultSystemPrompt(template: string): SystemPromptBuilder;
 ```
@@ -325,14 +362,14 @@ class SessionError extends Error {
 ```
 
 - 第一条 assistant message 前只在内存缓冲，首次 flush 用 `writeFile(…, "wx")` 原子创建文件
-- 后续追加用 `appendFile()`
-- `open()` 校验 JSON、entry 结构、重复 ID、父引用、根数量、消息字段
+- 后续追加用追加写
+- `open()` 校验 JSON、entry 结构、重复 ID、父引用、根数量、消息字段（含 `details` 的 JSON-safe 校验）
 - 写入失败回滚内存 entry 和 leaf
 - 内部序列化追加（`enqueue`）
 
 ### 3.4 SessionManager
 
-管理一个 project 下的多个 Session 文件（列出、恢复最近会话）。它不负责创建/打开单个 Session —— 那属于 `Session.create()` / `Session.open()`，二者也是 `continueRecent()` 的底层实现。
+管理一个 project 下的多个 Session 文件（列出、恢复最近会话）。
 
 ```ts
 class SessionManager {
@@ -340,21 +377,6 @@ class SessionManager {
   continueRecent(): Promise<Session>;    // 最新或新建
   listSessions(): Promise<string[]>;     // 按 mtime 倒序
 }
-```
-
-### 最小用法
-
-```ts
-// 新建：Session.create 负责建立 sessions 目录
-const session = await Session.create(storageDir);
-
-// 恢复最近一次会话（不存在则新建）
-const session = await new SessionManager({ workDir, storageDir }).continueRecent();
-
-const harness = new AgentHarness({
-  session, model, streamFn, toolRegistry, systemPrompt, cwd,
-});
-await harness.prompt("hello");
 ```
 
 ---
@@ -372,7 +394,7 @@ interface CreateHarnessConfig {
   readonly model: ModelConfig;
   readonly session?: Session;
   readonly systemPrompt?: string | SystemPromptBuilder;  // 默认 CODING_SYSTEM_PROMPT
-  readonly ui?: CodingHookUI;                            // 默认 NO_UI（fail-closed）
+  readonly ui?: CodingHookUI;                            // 默认 NO_HOOK_UI（fail-closed）
 }
 
 function createHarness(config: CreateHarnessConfig): Promise<AgentHarness>;
@@ -382,27 +404,36 @@ function createHarness(config: CreateHarnessConfig): Promise<AgentHarness>;
 
 ### 4.2 CodingHookUI — UI 注入端口
 
-Coding Agent 定义此接口，CLI 实现。coding-agent 永不导入 CLI 代码。
+Coding Agent 定义此接口，UI 实现。coding-agent 永不导入 UI 代码。
 
 ```ts
 interface CodingHookUI {
   readonly available: boolean;
-  confirm(request: PermissionRequest, signal?: AbortSignal): Promise<boolean>;
+  confirm(confirmation: HookConfirmation, signal?: AbortSignal): Promise<boolean>;
   notify(notification: HookNotification): void | Promise<void>;
+}
+
+interface HookConfirmation {
+  readonly source: string;
+  readonly title: string;
+  readonly message: string;
+}
+
+interface HookNotification {
+  readonly source: string;
+  readonly level: "info" | "warning" | "error";
+  readonly message: string;
 }
 ```
 
-### 4.3 五个默认 Hook
+### 4.3 默认 Hook：只有 permission
 
-通过 `createCodingHookRegistry(context)` 组装：
+`createCodingHookRegistry(context)` 只注册 permission。被动的 log、large-output、summary
+不再是 Hook，而是 UI 层针对 Harness `subscribe` 事件的 renderer 行为。
 
-| Hook | 事件 | 类型 | 行为 |
-| ------ | ------ | ------ | ------ |
-| Context Inject | `user_prompt` | Handler | `ui.notify` 当前 cwd |
-| Permission | `tool_call` | Handler | Bash 的 allow/ask/deny；ask 时调 `ui.confirm()` |
-| Log | 全部 | Listener | 记录 `[HOOK] toolName(...)` |
-| Large Output | `tool_result` | Listener | content > 100k 字符时 warning |
-| Summary | `stop` | Handler | 统计 tool message 数并 notify |
+| Hook | 事件 | 行为 |
+| ---- | ---- | ---- |
+| Permission | `tool_call` | Bash 的 allow/ask/deny；ask 时调 `ui.confirm()` |
 
 ### 4.4 Bash 安全策略
 
@@ -410,21 +441,23 @@ interface CodingHookUI {
 
 ```ts
 function classifyBashCommand(command: string): BashDecision;
-// → { decision: "allow" }
-// | { decision: "ask"; reason: string }
-// | { decision: "deny"; reason: string }
-
 function hardDeniedBashReason(command: string): string | undefined;
-// BashTool 自身的后防线，绕过 Hook 直接阻止
 ```
 
 **三级策略：**
 
 | 级别 | 示例 | 行为 |
-| ------ | ------ | ------ |
+| ---- | ---- | ---- |
 | 硬拒绝 | `sudo`、`mkfs`、`dd if=`、`> /dev/`、`rm -rf /` | Hook 和 BashTool 均阻止，不询问 UI |
 | 询问 | `rm`、`> /etc/`、`chmod 777` | Hook 调用 `ui.confirm()`；无 UI 时 fail-closed |
 | 允许 | `pwd`、`git status` | 直接放行 |
+
+### 4.5 Todo 状态投影
+
+`todo_write` 无实例状态；`TodoItem`/`TodoDetails`/`formatTodoContent`/
+`findLatestTodoDetails` 位于 coding-agent 的 `tools/todo-state.ts`。Todo 真实状态定义为
+「当前 Session 分支中最后一条有效 `todo_write` ToolResultMessage 的 `details.todos`」，
+由 `findLatestTodoDetails` 从 `AgentMessage[]` 投影，不在 UI 层。
 
 ### 组装用法
 
@@ -441,24 +474,31 @@ await harness.prompt("list files");
 
 ---
 
-## 5. CLI — readline 前端
+## 5. UI — 具体前端
 
-位于 `src/cli/`。依赖 Harness 层（`AgentHarness`）和 Coding Agent（`CodingHookUI`、`PermissionRequest`）。
+位于 `src/ui/`。依赖 Harness 层（`AgentHarness`）和 Coding Agent（`CodingHookUI`）。
+`agent`、`harness`、`coding-agent` 不 import `src/ui`。
+
+```text
+src/ui/
+  frontend.ts          # CliFrontend、输入循环、CodingHookUI 实现、装配
+  harness-renderer.ts  # 通用 Harness/Agent Event 展示（含大输出、工具计数）
+  tool-renderers.ts    # Tool renderer 接口、Registry、fallback、createDefaultToolRenderers
+  todo-renderer.ts     # 把已验证 TodoDetails 转成文本
+```
 
 ### 5.1 CliFrontend
 
-实现 `CodingHookUI`，通过 subscribe 消费 `AgentEvent` 渲染。
+实现 `CodingHookUI`，通过 subscribe 消费 `AgentEvent` 并分发给 `CliHarnessRenderer`。
 
 ```ts
 class CliFrontend implements CodingHookUI {
   readonly available = true;
-  constructor(options?: CliFrontendOptions);  // 可注入 I/O 缝线（测试用）
+  constructor(options?: CliFrontendOptions);
 
-  // CodingHookUI
-  confirm(request: PermissionRequest, signal?: AbortSignal): Promise<boolean>;
+  confirm(confirmation: HookConfirmation, signal?: AbortSignal): Promise<boolean>;
   notify(notification: HookNotification): void;
 
-  // 主循环
   run(harness: AgentHarness): Promise<void>;
   close(): void;
 }
@@ -470,6 +510,22 @@ class CliFrontend implements CodingHookUI {
 - ESC 中止流式响应（`harness.abort()`）
 - `confirm()` 期间暂停 ESC 监听器，展示 `[y/N]` 提示（空输入默认拒绝）；ESC 等同于 N
 - `confirm()` 支持外部 `AbortSignal`，与内部 ESC 通过 `AbortSignal.any()` 合并
+- `run()` 装配默认 Tool renderer Registry、`CliHarnessRenderer`，并 `harness.subscribe()`
+
+### 5.2 Tool renderer 边界
+
+`AgentTool` 不依赖 UI、不携带 renderer。UI 层按工具名注册：
+
+```ts
+interface CliToolRenderer {
+  renderStart(call: AgentToolCall): string | undefined;
+  renderEnd(call: AgentToolCall, result: AgentToolResult<unknown>): string | undefined;
+  renderRejected?(event: ToolRejectedEvent): string | undefined;
+}
+```
+
+行为：有专用 renderer 用专用展示；返回 `undefined`、抛错或 details 无效时回退到
+content fallback；renderer 错误只记录 UI error，绝不影响 Agent 执行。
 
 ### 运行示例
 
@@ -494,17 +550,21 @@ loadDotenv → createStreamFn → resolveProject → Session.create
 ## 公共导出
 
 | 入口 | 核心导出 |
-| ------ | --------- |
+| ---- | -------- |
 | `src/index.ts` | 全部公共类型 + `createStreamFn` + `HookRegistry` |
-| `src/ai/index.ts` | `StreamFn`、`ModelConfig`、`Message`、`Context`、`Tool`、`AssistantMessageEvent`、`createStreamFn` |
-| `src/agent/hooks/index.ts` | `HookRegistry`、`AgentHookTrigger`、五种事件类型、`ResultOf`、`HookHandler`、`HookListener` |
+| `src/ai/index.ts` | `StreamFn`、`ModelConfig`、`Message`、`Context`、`Tool`、`ToolResultMessage`、`AssistantMessageEvent`、`createStreamFn` |
+| `src/agent/hooks/index.ts` | `HookRegistry`、`AgentHookTrigger`、`AgentHookCall` 及各 Call/Result 类型、`ResultOf`、`HookHandler` |
+| `src/agent/tools/index.ts` | `AgentTool`、`AgentToolRegistry`、`AgentToolCall`、`AgentToolResult` |
 | `src/agent/harness/index.ts` | `AgentHarness`、`Session`、`SessionError`、`SessionManager`、`defaultSystemPrompt`、`HarnessConfig` |
-| `src/coding-agent/index.ts` | `createHarness`、`createCodingHookRegistry`、`CodingHookUI`、`CodingHookContext`、`CreateHarnessConfig`、`PermissionRequest`、`HookNotification` |
+| `src/coding-agent/index.ts` | `createHarness`、`createCodingHookRegistry`、`CodingHookUI`、`CodingHookContext`、`HookConfirmation`、`HookNotification`、`TodoItem`、`TodoDetails`、`CreateHarnessConfig` |
+
+`PreparedAgentToolCall`、`ToolPreparation`、CLI renderer 和 `NO_HOOK_UI` 不作为根入口的稳定公共 API 导出。
 
 ## 边界约束
 
 - `ai` 不依赖 `agent`
-- `agent` 不依赖 `coding-agent` 或 `cli`
-- `coding-agent` 不依赖 `cli`（通过 `CodingHookUI` port 依赖倒置）
-- UI 解耦用两种机制：Hook 走泛型 `TContext`（运行时注入 `{ cwd, ui }`），Tool 走构造注入（组合根捕获依赖，`execute` 无 context）。详见 `agent/README.md`「与 UI 的解耦」
+- `agent` 不依赖 `coding-agent` 或 `ui`
+- `coding-agent` 不依赖 `ui`（通过 `CodingHookUI` port 依赖倒置）
+- `ui -> coding-agent -> agent -> ai`
+- UI 解耦用两种机制：Hook 走泛型 `TContext`（运行时注入 `{ cwd, ui }`），Tool 走构造注入（组合根捕获依赖，`execute` 无 context）
 - `main.ts` 是唯一连接所有层的文件

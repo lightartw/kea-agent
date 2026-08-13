@@ -12,3 +12,7 @@ export type {
   HookConfirmation,
   HookNotification,
 } from "./types.js";
+export type {
+  TodoItem,
+  TodoDetails,
+} from "./tools/todo-state.js";

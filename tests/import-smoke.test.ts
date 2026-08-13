@@ -17,6 +17,15 @@ import {
   createToolRegistry,
 } from "../src/coding-agent/index.js";
 
+import { HookRegistry } from "../src/agent/hooks/index.js";
+import {
+  AgentTool,
+  AgentToolRegistry,
+} from "../src/agent/tools/index.js";
+import {
+  createCodingHookRegistry,
+} from "../src/coding-agent/index.js";
+
 import type {
   HarnessConfig,
   HarnessListener,
@@ -30,9 +39,16 @@ import type {
   SessionErrorCode,
 } from "../src/agent/harness/index.js";
 
-import type { CreateHarnessConfig } from "../src/coding-agent/index.js";
+import type {
+  CodingHookContext,
+  CodingHookUI,
+  CreateHarnessConfig,
+  HookConfirmation,
+  HookNotification,
+  TodoDetails,
+  TodoItem,
+} from "../src/coding-agent/index.js";
 
-import { HookRegistry } from "../src/agent/hooks/index.js";
 import type {
   AfterToolCall,
   AfterToolCallPatch,
@@ -52,15 +68,14 @@ import type {
   Unregister,
 } from "../src/agent/hooks/index.js";
 
-import {
-  createCodingHookRegistry,
-} from "../src/coding-agent/index.js";
 import type {
-  CodingHookContext,
-  CodingHookUI,
-  HookConfirmation,
-  HookNotification,
-} from "../src/coding-agent/index.js";
+  AgentToolCall,
+  AgentToolResult,
+} from "../src/agent/tools/index.js";
+import type {
+  ToolRejectedEvent,
+  ToolRejectedReason,
+} from "../src/agent/types.js";
 
 void [
   AgentHarness,
@@ -73,6 +88,8 @@ void [
   createHarness,
   createToolRegistry,
   HookRegistry,
+  AgentTool,
+  AgentToolRegistry,
   createCodingHookRegistry,
 ];
 
@@ -96,15 +113,26 @@ type PublicAgentHookTypes = [
   Unregister,
 ];
 
-type PublicCodingHookTypes = [
+type PublicCodingAgentTypes = [
   CodingHookContext,
   CodingHookUI,
-  CreateHarnessConfig,
   HookConfirmation,
   HookNotification,
+  TodoItem,
+  TodoDetails,
+  CreateHarnessConfig,
 ];
+
+type PublicAgentToolTypes = [
+  AgentToolCall,
+  AgentToolResult,
+  ToolRejectedEvent,
+  ToolRejectedReason,
+];
+
 void (null as PublicAgentHookTypes | null);
-void (null as PublicCodingHookTypes | null);
+void (null as PublicCodingAgentTypes | null);
+void (null as PublicAgentToolTypes | null);
 
 test("public core imports without credentials or side effects", () => {
   const environment = { ...process.env };
