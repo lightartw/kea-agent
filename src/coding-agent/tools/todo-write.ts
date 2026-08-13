@@ -1,18 +1,14 @@
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import { AgentTool, type AgentToolResult } from "../../agent/tools/types.js";
+import { AgentTool } from "../../agent/tools/types.js";
+import {
+  formatTodoContent,
+  type TodoDetails,
+  type TodoItem,
+} from "./todo-state.js";
 
-export interface TodoItem {
-  readonly content: string;
-  readonly status: "pending" | "in_progress" | "completed";
-}
-
-const TODO_ICONS: Record<TodoItem["status"], string> = {
-  pending: " ",
-  in_progress: "▸",
-  completed: "✓",
-};
+export type { TodoDetails, TodoItem } from "./todo-state.js";
 
 const parameters = Type.Object(
   {
@@ -31,9 +27,7 @@ const parameters = Type.Object(
   { additionalProperties: false },
 );
 
-export class TodoWriteTool extends AgentTool<typeof parameters> {
-  private todos: readonly TodoItem[] = [];
-
+export class TodoWriteTool extends AgentTool<typeof parameters, TodoDetails> {
   constructor() {
     super(
       "todo_write",
@@ -45,16 +39,17 @@ export class TodoWriteTool extends AgentTool<typeof parameters> {
     );
   }
 
-  async execute(arguments_: Static<typeof parameters>, _signal: AbortSignal): Promise<AgentToolResult> {
-    this.todos = arguments_.todos;
-    const lines = ["\n## Current Tasks"];
-    for (const todo of this.todos) {
-      const icon = TODO_ICONS[todo.status] ?? " ";
-      lines.push(`  [${icon}] ${todo.content}`);
-    }
-    const formatted = lines.join("\n");
+  async execute(
+    arguments_: Static<typeof parameters>,
+    _signal: AbortSignal,
+  ): Promise<{ content: string; details: TodoDetails; isError: false }> {
+    const todos: readonly TodoItem[] = arguments_.todos.map((todo) => ({
+      content: todo.content,
+      status: todo.status,
+    }));
     return {
-      content: `${formatted}\n\nUpdated ${this.todos.length} tasks`,
+      content: formatTodoContent(todos),
+      details: { todos },
       isError: false,
     };
   }

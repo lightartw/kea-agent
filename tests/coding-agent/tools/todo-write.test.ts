@@ -1,31 +1,50 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  TodoWriteTool,
-  type TodoItem,
-} from "../../../src/coding-agent/tools/todo-write.js";
+import { TodoWriteTool } from "../../../src/coding-agent/tools/todo-write.js";
 
 function signal(): AbortSignal {
   return new AbortController().signal;
 }
 
-type InspectableTodoTool = {
-  readonly todos: readonly TodoItem[];
-};
+test("todo_write returns the complete list in content and details", async () => {
+  const tool = new TodoWriteTool();
+  const result = await tool.execute({ todos: [
+    { content: "Read code", status: "completed" },
+    { content: "Design UI", status: "in_progress" },
+    { content: "Add tests", status: "pending" },
+  ] }, signal());
 
-test("todo state belongs to each tool instance", async () => {
-  const first = new TodoWriteTool();
-  const second = new TodoWriteTool();
+  assert.equal(result.content, [
+    "Current tasks:",
+    "1. [completed] Read code",
+    "2. [in_progress] Design UI",
+    "3. [pending] Add tests",
+    "Updated 3 tasks",
+  ].join("\n"));
+  assert.deepEqual(result.details, { todos: [
+    { content: "Read code", status: "completed" },
+    { content: "Design UI", status: "in_progress" },
+    { content: "Add tests", status: "pending" },
+  ] });
+});
 
-  await first.execute(
-    { todos: [{ content: "first", status: "in_progress" }] },
-    signal(),
-  );
+test("todo_write second call depends only on the second full input", async () => {
+  const tool = new TodoWriteTool();
+  await tool.execute({ todos: [
+    { content: "first", status: "completed" },
+  ] }, signal());
 
-  assert.deepEqual(
-    (first as unknown as InspectableTodoTool).todos,
-    [{ content: "first", status: "in_progress" }],
-  );
-  assert.deepEqual((second as unknown as InspectableTodoTool).todos, []);
+  const second = await tool.execute({ todos: [
+    { content: "second", status: "pending" },
+  ] }, signal());
+
+  assert.equal(second.content, [
+    "Current tasks:",
+    "1. [pending] second",
+    "Updated 1 tasks",
+  ].join("\n"));
+  assert.deepEqual(second.details, { todos: [
+    { content: "second", status: "pending" },
+  ] });
 });

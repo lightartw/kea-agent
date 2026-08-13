@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import { createHarness } from "../../src/coding-agent/factory.js";
 import { Session } from "../../src/agent/harness/session/session.js";
@@ -12,6 +16,13 @@ import type {
   CodingHookUI,
   HookNotification,
 } from "../../src/coding-agent/types.js";
+import type { TodoItem } from "../../src/coding-agent/tools/todo-state.js";
+
+async function tempStorage(): Promise<string> {
+  const path = join(tmpdir(), `kea-factory-${randomUUID()}`);
+  await mkdir(path, { recursive: true });
+  return path;
+}
 
 const model: ModelConfig = { provider: "test", model: "model" };
 const assistant: AssistantMessage = {
@@ -192,4 +203,98 @@ test("default Harness system prompt contains the coding agent opening text", asy
 
   await harness.prompt("hello");
   assert.match(seenPrompt, /You are Kea, a coding agent that runs inside a terminal/);
+});
+
+function todoTurnStream(todos: readonly TodoItem[]): StreamFn {
+  let turn = 0;
+  const call = {
+    type: "toolCall" as const,
+    id: "c1",
+    name: "todo_write",
+    arguments: { todos },
+  };
+  return async function* () {
+    turn++;
+    if (turn === 1) {
+      yield { type: "toolcall_start", id: call.id, name: call.name };
+      yield { type: "toolcall_end", toolCall: call };
+      yield {
+        type: "done",
+        message: {
+          ...assistant,
+          content: [call],
+          stopReason: "toolUse",
+        },
+      };
+      return;
+    }
+    yield { type: "done", message: assistant };
+  };
+}
+
+test("todo content is model-visible while details stay in the in-memory message", async () => {
+  const todos: TodoItem[] = [
+    { content: "Read code", status: "completed" },
+    { content: "Design UI", status: "in_progress" },
+  ];
+  const session = Session.inMemory();
+  const harness = await createHarness({
+    project: { workDir: process.cwd(), storageDir: "unused" },
+    streamFn: todoTurnStream(todos),
+    model,
+    session,
+  });
+
+  await harness.prompt("plan");
+
+  const toolMessage = harness.messages.find((message) => message.role === "tool");
+  assert.equal(toolMessage?.role, "tool");
+  if (toolMessage?.role !== "tool") return;
+  assert.match(toolMessage.content, /Read code/);
+  assert.match(toolMessage.content, /Design UI/);
+  assert.match(toolMessage.content, /completed/);
+  assert.match(toolMessage.content, /in_progress/);
+  assert.deepEqual(toolMessage.details, { todos });
+});
+
+test("todo state recovers from a restored Session after a model switch", async () => {
+  const storageDir = await tempStorage();
+  try {
+    const todos: TodoItem[] = [
+      { content: "Read code", status: "completed" },
+      { content: "Design UI", status: "in_progress" },
+    ];
+    const first = await Session.create(storageDir);
+    const firstHarness = await createHarness({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: todoTurnStream(todos),
+      model,
+      session: first,
+    });
+    await firstHarness.prompt("plan");
+
+    const restored = await Session.open(storageDir, first.id);
+    let recoveredContent = "";
+    const recoveryStream: StreamFn = async function* (_model, context) {
+      const toolMessage = [...context.messages].reverse().find(
+        (message) => message.role === "tool" && message.name === "todo_write",
+      );
+      recoveredContent = toolMessage?.role === "tool" ? toolMessage.content : "";
+      yield { type: "done", message: assistant };
+    };
+    const secondHarness = await createHarness({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: recoveryStream,
+      model: { provider: "test", model: "model-2" },
+      session: restored,
+    });
+    await secondHarness.prompt("resume");
+
+    assert.match(recoveredContent, /Read code/);
+    assert.match(recoveredContent, /Design UI/);
+    assert.match(recoveredContent, /completed/);
+    assert.match(recoveredContent, /in_progress/);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
 });
