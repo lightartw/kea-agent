@@ -1,5 +1,8 @@
 # Project、Session Repository 与 README 重构设计
 
+> 后续设计说明：`2026-08-13-project-directories-session-format-design.md` 已取代本文中的
+> `CodingProject`、Session 当前格式、延迟创建文件和只返回 Session ID 的列表设计。
+
 ## 目标
 
 用每一层处理的核心单位解释系统，并让代码边界与这套叙事一致：
