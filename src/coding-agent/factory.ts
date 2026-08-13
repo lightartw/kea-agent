@@ -189,6 +189,6 @@ export async function createProject(config: CreateProjectConfig): Promise<Projec
       current = next;
       return next;
     },
-    renderToolEvent: (event) => presentations.render(event),
+    renderTool: (input) => presentations.render(input),
   };
 }

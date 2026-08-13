@@ -1,4 +1,6 @@
-import type { HarnessEvent, HarnessToolEvent } from "../harness/events/types.js";
+import type { Events } from "../events/events.js";
+import type { Unregister } from "../events/types.js";
+import type { ToolPresentationInput } from "../coding-agent/ui/presentation.js";
 
 const LARGE_OUTPUT_THRESHOLD = 100_000;
 
@@ -10,57 +12,102 @@ export interface CliRenderTarget {
 export class CliHarnessRenderer {
   constructor(
     private readonly target: CliRenderTarget,
-    private readonly renderToolEvent: (event: HarnessToolEvent) => string,
+    private readonly renderToolEvent: (event: ToolPresentationInput) => string,
   ) {}
 
-  render(event: HarnessEvent): void {
-    try {
-      this.renderEvent(event);
-    } catch (error) {
-      this.target.log(`[ui error] ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
+  bind(events: Events, sessionId: string): Unregister {
+    const toolCounts = new Map<string, number>();
+    const unregister: Unregister[] = [];
+    const render = (event: ToolPresentationInput): string => {
+      try {
+        return this.renderToolEvent(event);
+      } catch (error) {
+        this.target.log(`[ui error] ${error instanceof Error ? error.message : String(error)}`);
+        return "";
+      }
+    };
 
-  private renderEvent(event: HarnessEvent): void {
-    switch (event.type) {
-      case "text_delta":
-        this.target.write(event.text);
-        break;
-      case "thinking_delta":
-        this.target.write(`\x1b[90m${event.thinking}\x1b[0m`);
-        break;
-      case "toolcall_start":
-        this.target.log(`\n\x1b[33m[tool] ${event.name}\x1b[0m`);
-        break;
-      case "toolcall_delta":
-        this.target.write(event.argumentsDelta);
-        break;
-      case "toolcall_end":
-        break;
-      case "tool_start":
-        this.target.log(`\n\x1b[33m${this.renderToolEvent(event)}\x1b[0m`);
-        break;
-      case "tool_end": {
-        this.target.log(this.renderToolEvent(event));
-        if (event.result.content.length > LARGE_OUTPUT_THRESHOLD) {
-          this.target.log(`⚠ Large output from ${event.call.name} (${event.result.content.length} characters)`);
-        }
-        break;
+    unregister.push(events.on("harness/run-start", (input) => {
+      if (input.sessionId !== sessionId) return;
+      toolCounts.set(input.runId, 0);
+    }));
+
+    unregister.push(events.on("harness/run-end", (input) => {
+      if (input.sessionId !== sessionId) return;
+      const count = toolCounts.get(input.runId) ?? 0;
+      toolCounts.delete(input.runId);
+      this.target.log(`session used ${count} tool calls`);
+    }));
+
+    unregister.push(events.on("agent/text-delta", (input) => {
+      if (input.sessionId !== sessionId) return;
+      this.target.write(input.text);
+    }));
+
+    unregister.push(events.on("agent/thinking-delta", (input) => {
+      if (input.sessionId !== sessionId) return;
+      this.target.write(`\x1b[90m${input.thinking}\x1b[0m`);
+    }));
+
+    unregister.push(events.on("agent/toolcall-start", (input) => {
+      if (input.sessionId !== sessionId) return;
+      this.target.log(`\n\x1b[33m[tool] ${input.name}\x1b[0m`);
+    }));
+
+    unregister.push(events.on("agent/toolcall-delta", (input) => {
+      if (input.sessionId !== sessionId) return;
+      this.target.write(input.argumentsDelta);
+    }));
+
+    unregister.push(events.on("agent/tool-start", (input) => {
+      if (input.sessionId !== sessionId) return;
+      const event: ToolPresentationInput = {
+        type: "tool_start",
+        call: input.call,
+      };
+      const text = render(event);
+      if (text.length > 0) {
+        this.target.log(`\n\x1b[33m${text}\x1b[0m`);
       }
-      case "tool_rejected":
-        this.target.log(this.renderToolEvent(event));
-        break;
-      case "agent_end": {
-        const toolCount = event.messages.filter((message) => message.role === "tool").length;
-        this.target.log(`session used ${toolCount} tool calls`);
-        break;
+    }));
+
+    unregister.push(events.on("agent/tool-end", (input) => {
+      if (input.sessionId !== sessionId) return;
+      const count = (toolCounts.get(input.runId) ?? 0) + 1;
+      toolCounts.set(input.runId, count);
+      const event: ToolPresentationInput = {
+        type: "tool_end",
+        call: input.call,
+        result: input.result,
+      };
+      const text = render(event);
+      if (text.length > 0) {
+        this.target.log(text);
       }
-      case "turn_start":
-      case "turn_end":
-      case "agent_start":
-      case "run_start":
-      case "run_end":
-        break;
-    }
+      if (input.result.content.length > LARGE_OUTPUT_THRESHOLD) {
+        this.target.log(`⚠ Large output from ${input.call.name} (${input.result.content.length} characters)`);
+      }
+    }));
+
+    unregister.push(events.on("agent/tool-rejected", (input) => {
+      if (input.sessionId !== sessionId) return;
+      const count = (toolCounts.get(input.runId) ?? 0) + 1;
+      toolCounts.set(input.runId, count);
+      const event: ToolPresentationInput = {
+        type: "tool_rejected",
+        call: input.call,
+        ...(input.effectiveArguments === undefined ? {} : { effectiveArguments: input.effectiveArguments }),
+        result: input.result,
+        reason: input.reason,
+      };
+      const text = render(event);
+      if (text.length > 0) {
+        this.target.log(text);
+      }
+    }));
+
+    return () => {
+      for (const remove of unregister) remove();
+    };
   }
 }

@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CodingToolPresentationRegistry } from "../../../src/coding-agent/ui/presentation.js";
+import type { ToolPresentationInput } from "../../../src/coding-agent/ui/presentation.js";
 import type { AgentToolCall } from "../../../src/agent/tools/types.js";
-import type { HarnessToolEvent } from "../../../src/harness/events/types.js";
 
-const context = { lane: "main", runId: "run-1" } as const;
 const todoCall: AgentToolCall = {
   type: "toolCall", id: "c1", name: "todo_write", arguments: {},
 };
@@ -13,8 +12,8 @@ const bashCall: AgentToolCall = {
   type: "toolCall", id: "c2", name: "bash", arguments: {},
 };
 
-function todoEnd(result: { content: string; isError: boolean }): HarnessToolEvent {
-  return { type: "tool_end", call: todoCall, result, ...context };
+function todoEnd(result: { content: string; isError: boolean }): ToolPresentationInput {
+  return { type: "tool_end", call: todoCall, result };
 }
 
 test("registry matches by tool name and falls back for unknown tools", () => {
@@ -26,16 +25,15 @@ test("registry matches by tool name and falls back for unknown tools", () => {
     renderRejected: () => "todo rejected",
   });
 
-  assert.equal(registry.render({ type: "tool_start", call: todoCall, ...context }), "todo start");
+  assert.equal(registry.render({ type: "tool_start", call: todoCall }), "todo start");
   assert.equal(registry.render(todoEnd({ content: "ok", isError: false })), "todo end");
   assert.equal(registry.render({
     type: "tool_rejected",
     call: todoCall,
     result: { content: "no", isError: true },
     reason: "blocked",
-    ...context,
   }), "todo rejected");
-  assert.equal(registry.render({ type: "tool_start", call: bashCall, ...context }), "[exec] bash: {}");
+  assert.equal(registry.render({ type: "tool_start", call: bashCall }), "[exec] bash: {}");
   assert.deepEqual(errors, []);
 });
 
@@ -48,7 +46,7 @@ test("registry falls back when presentation returns undefined or throws", () => 
   });
 
   assert.equal(
-    registry.render({ type: "tool_start", call: todoCall, ...context }),
+    registry.render({ type: "tool_start", call: todoCall }),
     "[exec] todo_write: {}",
   );
   assert.equal(
@@ -70,7 +68,6 @@ test("tool_end fallback reflects the error flag and rejected uses the reason", (
       call: todoCall,
       result: { content: "denied", isError: true },
       reason: "blocked",
-      ...context,
     }),
     "[rejected:blocked] todo_write: denied",
   );
@@ -92,14 +89,10 @@ test("fallback rendering never throws for non-JSON-safe arguments", () => {
 
   assert.doesNotThrow(() => registry.render({
     type: "tool_start",
-    lane: "main",
-    runId: "run-1",
     call: { type: "toolCall", id: "c1", name: "unknown", arguments: cyclic },
   }));
   assert.match(registry.render({
     type: "tool_start",
-    lane: "main",
-    runId: "run-2",
     call: { type: "toolCall", id: "c2", name: "unknown", arguments: { value: 1n } },
   }), /unknown/);
 });

@@ -32,15 +32,13 @@ import type {
 } from "../src/agent/index.js";
 
 import type {
-  AgentEvent,
   AgentToolCall,
   AgentToolResult,
 } from "../src/agent/index.js";
 
 import type {
   HarnessConfig,
-  HarnessEvent,
-  HarnessToolEvent,
+  HarnessRunEndInput,
 } from "../src/harness/index.js";
 
 import type {
@@ -74,7 +72,6 @@ void [
 
 // Type-only assertions — keep imports from being tree-shaken
 type PublicAgentTypes = [
-  AgentEvent,
   AgentRunIdentity,
   ToolCallDecision,
   AgentToolCall,
@@ -82,8 +79,7 @@ type PublicAgentTypes = [
 ];
 
 type PublicHarnessTypes = [
-  HarnessEvent,
-  HarnessToolEvent,
+  HarnessRunEndInput,
   HarnessConfig,
   CreateSessionInput,
   SessionHeader,

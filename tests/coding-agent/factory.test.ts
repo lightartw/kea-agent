@@ -13,7 +13,7 @@ import type {
   StreamFn,
 } from "../../src/ai/types.js";
 import type { CodingAgentInteractions } from "../../src/coding-agent/index.js";
-import type { HarnessToolEvent } from "../../src/harness/events/types.js";
+import type { ToolPresentationInput } from "../../src/coding-agent/ui/presentation.js";
 import type { TodoItem } from "../../src/coding-agent/tools/builtin/todo.js";
 
 async function tempDir(): Promise<string> {
@@ -330,7 +330,9 @@ test("Harnesses created for one Project do not share mutable state", async () =>
     assert.deepEqual(second.model, model);
 
     const secondEvents: string[] = [];
-    second.subscribe((event) => { secondEvents.push(event.type); });
+    project.events.on("agent/turn-start", (input) => {
+      if (input.sessionId === second.sessionId) secondEvents.push("turn");
+    });
     first.unregisterTool("bash");
     await first.prompt("only first");
     assert.deepEqual(secondEvents, []);
@@ -460,7 +462,7 @@ test("createProject returns distinct Projects and tool render functions per call
     const secondHarness = await second.createSession();
 
     assert.notEqual(first.id, second.id);
-    assert.notEqual(first.renderToolEvent, second.renderToolEvent);
+    assert.notEqual(first.renderTool, second.renderTool);
 
     await firstHarness.prompt("one");
     await secondHarness.prompt("two");
@@ -480,10 +482,8 @@ test("project presentations render todo details from the Coding Tool definition"
   try {
     const project = await createProjectAt(keaHome, dir);
 
-    const todoEndEvent: HarnessToolEvent = {
+    const todoEndEvent: ToolPresentationInput = {
       type: "tool_end",
-      lane: "main",
-      runId: "run-1",
       call: {
         type: "toolCall",
         id: "c1",
@@ -497,7 +497,7 @@ test("project presentations render todo details from the Coding Tool definition"
       },
     };
     assert.equal(
-      project.renderToolEvent(todoEndEvent),
+      project.renderTool(todoEndEvent),
       "1. [in_progress] Design UI",
     );
   } finally {

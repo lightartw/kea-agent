@@ -10,6 +10,7 @@ import type {
   Project,
 } from "../../src/coding-agent/index.js";
 import type { AgentHarness } from "../../src/harness/index.js";
+import { Events } from "../../src/events/events.js";
 
 type QuestionFn = (
   query: string,
@@ -69,9 +70,7 @@ test("run suspends its ESC listener during confirm and restores it after", async
   }, input);
 
   const harness = {
-    subscribe() {
-      return () => undefined;
-    },
+    sessionId: "session-1",
     abort() {
       aborts++;
     },
@@ -84,7 +83,8 @@ test("run suspends its ESC listener during confirm and restores it after", async
     },
   } as unknown as AgentHarness;
   const project = {
-    renderToolEvent: () => "tool",
+    events: new Events(),
+    renderTool: () => "tool",
   } as unknown as Project;
 
   await cli.run(project, harness);

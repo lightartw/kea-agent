@@ -5,7 +5,7 @@ import { Type, type Static } from "typebox";
 
 import { runAgentLoop } from "../../src/agent/agent-loop.js";
 import type {
-  AgentEvent,
+  AgentContext,
   AgentLoopConfig,
   AgentMessage,
 } from "../../src/agent/types.js";
@@ -41,6 +41,18 @@ function makeConfig(events: Events): AgentLoopConfig {
   };
 }
 
+function memoryContext(
+  tools = new AgentToolRegistry(),
+  history: AgentMessage[] = [],
+): AgentContext {
+  return {
+    systemPrompt: "",
+    messages: history,
+    tools,
+    appendMessage: async (message) => { history.push(message); },
+  };
+}
+
 function assistantMsg(
   text: string,
   extraContent: ContentBlock[] = [],
@@ -72,14 +84,6 @@ function streamFnWithEvents(
     beforeStream?.(context, current);
     for (const event of streams[current] ?? []) yield event;
   };
-}
-
-async function collect(
-  stream: AsyncIterable<AgentEvent>,
-): Promise<AgentEvent[]> {
-  const events: AgentEvent[] = [];
-  for await (const event of stream) events.push(event);
-  return events;
 }
 
 function streamForToolCall(call: AgentToolCall): StreamFn {
@@ -126,23 +130,25 @@ test("agent/user-prompt rejection prevents message insertion and model calls", a
   events.on("agent/user-prompt", () => ({ block: true, reason: "blocked" }));
   let streams = 0;
   const history: AgentMessage[] = [];
+  const context = memoryContext(undefined, history);
+  const recorded: string[] = [];
+  events.on("agent/turn-start", (input) => {
+    if (input.sessionId === "session-1") recorded.push("turn-start");
+  });
 
-  const emitted = await collect(runAgentLoop(
+  await runAgentLoop(
     "secret",
-    { systemPrompt: "", messages: history, tools: new AgentToolRegistry() },
+    context,
     makeConfig(events),
     async function* () {
       streams++;
       yield { type: "done", message: assistantMsg("unused") };
     },
-  ));
+  );
 
   assert.equal(streams, 0);
   assert.deepEqual(history, []);
-  assert.deepEqual(emitted, [
-    { type: "agent_start" },
-    { type: "agent_end", messages: [] },
-  ]);
+  assert.deepEqual(recorded, []);
 });
 
 // ── agent/context ──
@@ -157,17 +163,18 @@ test("agent/context transform reaches the model without replacing history", asyn
     ],
   }));
   const history: AgentMessage[] = [];
+  const context = memoryContext(undefined, history);
   let requestMessages: readonly Message[] = [];
 
-  await collect(runAgentLoop(
+  await runAgentLoop(
     "real",
-    { systemPrompt: "", messages: history, tools: new AgentToolRegistry() },
+    context,
     makeConfig(events),
     async function* (_model, context) {
       requestMessages = [...context.messages];
       yield { type: "done", message: assistantMsg("done") };
     },
-  ));
+  );
 
   assert.deepEqual(
     requestMessages.map((message) =>
@@ -201,12 +208,7 @@ test("agent/tool-call transform can replace arguments", async () => {
     call: { ...decision.call, arguments: { value: "fixed" } },
   }));
 
-  await collect(runAgentLoop(
-    "run",
-    { systemPrompt: "", messages: [], tools },
-    makeConfig(events),
-    streamForToolCall(call),
-  ));
+  await runAgentLoop("run", memoryContext(tools), makeConfig(events), streamForToolCall(call));
   assert.equal(tool.ran, true);
   assert.equal(tool.seen, "fixed");
 });
@@ -216,6 +218,7 @@ test("agent/tool-call terminal rejection blocks execution", async () => {
   const tools = new AgentToolRegistry();
   tools.register(tool);
   const history: AgentMessage[] = [];
+  const context = memoryContext(tools);
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
@@ -226,20 +229,16 @@ test("agent/tool-call terminal rejection blocks execution", async () => {
     call: decision.call,
     reason: "denied by policy",
   }));
+  const rejected: Array<{ reason: string }> = [];
+  events.on("agent/tool-rejected", (input) => {
+    if (input.sessionId === "session-1") rejected.push({ reason: input.reason });
+  });
 
-  const emitted = await collect(runAgentLoop(
-    "run",
-    { systemPrompt: "", messages: history, tools },
-    makeConfig(events),
-    streamForToolCall(call),
-  ));
+  await runAgentLoop("run", context, makeConfig(events), streamForToolCall(call));
 
   assert.equal(tool.ran, false);
-  const rejected = emitted.find((event) => event.type === "tool_rejected");
-  assert.equal(rejected?.type, "tool_rejected");
-  if (rejected?.type !== "tool_rejected") return;
-  assert.equal(rejected.reason, "blocked");
-  assert.match(rejected.result.content, /denied by policy/);
+  assert.equal(rejected.length, 1);
+  assert.equal(rejected[0]?.reason, "blocked");
 });
 
 // ── agent/tool-result ──
@@ -249,6 +248,7 @@ test("agent/tool-result transformed result is identical in tool message and next
   const tools = new AgentToolRegistry();
   tools.register(tool);
   const history: AgentMessage[] = [];
+  const context = memoryContext(tools, history);
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
@@ -268,18 +268,14 @@ test("agent/tool-result transformed result is identical in tool message and next
   ], (context, index) => {
     if (index === 1) secondRequest = [...context.messages];
   });
+  const toolEnds: AgentToolResult[] = [];
+  events.on("agent/tool-end", (input) => {
+    if (input.sessionId === "session-1") toolEnds.push(input.result);
+  });
 
-  const emitted = await collect(runAgentLoop(
-    "run",
-    { systemPrompt: "", messages: history, tools },
-    makeConfig(events),
-    stream,
-  ));
+  await runAgentLoop("run", context, makeConfig(events), stream);
 
-  const toolEnd = emitted.find((event) => event.type === "tool_end");
-  assert.equal(toolEnd?.type, "tool_end");
-  if (toolEnd?.type !== "tool_end") return;
-  assert.deepEqual(toolEnd.result, { content: "patched", isError: true });
+  assert.deepEqual(toolEnds[0], { content: "patched", isError: true });
   assert.deepEqual(history[2], {
     role: "tool",
     toolCallId: "c1",
@@ -302,17 +298,18 @@ test("agent/stop continueWith is appended before the next turn", async () => {
       : undefined;
   });
   const history: AgentMessage[] = [];
+  const context = memoryContext(undefined, history);
   let streams = 0;
 
-  await collect(runAgentLoop(
+  await runAgentLoop(
     "start",
-    { systemPrompt: "", messages: history, tools: new AgentToolRegistry() },
+    context,
     makeConfig(events),
     async function* () {
       streams++;
       yield { type: "done", message: assistantMsg(`answer-${streams}`) };
     },
-  ));
+  );
 
   assert.equal(streams, 2);
   assert.equal(stops, 2);
@@ -354,13 +351,13 @@ test("the same AbortSignal reaches every control listener", async () => {
   };
   const controller = new AbortController();
 
-  await collect(runAgentLoop(
+  await runAgentLoop(
     "run",
-    { systemPrompt: "", messages: [], tools },
+    memoryContext(tools),
     makeConfig(events),
     streamForToolCall(call),
     controller.signal,
-  ));
+  );
 
   assert.deepEqual(seen.map(({ type }) => type), [
     "user_prompt",

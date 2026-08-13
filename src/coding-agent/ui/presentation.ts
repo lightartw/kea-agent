@@ -1,6 +1,5 @@
 import type { AgentToolCall, AgentToolResult } from "../../agent/tools/types.js";
-import type { ToolRejectedReason } from "../../agent/types.js";
-import type { HarnessToolEvent } from "../../harness/events/types.js";
+import type { ToolRejectedReason } from "../../agent/events.js";
 
 export type ToolPresentationCall<TArguments> =
   Omit<AgentToolCall, "arguments"> & { readonly arguments: TArguments };
@@ -11,6 +10,11 @@ export interface ToolPresentationRejected<TArguments> {
   readonly result: AgentToolResult<unknown>;
   readonly reason: ToolRejectedReason;
 }
+
+export type ToolPresentationInput =
+  | { readonly type: "tool_start"; readonly call: AgentToolCall }
+  | { readonly type: "tool_end"; readonly call: AgentToolCall; readonly result: AgentToolResult }
+  | ({ readonly type: "tool_rejected" } & ToolPresentationRejected<unknown>);
 
 export interface CodingToolPresentation<TArguments, TDetails> {
   renderStart(call: ToolPresentationCall<TArguments>): string | undefined;
@@ -62,24 +66,24 @@ export class CodingToolPresentationRegistry {
     this.presentations.set(name, presentation as ErasedPresentation);
   }
 
-  render(event: HarnessToolEvent): string {
-    const presentation = this.presentations.get(event.call.name);
+  render(input: ToolPresentationInput): string {
+    const presentation = this.presentations.get(input.call.name);
     try {
-      switch (event.type) {
+      switch (input.type) {
         case "tool_start":
-          return presentation?.renderStart(event.call) ?? fallbackStart(event.call);
+          return presentation?.renderStart(input.call) ?? fallbackStart(input.call);
         case "tool_end":
-          return presentation?.renderEnd(event.call, event.result) ??
-            fallbackEnd(event.call, event.result);
+          return presentation?.renderEnd(input.call, input.result) ??
+            fallbackEnd(input.call, input.result);
         case "tool_rejected":
-          return presentation?.renderRejected?.(event) ?? fallbackRejected(event);
+          return presentation?.renderRejected?.(input) ?? fallbackRejected(input);
       }
     } catch (error) {
       this.report(error);
-      switch (event.type) {
-        case "tool_start": return fallbackStart(event.call);
-        case "tool_end": return fallbackEnd(event.call, event.result);
-        case "tool_rejected": return fallbackRejected(event);
+      switch (input.type) {
+        case "tool_start": return fallbackStart(input.call);
+        case "tool_end": return fallbackEnd(input.call, input.result);
+        case "tool_rejected": return fallbackRejected(input);
       }
     }
   }

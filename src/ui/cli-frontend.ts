@@ -47,11 +47,9 @@ export class CliFrontend {
   async run(project: Project, harness: AgentHarness): Promise<void> {
     const renderer = new CliHarnessRenderer(
       { write: this.writeFn, log: this.logFn },
-      (event) => project.renderToolEvent(event),
+      (input) => project.renderTool(input),
     );
-    const unsubscribe = harness.subscribe((event) => {
-      renderer.render(event);
-    });
+    const unsubscribe = renderer.bind(project.events, harness.sessionId);
 
     this.logFn("Agent Loop");
     this.logFn("Press Enter to send. ESC to abort streaming. 'q' to quit.\n");

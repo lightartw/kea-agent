@@ -1,6 +1,6 @@
 import type { AgentHarness } from "../../harness/agent-harness.js";
-import type { HarnessToolEvent } from "../../harness/events/types.js";
 import type { Events } from "../../events/events.js";
+import type { ToolPresentationInput } from "../ui/presentation.js";
 import type { SessionInfo } from "../../harness/session/types.js";
 
 export interface ProjectInfo {
@@ -41,5 +41,5 @@ export interface Project extends ProjectInfo {
   openSession(sessionId: string): Promise<AgentHarness>;
   continueRecent(): Promise<AgentHarness>;
   update(input: UpdateProjectInput): Promise<ProjectInfo>;
-  renderToolEvent(event: HarnessToolEvent): string;
+  renderTool(input: ToolPresentationInput): string;
 }

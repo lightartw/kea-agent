@@ -4,9 +4,9 @@ import type {
   StreamChunk,
   StreamFn,
 } from "../ai/types.js";
-import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, ToolRejectedReason } from "./types.js";
+import type { AgentContext, AgentLoopConfig, AgentMessage } from "./types.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
-import type { ToolCallDecision } from "./events.js";
+import type { ToolCallDecision, ToolRejectedReason } from "./events.js";
 
 // ── Helpers ──
 
@@ -36,39 +36,31 @@ function toToolResultMessage(
 }
 
 /**
- * Pure function: run the agent loop from a user input.
- * Mutates `context.messages` in place.
+ * Run one Agent Run from a user input. Complete messages are committed
+ * through `context.appendMessage()` before their facts are emitted.
  */
-export async function* runAgentLoop(
+export async function runAgentLoop(
   input: string,
   context: AgentContext,
   config: AgentLoopConfig,
   streamFn: StreamFn,
   signal?: AbortSignal,
-): AsyncIterable<AgentEvent> {
-  yield { type: "agent_start" };
-
+): Promise<void> {
   // ── agent/user-prompt (ask) ──
   const userPromptResult = await config.events.ask(
     "agent/user-prompt",
     { ...config.run, prompt: input },
     signal,
   );
-  if (userPromptResult?.block === true) {
-    yield { type: "agent_end", messages: [...context.messages] };
-    return;
-  }
+  if (userPromptResult?.block === true) return;
 
-  context.messages.push({ role: "user", content: input } as AgentMessage);
+  await context.appendMessage({ role: "user", content: input } as AgentMessage);
 
   // ── Main loop ──
   while (true) {
-    if (signal?.aborted) {
-      yield { type: "agent_end", messages: [...context.messages] };
-      return;
-    }
+    if (signal?.aborted) return;
 
-    yield { type: "turn_start" };
+    await config.events.emit("agent/turn-start", config.run);
 
     // ── agent/context (transform) ──
     const requestMessages = [...context.messages];
@@ -94,58 +86,53 @@ export async function* runAgentLoop(
 
       switch (event.type) {
         case "text_delta":
-          yield { type: "text_delta", text: event.text };
+          await config.events.emit("agent/text-delta", { ...config.run, text: event.text });
           break;
         case "thinking_delta":
-          yield { type: "thinking_delta", thinking: event.thinking };
+          await config.events.emit("agent/thinking-delta", { ...config.run, thinking: event.thinking });
           break;
         case "toolcall_start":
-          yield { type: "toolcall_start", id: event.id, name: event.name };
+          await config.events.emit("agent/toolcall-start", { ...config.run, id: event.id, name: event.name });
           break;
         case "toolcall_delta":
-          yield { type: "toolcall_delta", id: event.id, argumentsDelta: event.argumentsDelta };
+          await config.events.emit("agent/toolcall-delta", { ...config.run, id: event.id, argumentsDelta: event.argumentsDelta });
           break;
         case "toolcall_end":
-          yield {
-            type: "toolcall_end",
+          await config.events.emit("agent/toolcall-end", {
+            ...config.run,
             toolCall: {
               type: "toolCall",
               id: event.toolCall.id,
               name: event.toolCall.name,
               arguments: event.toolCall.arguments,
             },
-          };
+          });
           break;
         case "done":
-          context.messages.push(event.message as AgentMessage);
+          await context.appendMessage(event.message as AgentMessage);
           turnMessage = event.message as AgentMessage;
           break;
         case "error":
-          context.messages.push(event.message as AgentMessage);
-          yield { type: "turn_end", message: event.message as AgentMessage };
-          yield { type: "agent_end", messages: [...context.messages] };
+          await context.appendMessage(event.message as AgentMessage);
+          await config.events.emit("agent/turn-end", { ...config.run, message: event.message as AgentMessage });
           return;
       }
     }
 
-    yield { type: "turn_end", message: turnMessage! };
+    await config.events.emit("agent/turn-end", { ...config.run, message: turnMessage! });
 
     // ── No tool calls → stop check and maybe done ──
     if (toolCalls.length === 0) {
-      if (signal?.aborted) {
-        yield { type: "agent_end", messages: [...context.messages] };
-        return;
-      }
+      if (signal?.aborted) return;
       const stopResult = await config.events.ask(
         "agent/stop",
         { ...config.run, messages: [...context.messages] },
         signal,
       );
       if (stopResult?.continueWith !== undefined) {
-        context.messages.push(stopResult.continueWith);
+        await context.appendMessage(stopResult.continueWith);
         continue;
       }
-      yield { type: "agent_end", messages: [...context.messages] };
       return;
     }
 
@@ -188,7 +175,7 @@ export async function* runAgentLoop(
               result = preparation.result;
               effectiveArguments = effectiveCall.arguments;
             } else {
-              yield { type: "tool_start", call: effectiveCall };
+              await config.events.emit("agent/tool-start", { ...config.run, call: effectiveCall });
               result = await context.tools.execute(preparation.prepared, signal);
 
               if (!signal?.aborted) {
@@ -222,18 +209,18 @@ export async function* runAgentLoop(
         }
       }
 
-      context.messages.push(toToolResultMessage(originalCall, result));
+      await context.appendMessage(toToolResultMessage(originalCall, result));
 
       if (reason === undefined) {
-        yield { type: "tool_end", call: effectiveCall, result };
+        await config.events.emit("agent/tool-end", { ...config.run, call: effectiveCall, result });
       } else {
-        yield {
-          type: "tool_rejected",
+        await config.events.emit("agent/tool-rejected", {
+          ...config.run,
           call: originalCall,
           ...(effectiveArguments === undefined ? {} : { effectiveArguments }),
           result,
           reason,
-        };
+        });
       }
     }
   }

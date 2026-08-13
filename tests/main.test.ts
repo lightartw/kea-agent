@@ -24,6 +24,7 @@ test("Harness renders through one subscription while prompt returns a Promise", 
     yield { type: "text_delta", text: "hello" };
     yield { type: "done", message };
   };
+  const events = new Events();
   const harness = new AgentHarness({
     session: Session.inMemory({
       projectId: "project_test",
@@ -35,15 +36,13 @@ test("Harness renders through one subscription while prompt returns a Promise", 
     toolRegistry: new AgentToolRegistry(),
     systemPrompt: () => "",
     cwd: process.cwd(),
-    events: new Events(),
+    events,
   });
   const renderer = new CliHarnessRenderer(
     { write: (text) => rendered.push(text), log: (text) => logs.push(text) },
     (event) => `[${event.type}] ${event.call.name}`,
   );
-  const unsubscribe = harness.subscribe((event) => {
-    renderer.render(event);
-  });
+  const unsubscribe = renderer.bind(events, harness.sessionId);
 
   const run: Promise<void> = harness.prompt("hello");
   await run;

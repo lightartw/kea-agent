@@ -32,6 +32,7 @@ export type {
 export type {
   CodingToolPresentation,
   ToolPresentationCall,
+  ToolPresentationInput,
   ToolPresentationRejected,
 } from "./ui/presentation.js";
 export type {

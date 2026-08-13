@@ -1,22 +1,14 @@
 import { randomUUID } from "node:crypto";
 
 import { runAgentLoop } from "../agent/agent-loop.js";
-import type { AgentLoopConfig, AgentEvent, AgentMessage } from "../agent/types.js";
+import type { AgentLoopConfig, AgentMessage } from "../agent/types.js";
 import type { AgentRunIdentity } from "../agent/events.js";
 import type { AgentTool } from "../agent/tools/types.js";
 import type { AgentToolRegistry } from "../agent/tools/registry.js";
 import type { Events } from "../events/events.js";
 import type { Message, ModelConfig, StreamFn } from "../ai/types.js";
 import { Session } from "./session/session.js";
-import { HarnessEventBus } from "./events/event-bus.js";
-import {
-  liftAgentEvent,
-  MAIN_LANE,
-  type HarnessEventContext,
-  type HarnessListener,
-  type HarnessRunEndEvent,
-  type Unsubscribe,
-} from "./events/types.js";
+import { MAIN_LANE, type HarnessRunEndInput } from "./events.js";
 import type {
   HarnessConfig,
   SessionTitleGenerator,
@@ -38,7 +30,6 @@ export class AgentHarness {
   private readonly buildSystemPrompt: SystemPromptBuilder;
   private readonly cwd: string;
   private readonly events: Events;
-  private readonly eventBus: HarnessEventBus;
 
   // Absorbed from Agent
   private _messages: AgentMessage[];
@@ -48,7 +39,6 @@ export class AgentHarness {
 
   // Model
   private currentModel: ModelConfig;
-  private persistedMessageCount: number;
 
   // State
   private running = false;
@@ -68,9 +58,7 @@ export class AgentHarness {
     this._streamFn = config.streamFn;
     this.currentModel = context.model ?? config.model;
     this._messages = [...context.messages];
-    this.persistedMessageCount = context.messages.length;
     this.events = config.events;
-    this.eventBus = new HarnessEventBus();
     this.titleGenerator = config.titleGenerator;
     this.titleEligible = config.titleGenerator !== undefined &&
       this.session.info.title === "unknown" &&
@@ -92,12 +80,13 @@ export class AgentHarness {
     });
   }
 
-  private async persistNewMessages(): Promise<void> {
-    while (this.persistedMessageCount < this.messages.length) {
-      const message = this.messages[this.persistedMessageCount]!;
-      await this.session.appendMessage(message);
-      this.persistedMessageCount++;
-    }
+  private createLoopConfig(run: AgentRunIdentity): AgentLoopConfig {
+    return {
+      model: this.currentModel,
+      convertToLlm: (msgs) => msgs as Message[],
+      events: this.events,
+      run,
+    };
   }
 
   /** Launch a detached title task after the first eligible user message is persisted. */
@@ -128,42 +117,6 @@ export class AgentHarness {
     }
   }
 
-  private createLoopConfig(run: AgentRunIdentity): AgentLoopConfig {
-    return {
-      model: this.currentModel,
-      convertToLlm: (msgs) => msgs as Message[],
-      events: this.events,
-      run,
-    };
-  }
-
-  // ── Internal: run the agent loop (absorbed from Agent) ──
-
-  private async *runPrompt(input: string, run: AgentRunIdentity): AsyncIterable<AgentEvent> {
-    const abortController = new AbortController();
-    this.activeRun = { abortController };
-
-    const config = this.createLoopConfig(run);
-
-    try {
-      for await (const event of runAgentLoop(
-        input,
-        {
-          systemPrompt: this.agentSystemPrompt,
-          messages: this._messages,
-          tools: this.toolRegistry,
-        },
-        config,
-        this._streamFn,
-        abortController.signal,
-      )) {
-        yield event;
-      }
-    } finally {
-      this.activeRun = undefined;
-    }
-  }
-
   // ── Core ──
 
   async prompt(input: string): Promise<void> {
@@ -171,10 +124,12 @@ export class AgentHarness {
     this.running = true;
     this.abortRequested = false;
 
-    const eventContext: HarnessEventContext = { lane: MAIN_LANE, runId: randomUUID() };
+    const abortController = new AbortController();
+    this.activeRun = { abortController };
     const run: AgentRunIdentity = {
       sessionId: this.session.id,
-      ...eventContext,
+      runId: randomUUID(),
+      lane: MAIN_LANE,
     };
     let started = false;
     let sawAborted = false;
@@ -185,41 +140,46 @@ export class AgentHarness {
       if (this.abortRequested) return;
 
       started = true;
-      await this.eventBus.publish({ type: "run_start", ...eventContext });
+      await this.events.emit("harness/run-start", run);
 
       if (!this.abortRequested) {
-        for await (const event of this.runPrompt(input, run)) {
-          await this.persistNewMessages();
-          this.maybeStartTitle();
-          await this.eventBus.publish(liftAgentEvent(event, eventContext));
-        }
+        const config = this.createLoopConfig(run);
+        await runAgentLoop(
+          input,
+          {
+            systemPrompt: this.agentSystemPrompt,
+            messages: this._messages,
+            tools: this.toolRegistry,
+            appendMessage: async (message) => {
+              await this.session.appendMessage(message);
+              this._messages.push(message);
+              this.maybeStartTitle();
+            },
+          },
+          config,
+          this._streamFn,
+          abortController.signal,
+        );
       }
     } catch (error) {
-      failure = error;
-    } finally {
-      try {
-        await this.persistNewMessages();
-      } catch (error) {
-        failure ??= error;
-      } finally {
-        sawAborted = this.abortRequested;
-        this.running = false;
-        this.abortRequested = false;
+      if (!this.abortRequested) {
+        failure = error;
       }
+    } finally {
+      sawAborted = this.abortRequested;
+      this.activeRun = undefined;
+      this.running = false;
+      this.abortRequested = false;
     }
 
     if (started) {
-      const endEvent: HarnessRunEndEvent = failure === undefined
-        ? { type: "run_end", ...eventContext, reason: sawAborted ? "aborted" : "completed" }
-        : { type: "run_end", ...eventContext, reason: "error", errorMessage: errorMessage(failure) };
-      await this.eventBus.publish(endEvent);
+      const endInput: HarnessRunEndInput = failure === undefined
+        ? { ...run, reason: sawAborted ? "aborted" : "completed" }
+        : { ...run, reason: "error", errorMessage: errorMessage(failure) };
+      await this.events.emit("harness/run-end", endInput);
     }
 
     if (failure !== undefined) throw failure;
-  }
-
-  subscribe(listener: HarnessListener): Unsubscribe {
-    return this.eventBus.subscribe(listener);
   }
 
   // ── Control ──
