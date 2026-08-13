@@ -439,7 +439,7 @@ interface Notification {
 ### 4.3 默认 Hook：只有 permission
 
 `createDefaultCodingHookRegistry(context)` 只注册 permission。被动的 log、large-output、summary
-不再是 Hook，而是 UI 层针对 Harness `subscribe` 事件的 presentation 行为。
+不再是 Hook，而是 UI 层针对 Harness `subscribe` 事件的渲染/展示行为。
 
 | Hook | 事件 | 行为 |
 | ---- | ---- | ---- |

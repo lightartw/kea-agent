@@ -1,7 +1,7 @@
 import { HookRegistry } from "../../../agent/hooks/registry.js";
-import type { CodingHookContext } from "../../hooks/types.js";
+import type { CodingHookContext } from "../types.js";
 import { registerPermissionHook } from "./permission.js";
-import type { CodingHookRegistry } from "../../hooks/types.js";
+import type { CodingHookRegistry } from "../types.js";
 
 /**
  * Create a Hook registry pre-configured with the single control Hook that
