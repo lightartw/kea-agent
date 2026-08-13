@@ -4,7 +4,7 @@ import test from "node:test";
 import type { Interface } from "node:readline/promises";
 
 import { CliFrontend } from "../../src/cli/frontend.js";
-import type { PermissionRequest } from "../../src/coding-agent/types.js";
+import type { HookConfirmation } from "../../src/coding-agent/types.js";
 import type { AgentHarness } from "../../src/agent/harness/agent-harness.js";
 
 type QuestionFn = (
@@ -22,11 +22,10 @@ class FakeInput extends EventEmitter {
   }
 }
 
-const request: PermissionRequest = {
-  toolCallId: "c1",
-  toolName: "bash",
-  input: { command: "rm file.txt" },
-  reason: "file deletion requires approval",
+const confirmation: HookConfirmation = {
+  source: "permission",
+  title: "Allow Bash command?",
+  message: "file deletion requires approval\nTool: bash({\"command\":\"rm file.txt\"})",
 };
 
 function fakeReadline(question: QuestionFn): Interface {
@@ -73,7 +72,7 @@ test("confirm accepts only y or yes and defaults to deny", async () => {
     ["anything", false],
   ] as const) {
     const cli = frontendWithAnswer(answer);
-    assert.equal(await cli.confirm(request), expected);
+    assert.equal(await cli.confirm(confirmation), expected);
     cli.close();
   }
 });
@@ -88,7 +87,7 @@ test("confirm forwards AbortSignal to readline and returns false when aborted", 
     throw Object.assign(new Error("aborted"), { name: "AbortError" });
   });
 
-  assert.equal(await cli.confirm(request, controller.signal), false);
+  assert.equal(await cli.confirm(confirmation, controller.signal), false);
   assert.equal(seen.length, 1);
   cli.close();
 });
@@ -103,7 +102,7 @@ test("ESC cancels confirmation instead of invoking the run abort listener", asyn
       input.emit("data", Buffer.from([0x1b]));
     }), input);
 
-  assert.equal(await cli.confirm(request), false);
+  assert.equal(await cli.confirm(confirmation), false);
   cli.close();
 });
 
@@ -145,7 +144,7 @@ test("run suspends its ESC listener during confirm and restores it after", async
     },
     async prompt() {
       assert.equal(input.listenerCount("data"), 1);
-      assert.equal(await cli.confirm(request), true);
+      assert.equal(await cli.confirm(confirmation), true);
       assert.equal(input.listenerCount("data"), 1);
       input.emit("data", Buffer.from([0x1b]));
     },

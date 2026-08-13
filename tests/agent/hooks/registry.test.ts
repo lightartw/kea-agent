@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { HookRegistry } from "../../../src/agent/hooks/registry.js";
 import type {
-  AgentHookEvent,
+  AgentHookCall,
   HookListener,
   Unregister,
 } from "../../../src/agent/hooks/types.js";
@@ -120,13 +120,13 @@ test("listeners run before handlers and cannot control the result", async () => 
   const hooks = registry();
   const calls: string[] = [];
   const unsafeObserver = ((
-    _event: AgentHookEvent,
+    _event: AgentHookCall,
     context: TestContext,
     signal?: AbortSignal,
   ) => {
     calls.push(`listener:${context.label}:${String(signal?.aborted)}`);
     return { block: true };
-  }) as unknown as HookListener<AgentHookEvent, TestContext>;
+  }) as unknown as HookListener<AgentHookCall, TestContext>;
   hooks.registerListener(unsafeObserver);
   hooks.register("tool_call", () => {
     calls.push("handler");
@@ -297,7 +297,51 @@ test("clear rethrows one cleanup error by identity", async () => {
 test("unknown event types return undefined (type system guards at compile time)", async () => {
   const hooks = registry();
   const result = await hooks.trigger(
-    { type: "custom" } as unknown as AgentHookEvent,
+    { type: "custom" } as unknown as AgentHookCall,
   );
   assert.equal(result, undefined);
+});
+
+// ── Step 4: AfterToolCall patch invariants ──
+
+test("tool_result carries details through accumulated patches", async () => {
+  const hooks = registry();
+  hooks.register("tool_result", () => ({
+    content: "normalized",
+    details: { count: 1 },
+  }));
+  hooks.register("tool_result", (call) => {
+    assert.deepEqual(call.details, { count: 1 });
+    return { isError: true };
+  });
+
+  assert.deepEqual(await hooks.trigger({
+    type: "tool_result",
+    toolCallId: "c1",
+    toolName: "todo_write",
+    input: {},
+    content: "raw",
+    details: { count: 0 },
+    isError: false,
+  }), {
+    content: "normalized",
+    details: { count: 1 },
+    isError: true,
+  });
+});
+
+test("tool_result rejects a details patch without string content", async () => {
+  const hooks = registry();
+  hooks.register("tool_result", (() => ({ details: { count: 1 } })) as never);
+  await assert.rejects(
+    hooks.trigger({
+      type: "tool_result",
+      toolCallId: "c1",
+      toolName: "todo_write",
+      input: {},
+      content: "raw",
+      isError: false,
+    }),
+    /details.*content/,
+  );
 });

@@ -34,23 +34,23 @@ import type { CreateHarnessConfig } from "../src/coding-agent/index.js";
 
 import { HookRegistry } from "../src/agent/hooks/index.js";
 import type {
-  AgentHookEvent,
+  AfterToolCall,
+  AfterToolCallPatch,
+  AgentHookCall,
   AgentHookTrigger,
+  BeforeStopCall,
+  BeforeStopResult,
+  BeforeToolCall,
+  BeforeToolCallResult,
+  BeforeUserPromptCall,
+  BeforeUserPromptResult,
   Cleanup,
-  ContextEvent,
-  ContextResult,
   HookHandler,
   HookListener,
   ResultOf,
-  StopEvent,
-  StopResult,
-  ToolCallEvent,
-  ToolCallResult,
-  ToolResultEvent,
-  ToolResultPatch,
+  TransformContextCall,
+  TransformContextResult,
   Unregister,
-  UserPromptEvent,
-  UserPromptResult,
 } from "../src/agent/hooks/index.js";
 
 import {
@@ -59,8 +59,8 @@ import {
 import type {
   CodingHookContext,
   CodingHookUI,
+  HookConfirmation,
   HookNotification,
-  PermissionRequest,
 } from "../src/coding-agent/index.js";
 
 void [
@@ -79,31 +79,31 @@ void [
 
 // Type-only assertions — keep imports from being tree-shaken
 type PublicAgentHookTypes = [
-  AgentHookEvent,
+  AgentHookCall,
   AgentHookTrigger,
+  AfterToolCall,
+  AfterToolCallPatch,
+  BeforeStopCall,
+  BeforeStopResult,
+  BeforeToolCall,
+  BeforeToolCallResult,
+  BeforeUserPromptCall,
+  BeforeUserPromptResult,
   Cleanup,
-  ContextEvent,
-  ContextResult,
-  HookHandler<UserPromptEvent, Record<string, never>>,
-  HookListener<AgentHookEvent, Record<string, never>>,
-  ResultOf<UserPromptEvent>,
-  StopEvent,
-  StopResult,
-  ToolCallEvent,
-  ToolCallResult,
-  ToolResultEvent,
-  ToolResultPatch,
+  HookHandler<BeforeUserPromptCall, Record<string, never>>,
+  HookListener<AgentHookCall, Record<string, never>>,
+  ResultOf<BeforeUserPromptCall>,
+  TransformContextCall,
+  TransformContextResult,
   Unregister,
-  UserPromptEvent,
-  UserPromptResult,
 ];
 
 type PublicCodingHookTypes = [
   CodingHookContext,
   CodingHookUI,
   CreateHarnessConfig,
+  HookConfirmation,
   HookNotification,
-  PermissionRequest,
 ];
 void (null as PublicAgentHookTypes | null);
 void (null as PublicCodingHookTypes | null);

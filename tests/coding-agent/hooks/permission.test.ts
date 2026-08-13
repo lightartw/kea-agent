@@ -5,7 +5,7 @@ import { HookRegistry } from "../../../src/agent/hooks/registry.js";
 import type {
   CodingHookContext,
   CodingHookUI,
-  PermissionRequest,
+  HookConfirmation,
 } from "../../../src/coding-agent/types.js";
 import { registerPermissionHook } from "../../../src/coding-agent/hooks/permission.js";
 import { classifyBashCommand, hardDeniedBashReason } from "../../../src/coding-agent/tools/bash-policy.js";
@@ -48,7 +48,7 @@ test("Bash policy allows ordinary commands", () => {
 // ── Step 2: Permission Hook allow/ask/deny tests ──
 
 class RecordingUI implements CodingHookUI {
-  readonly requests: PermissionRequest[] = [];
+  readonly confirmations: HookConfirmation[] = [];
   readonly signals: (AbortSignal | undefined)[] = [];
 
   constructor(
@@ -57,10 +57,10 @@ class RecordingUI implements CodingHookUI {
   ) {}
 
   async confirm(
-    request: PermissionRequest,
+    confirmation: HookConfirmation,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    this.requests.push(request);
+    this.confirmations.push(confirmation);
     this.signals.push(signal);
     if (this.answer instanceof Error) throw this.answer;
     return this.answer;
@@ -99,7 +99,7 @@ test("permission hard-deny never asks UI", async () => {
   const result = await triggerBash(hooks, "sudo true");
   assert.equal(result?.block, true);
   assert.match(result?.reason ?? "", /sudo/);
-  assert.deepEqual(ui.requests, []);
+  assert.deepEqual(ui.confirmations, []);
 });
 
 test("permission asks for rm and accepts explicit approval", async () => {
@@ -108,8 +108,10 @@ test("permission asks for rm and accepts explicit approval", async () => {
   registerPermissionHook(hooks);
 
   assert.equal(await triggerBash(hooks, "rm file.txt"), undefined);
-  assert.equal(ui.requests.length, 1);
-  assert.equal(ui.requests[0]?.toolName, "bash");
+  assert.equal(ui.confirmations.length, 1);
+  assert.equal(ui.confirmations[0]?.source, "permission");
+  assert.equal(ui.confirmations[0]?.title, "Allow Bash command?");
+  assert.match(ui.confirmations[0]?.message ?? "", /rm file\.txt/);
 });
 
 test("permission fails closed without UI, on decline, and on UI error", async () => {
@@ -137,7 +139,7 @@ test("permission ignores non-bash tools and safe Bash commands", async () => {
     input: { path: "inside.txt", content: "ok" },
   }), undefined);
   assert.equal(await triggerBash(hooks, "pwd"), undefined);
-  assert.deepEqual(ui.requests, []);
+  assert.deepEqual(ui.confirmations, []);
 });
 
 test("permission forwards the run signal to UI", async () => {

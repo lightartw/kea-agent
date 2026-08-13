@@ -1,4 +1,4 @@
-import type { ToolCallEvent, ToolCallResult } from "../../agent/hooks/types.js";
+import type { BeforeToolCall, BeforeToolCallResult } from "../../agent/hooks/types.js";
 import { classifyBashCommand } from "../tools/bash-policy.js";
 import type { CodingHookContext, CodingHookUI } from "../types.js";
 import type { CodingHookRegistry } from "./types.js";
@@ -11,12 +11,12 @@ export function registerPermissionHook(
   registry: CodingHookRegistry,
 ): void {
   registry.register("tool_call", async (
-    event: ToolCallEvent,
+    call: BeforeToolCall,
     context: CodingHookContext,
     signal?: AbortSignal,
-  ): Promise<ToolCallResult | undefined> => {
-    if (event.toolName !== "bash") return undefined;
-    const command = event.input.command;
+  ): Promise<BeforeToolCallResult | undefined> => {
+    if (call.toolName !== "bash") return undefined;
+    const command = call.input.command;
     if (typeof command !== "string") return undefined;
 
     const decision = classifyBashCommand(command);
@@ -34,10 +34,9 @@ export function registerPermissionHook(
     }
     try {
       const allowed = await ui.confirm({
-        toolCallId: event.toolCallId,
-        toolName: event.toolName,
-        input: event.input,
-        reason: decision.reason,
+        source: "permission",
+        title: "Allow Bash command?",
+        message: `${decision.reason}\nTool: bash(${JSON.stringify(call.input)})`,
       }, signal);
       return allowed
         ? undefined

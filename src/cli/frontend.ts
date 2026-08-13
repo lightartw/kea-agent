@@ -3,8 +3,8 @@ import { createInterface, type Interface } from "node:readline/promises";
 import type { AgentHarness } from "../agent/harness/agent-harness.js";
 import type {
   CodingHookUI,
+  HookConfirmation,
   HookNotification,
-  PermissionRequest,
 } from "../coding-agent/types.js";
 import { renderAgentEvent } from "./render.js";
 
@@ -43,7 +43,7 @@ export class CliFrontend implements CodingHookUI {
   // ── CodingHookUI ──
 
   async confirm(
-    request: PermissionRequest,
+    confirmation: HookConfirmation,
     signal?: AbortSignal,
   ): Promise<boolean> {
     // Temporarily detach the run ESC listener
@@ -70,7 +70,7 @@ export class CliFrontend implements CodingHookUI {
         : confirmationController.signal;
 
       const answer = await this.readline.question(
-        `\n⚠ ${request.reason}\n   Tool: ${request.toolName}(${JSON.stringify(request.input)})\n   Allow? [y/N] `,
+        `\n⚠ ${confirmation.title}\n   ${confirmation.message}\n   Allow? [y/N] `,
         { signal: combinedSignal },
       );
       return ["y", "yes"].includes(answer.trim().toLowerCase());

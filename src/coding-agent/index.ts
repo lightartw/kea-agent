@@ -9,6 +9,6 @@ export type { CreateHarnessConfig } from "./types.js";
 export type {
   CodingHookContext,
   CodingHookUI,
+  HookConfirmation,
   HookNotification,
-  PermissionRequest,
 } from "./types.js";

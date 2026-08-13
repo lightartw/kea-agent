@@ -1,99 +1,99 @@
 import type { AgentMessage } from "../types.js";
 
-export interface HookEvent<TType extends string> {
+export interface HookCall<TType extends string> {
   readonly type: TType;
 }
 
-export type ResultOf<TEvent> =
-  TEvent extends UserPromptEvent ? UserPromptResult :
-  TEvent extends ContextEvent ? ContextResult :
-  TEvent extends ToolCallEvent ? ToolCallResult :
-  TEvent extends ToolResultEvent ? ToolResultPatch :
-  TEvent extends StopEvent ? StopResult :
+export type ResultOf<TCall> =
+  TCall extends BeforeUserPromptCall ? BeforeUserPromptResult :
+  TCall extends TransformContextCall ? TransformContextResult :
+  TCall extends BeforeToolCall ? BeforeToolCallResult :
+  TCall extends AfterToolCall ? AfterToolCallPatch :
+  TCall extends BeforeStopCall ? BeforeStopResult :
   void;
 
-// ── Concrete event types ──
+// ── Concrete call types ──
 
-export interface UserPromptResult {
+export interface BeforeUserPromptResult {
   readonly block?: boolean;
   readonly reason?: string;
 }
 
-export interface UserPromptEvent
-  extends HookEvent<"user_prompt"> {
+export interface BeforeUserPromptCall
+  extends HookCall<"user_prompt"> {
   readonly type: "user_prompt";
   readonly prompt: string;
 }
 
-export interface ContextResult {
+export interface TransformContextResult {
   readonly messages?: AgentMessage[];
 }
 
-export interface ContextEvent
-  extends HookEvent<"context"> {
+export interface TransformContextCall
+  extends HookCall<"context"> {
   readonly type: "context";
-  readonly messages: AgentMessage[];
+  readonly messages: readonly AgentMessage[];
 }
 
-export interface ToolCallResult {
+export interface BeforeToolCallResult {
   readonly block?: boolean;
   readonly reason?: string;
 }
 
-export interface ToolCallEvent
-  extends HookEvent<"tool_call"> {
+export interface BeforeToolCall
+  extends HookCall<"tool_call"> {
   readonly type: "tool_call";
   readonly toolCallId: string;
   readonly toolName: string;
   input: Record<string, unknown>;
 }
 
-export interface ToolResultPatch {
-  readonly content?: string;
-  readonly isError?: boolean;
-}
+export type AfterToolCallPatch =
+  | { readonly content?: string; readonly details?: never; readonly isError?: boolean }
+  | { readonly content: string; readonly details: unknown; readonly isError?: boolean };
 
-export interface ToolResultEvent
-  extends HookEvent<"tool_result"> {
+export interface AfterToolCall
+  extends HookCall<"tool_result"> {
   readonly type: "tool_result";
   readonly toolCallId: string;
   readonly toolName: string;
-  readonly input: Record<string, unknown>;
+  readonly input: Readonly<Record<string, unknown>>;
   readonly content: string;
+  readonly details?: unknown;
   readonly isError: boolean;
 }
 
-export interface StopResult {
+export interface BeforeStopResult {
   readonly continueWith?: AgentMessage;
 }
 
-export interface StopEvent extends HookEvent<"stop"> {
+export interface BeforeStopCall extends HookCall<"stop"> {
   readonly type: "stop";
   readonly messages: readonly AgentMessage[];
 }
 
-// ── Event union ──
+// ── Call union ──
 
-export type AgentHookEvent =
-  | UserPromptEvent
-  | ContextEvent
-  | ToolCallEvent
-  | ToolResultEvent
-  | StopEvent;
+export type AgentHookCall =
+  | BeforeUserPromptCall
+  | TransformContextCall
+  | BeforeToolCall
+  | AfterToolCall
+  | BeforeStopCall;
 
 // ── Handler / Observer / Lifecycle ──
 
-export type HookHandler<TEvent, TContext> = (
-  event: TEvent,
+export type HookHandler<TCall, TContext> = (
+  call: TCall,
   context: TContext,
   signal?: AbortSignal,
 ) =>
-  | ResultOf<TEvent>
+  | ResultOf<TCall>
   | void
-  | Promise<ResultOf<TEvent> | void>;
+  | Promise<ResultOf<TCall> | void>;
 
-export type HookListener<TEvent, TContext> = (
-  event: TEvent,
+export type HookListener<TCall, TContext> = (
+  call: TCall,
   context: TContext,
   signal?: AbortSignal,
 ) => void | Promise<void>;
@@ -105,8 +105,8 @@ export type Unregister = () => void;
 // ── Narrow trigger interface ──
 
 export interface AgentHookTrigger {
-  trigger<TEvent extends AgentHookEvent>(
-    event: TEvent,
+  trigger<TCall extends AgentHookCall>(
+    call: TCall,
     signal?: AbortSignal,
-  ): Promise<ResultOf<TEvent> | undefined>;
+  ): Promise<ResultOf<TCall> | undefined>;
 }

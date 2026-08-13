@@ -1,29 +1,38 @@
 import type {
-  AgentHookEvent,
+  AfterToolCall,
+  AfterToolCallPatch,
+  AgentHookCall,
+  BeforeStopCall,
+  BeforeStopResult,
+  BeforeToolCall,
+  BeforeToolCallResult,
+  BeforeUserPromptCall,
+  BeforeUserPromptResult,
   Cleanup,
-  ContextEvent,
-  ContextResult,
   HookHandler,
   HookListener,
   ResultOf,
-  StopEvent,
-  StopResult,
-  ToolCallEvent,
-  ToolCallResult,
-  ToolResultEvent,
-  ToolResultPatch,
+  TransformContextCall,
+  TransformContextResult,
   Unregister,
-  UserPromptEvent,
-  UserPromptResult,
 } from "./types.js";
+
+function assertAfterToolCallPatch(value: unknown): asserts value is AfterToolCallPatch {
+  if (typeof value !== "object" || value === null) return;
+  if (!Object.hasOwn(value, "details")) return;
+  if (!Object.hasOwn(value, "content") ||
+    typeof (value as { content?: unknown }).content !== "string") {
+    throw new TypeError("AfterToolCall details patch requires string content");
+  }
+}
 
 export class HookRegistry<TContext> {
   private _context: TContext;
   private readonly handlers = new Map<
     string,
-    Set<HookHandler<AgentHookEvent, TContext>>
+    Set<HookHandler<AgentHookCall, TContext>>
   >();
-  private readonly listeners = new Set<HookListener<AgentHookEvent, TContext>>();
+  private readonly listeners = new Set<HookListener<AgentHookCall, TContext>>();
   private readonly cleanups: Cleanup[] = [];
   private disposed = false;
 
@@ -40,9 +49,9 @@ export class HookRegistry<TContext> {
     this._context = context;
   }
 
-  register<TType extends AgentHookEvent["type"]>(
+  register<TType extends AgentHookCall["type"]>(
     type: TType,
-    handler: HookHandler<Extract<AgentHookEvent, { type: TType }>, TContext>,
+    handler: HookHandler<Extract<AgentHookCall, { type: TType }>, TContext>,
   ): Unregister {
     this.assertActive();
     let set = this.handlers.get(type);
@@ -50,7 +59,7 @@ export class HookRegistry<TContext> {
       set = new Set();
       this.handlers.set(type, set);
     }
-    const typedHandler = handler as HookHandler<AgentHookEvent, TContext>;
+    const typedHandler = handler as HookHandler<AgentHookCall, TContext>;
     set.add(typedHandler);
     let active = true;
     return () => {
@@ -61,7 +70,7 @@ export class HookRegistry<TContext> {
   }
 
   registerListener(
-    listener: HookListener<AgentHookEvent, TContext>,
+    listener: HookListener<AgentHookCall, TContext>,
   ): Unregister {
     this.assertActive();
     this.listeners.add(listener);
@@ -73,51 +82,51 @@ export class HookRegistry<TContext> {
     };
   }
 
-  async trigger<T extends AgentHookEvent>(
-    event: T,
+  async trigger<T extends AgentHookCall>(
+    call: T,
     signal?: AbortSignal,
   ): Promise<ResultOf<T> | undefined> {
     this.assertActive();
     const context = this._context;
     const listeners = [...this.listeners];
-    const handlers = [...(this.handlers.get(event.type) ?? [])];
+    const handlers = [...(this.handlers.get(call.type) ?? [])];
 
     for (const listener of listeners) {
-      await listener(event, context, signal);
+      await listener(call, context, signal);
     }
 
-    switch (event.type) {
+    switch (call.type) {
       case "user_prompt":
-        return this.triggerUserPrompt(
-          event as unknown as UserPromptEvent,
+        return this.triggerBeforeUserPrompt(
+          call as unknown as BeforeUserPromptCall,
           handlers,
           context,
           signal,
         ) as Promise<ResultOf<T> | undefined>;
       case "context":
-        return this.triggerContext(
-          event as unknown as ContextEvent,
+        return this.triggerTransformContext(
+          call as unknown as TransformContextCall,
           handlers,
           context,
           signal,
         ) as Promise<ResultOf<T> | undefined>;
       case "tool_call":
-        return this.triggerToolCall(
-          event as unknown as ToolCallEvent,
+        return this.triggerBeforeToolCall(
+          call as unknown as BeforeToolCall,
           handlers,
           context,
           signal,
         ) as Promise<ResultOf<T> | undefined>;
       case "tool_result":
-        return this.triggerToolResult(
-          event as unknown as ToolResultEvent,
+        return this.triggerAfterToolCall(
+          call as unknown as AfterToolCall,
           handlers,
           context,
           signal,
         ) as Promise<ResultOf<T> | undefined>;
       case "stop":
-        return this.triggerStop(
-          event as unknown as StopEvent,
+        return this.triggerBeforeStop(
+          call as unknown as BeforeStopCall,
           handlers,
           context,
           signal,
@@ -175,102 +184,110 @@ export class HookRegistry<TContext> {
     if (errors.length > 1) throw new AggregateError(errors, "Hook cleanup failed");
   }
 
-  // ── Event-specific trigger implementations ──
+  // ── Call-specific trigger implementations ──
 
-  private async triggerUserPrompt(
-    event: UserPromptEvent,
-    handlers: HookHandler<AgentHookEvent, TContext>[],
+  private async triggerBeforeUserPrompt(
+    call: BeforeUserPromptCall,
+    handlers: HookHandler<AgentHookCall, TContext>[],
     context: TContext,
     signal: AbortSignal | undefined,
-  ): Promise<UserPromptResult | undefined> {
+  ): Promise<BeforeUserPromptResult | undefined> {
     for (const handler of handlers) {
-      const result = await (handler as unknown as HookHandler<UserPromptEvent, TContext>)(
-        event,
+      const result = await (handler as unknown as HookHandler<BeforeUserPromptCall, TContext>)(
+        call,
         context,
         signal,
       );
       if (result !== undefined && result !== null) {
-        const r = result as UserPromptResult;
+        const r = result as BeforeUserPromptResult;
         if (r.block === true) return r;
       }
     }
     return undefined;
   }
 
-  private async triggerContext(
-    event: ContextEvent,
-    handlers: HookHandler<AgentHookEvent, TContext>[],
+  private async triggerTransformContext(
+    call: TransformContextCall,
+    handlers: HookHandler<AgentHookCall, TContext>[],
     context: TContext,
     signal: AbortSignal | undefined,
-  ): Promise<ContextResult | undefined> {
-    let current = event;
+  ): Promise<TransformContextResult | undefined> {
+    let current = call;
     for (const handler of handlers) {
-      const result = await (handler as unknown as HookHandler<ContextEvent, TContext>)(
+      const result = await (handler as unknown as HookHandler<TransformContextCall, TContext>)(
         current,
         context,
         signal,
       );
       if (result !== undefined && result !== null) {
-        const r = result as ContextResult;
+        const r = result as TransformContextResult;
         if (r.messages !== undefined) {
           current = { ...current, messages: r.messages };
         }
       }
     }
-    return current.messages !== event.messages
-      ? { messages: current.messages }
+    return current.messages !== call.messages
+      ? { messages: [...current.messages] }
       : undefined;
   }
 
-  private async triggerToolCall(
-    event: ToolCallEvent,
-    handlers: HookHandler<AgentHookEvent, TContext>[],
+  private async triggerBeforeToolCall(
+    call: BeforeToolCall,
+    handlers: HookHandler<AgentHookCall, TContext>[],
     context: TContext,
     signal: AbortSignal | undefined,
-  ): Promise<ToolCallResult | undefined> {
+  ): Promise<BeforeToolCallResult | undefined> {
     for (const handler of handlers) {
-      const result = await (handler as unknown as HookHandler<ToolCallEvent, TContext>)(
-        event,
+      const result = await (handler as unknown as HookHandler<BeforeToolCall, TContext>)(
+        call,
         context,
         signal,
       );
       if (result !== undefined && result !== null) {
-        const r = result as ToolCallResult;
+        const r = result as BeforeToolCallResult;
         if (r.block === true) return r;
       }
     }
     return undefined;
   }
 
-  private async triggerToolResult(
-    event: ToolResultEvent,
-    handlers: HookHandler<AgentHookEvent, TContext>[],
+  private async triggerAfterToolCall(
+    call: AfterToolCall,
+    handlers: HookHandler<AgentHookCall, TContext>[],
     context: TContext,
     signal: AbortSignal | undefined,
-  ): Promise<ToolResultPatch | undefined> {
-    let currentContent = event.content;
-    let currentIsError = event.isError;
+  ): Promise<AfterToolCallPatch | undefined> {
+    let currentContent = call.content;
+    let currentIsError = call.isError;
+    let currentDetails = call.details;
     let hasPatch = false;
-    const accumulated: { content?: string; isError?: boolean } = {};
+    const accumulated: { content?: string; details?: unknown; isError?: boolean } = {};
     for (const handler of handlers) {
-      const syntheticEvent: ToolResultEvent = {
+      const syntheticCall: AfterToolCall = {
         type: "tool_result",
-        toolCallId: event.toolCallId,
-        toolName: event.toolName,
-        input: event.input,
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        input: call.input,
         content: currentContent,
+        ...(currentDetails === undefined ? {} : { details: currentDetails }),
         isError: currentIsError,
       };
-      const result = await (handler as unknown as HookHandler<ToolResultEvent, TContext>)(
-        syntheticEvent,
+      const result = await (handler as unknown as HookHandler<AfterToolCall, TContext>)(
+        syntheticCall,
         context,
         signal,
       );
       if (result !== undefined && result !== null) {
-        const r = result as ToolResultPatch;
+        assertAfterToolCallPatch(result);
+        const r = result as AfterToolCallPatch;
         if (r.content !== undefined) {
           accumulated.content = r.content;
           currentContent = r.content;
+          hasPatch = true;
+        }
+        if (Object.hasOwn(r, "details")) {
+          accumulated.details = r.details;
+          currentDetails = r.details;
           hasPatch = true;
         }
         if (r.isError !== undefined) {
@@ -280,23 +297,23 @@ export class HookRegistry<TContext> {
         }
       }
     }
-    return hasPatch ? (accumulated as ToolResultPatch) : undefined;
+    return hasPatch ? (accumulated as AfterToolCallPatch) : undefined;
   }
 
-  private async triggerStop(
-    event: StopEvent,
-    handlers: HookHandler<AgentHookEvent, TContext>[],
+  private async triggerBeforeStop(
+    call: BeforeStopCall,
+    handlers: HookHandler<AgentHookCall, TContext>[],
     context: TContext,
     signal: AbortSignal | undefined,
-  ): Promise<StopResult | undefined> {
+  ): Promise<BeforeStopResult | undefined> {
     for (const handler of handlers) {
-      const result = await (handler as unknown as HookHandler<StopEvent, TContext>)(
-        event,
+      const result = await (handler as unknown as HookHandler<BeforeStopCall, TContext>)(
+        call,
         context,
         signal,
       );
       if (result !== undefined && result !== null) {
-        const r = result as StopResult;
+        const r = result as BeforeStopResult;
         if (r.continueWith !== undefined) return r;
       }
     }

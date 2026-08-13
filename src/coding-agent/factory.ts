@@ -3,7 +3,7 @@ import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
 import { defaultSystemPrompt } from "../agent/harness/system-prompt.js";
 import { createToolRegistry } from "./tools/factory.js";
 import { createCodingHookRegistry } from "./hooks/factory.js";
-import { NO_UI } from "./hooks/types.js";
+import { NO_HOOK_UI } from "./hooks/types.js";
 import type { SystemPromptBuilder } from "../agent/harness/types.js";
 import type { CreateHarnessConfig } from "./types.js";
 
@@ -22,7 +22,7 @@ export async function createHarness(
 
   const hooks = createCodingHookRegistry({
     cwd: config.project.workDir,
-    ui: config.ui ?? NO_UI,
+    ui: config.ui ?? NO_HOOK_UI,
   });
 
   return new AgentHarness({
