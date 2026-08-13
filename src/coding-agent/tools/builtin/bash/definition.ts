@@ -2,9 +2,9 @@ import { resolve } from "node:path";
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import { LocalBashOperations } from "./bash-ops.js";
-import { hardDeniedBashReason } from "./bash-policy.js";
-import type { CodingToolDefinition } from "./definition.js";
+import { LocalBashOperations } from "./operations.js";
+import { hardDeniedBashReason } from "./policy.js";
+import type { CodingToolDefinition } from "../../definition.js";
 
 /** Swappable execution backend for shell commands. */
 export interface BashOperations {

@@ -6,10 +6,10 @@ import {
   isTodoDetails,
   type TodoDetails,
   type TodoItem,
-} from "./todo-state.js";
-import type { CodingToolDefinition } from "./definition.js";
+} from "./projection.js";
+import type { CodingToolDefinition } from "../../definition.js";
 
-export type { TodoDetails, TodoItem } from "./todo-state.js";
+export type { TodoDetails, TodoItem } from "./projection.js";
 
 const parameters = Type.Object(
   {

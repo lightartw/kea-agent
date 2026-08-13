@@ -1,14 +1,14 @@
-export { createBashToolDefinition, type BashOperations } from "./bash.js";
+export { createBashToolDefinition, type BashOperations } from "./builtin/bash/definition.js";
 export {
   createReadFileToolDefinition,
   createWriteFileToolDefinition,
   createEditFileToolDefinition,
-} from "./files.js";
-export { createGlobToolDefinition } from "./glob.js";
-export { createTodoWriteToolDefinition } from "./todo-write.js";
-export { formatTodoContent, findLatestTodoDetails } from "./todo-state.js";
-export type { TodoDetails, TodoItem } from "./todo-state.js";
-export { createDefaultToolDefinitions } from "./factory.js";
+} from "./builtin/files.js";
+export { createGlobToolDefinition } from "./builtin/glob.js";
+export { createTodoWriteToolDefinition } from "./builtin/todo/definition.js";
+export { formatTodoContent, findLatestTodoDetails } from "./builtin/todo/projection.js";
+export type { TodoDetails, TodoItem } from "./builtin/todo/projection.js";
+export { createDefaultToolDefinitions } from "./builtin/factory.js";
 export type {
   CodingToolContext,
   CodingToolDefinition,

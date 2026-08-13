@@ -3,7 +3,7 @@ export { createDefaultCodingHookRegistry } from "./hooks/builtin/factory.js";
 export {
   CODING_SYSTEM_PROMPT,
 } from "./coding-system-prompt.js";
-export { createDefaultToolDefinitions } from "./tools/factory.js";
+export { createDefaultToolDefinitions } from "./tools/builtin/factory.js";
 export { toAgentTool } from "./tools/wrapper.js";
 export {
   NO_INTERACTIONS,
@@ -32,4 +32,4 @@ export type {
 export type {
   TodoItem,
   TodoDetails,
-} from "./tools/todo-state.js";
+} from "./tools/builtin/todo/projection.js";

@@ -1,4 +1,4 @@
-import type { AgentMessage } from "../../agent/types.js";
+import type { AgentMessage } from "../../../../agent/types.js";
 
 export interface TodoItem {
   readonly content: string;

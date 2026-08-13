@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createDefaultToolDefinitions } from "../../../src/coding-agent/tools/factory.js";
+import { createDefaultToolDefinitions } from "../../../../src/coding-agent/tools/builtin/factory.js";
 
 test("createDefaultToolDefinitions installs built-in tools", () => {
   assert.deepEqual(

@@ -10,7 +10,7 @@ import type { ModelConfig } from "../../src/ai/types.js";
 import { Session } from "../../src/harness/session/session.js";
 import { SessionError } from "../../src/harness/session/types.js";
 import { detailedToolResult } from "../ai/fixtures.js";
-import { findLatestTodoDetails } from "../../src/coding-agent/tools/todo-state.js";
+import { findLatestTodoDetails } from "../../src/coding-agent/tools/builtin/todo/projection.js";
 
 const modelA: ModelConfig = { provider: "test-a", model: "model-a" };
 const modelB: ModelConfig = { provider: "test-b", model: "model-b" };

@@ -4,8 +4,8 @@ import { dirname } from "node:path";
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import { safePath } from "../../utils/workspace.js";
-import type { CodingToolDefinition } from "./definition.js";
+import { safePath } from "../../../utils/workspace.js";
+import type { CodingToolDefinition } from "../definition.js";
 
 const readParameters = Type.Object(
   {

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createBashToolDefinition } from "../../../src/coding-agent/tools/bash.js";
-import type { BashOperations } from "../../../src/coding-agent/tools/bash.js";
+import { createBashToolDefinition } from "../../../../../src/coding-agent/tools/builtin/bash/definition.js";
+import type { BashOperations } from "../../../../../src/coding-agent/tools/builtin/bash/definition.js";
 
 class RecordingBashOperations implements BashOperations {
   calls: string[] = [];
