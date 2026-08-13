@@ -201,7 +201,7 @@ function denyingInteractions(confirmations: string[]): CodingAgentInteractions {
   };
 }
 
-test("factory returns distinct harness and presentation registries per call", async () => {
+test("factory returns distinct harnesses and tool render functions per call", async () => {
   const firstConfirmations: string[] = [];
   const secondConfirmations: string[] = [];
   const first = await createCodingAgent({
@@ -220,7 +220,7 @@ test("factory returns distinct harness and presentation registries per call", as
   });
 
   assert.notEqual(first.harness, second.harness);
-  assert.notEqual(first.presentations, second.presentations);
+  assert.notEqual(first.renderToolEvent, second.renderToolEvent);
 
   await first.harness.prompt("one");
   await second.harness.prompt("two");
@@ -253,7 +253,7 @@ test("runtime presentations render todo details from the Coding Tool definition"
     },
   };
   assert.equal(
-    runtime.presentations.render(todoEndEvent),
+    runtime.renderToolEvent(todoEndEvent),
     "1. [in_progress] Design UI",
   );
 });

@@ -8,7 +8,7 @@ export {
 } from "./ui/interactions.js";
 export {
   CodingToolPresentationRegistry,
-} from "./ui/presentation/registry.js";
+} from "./ui/presentation.js";
 
 export type {
   CodingAgentRuntime,
@@ -23,7 +23,7 @@ export type {
   CodingToolPresentation,
   ToolPresentationCall,
   ToolPresentationRejected,
-} from "./ui/presentation/types.js";
+} from "./ui/presentation.js";
 export type {
   CodingToolContext,
   CodingToolDefinition,

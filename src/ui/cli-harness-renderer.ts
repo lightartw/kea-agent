@@ -1,5 +1,4 @@
-import type { HarnessEvent } from "../harness/events/types.js";
-import type { CodingToolPresentationRegistry } from "../coding-agent/ui/presentation/registry.js";
+import type { HarnessEvent, HarnessToolEvent } from "../harness/events/types.js";
 
 const LARGE_OUTPUT_THRESHOLD = 100_000;
 
@@ -11,7 +10,7 @@ export interface CliRenderTarget {
 export class CliHarnessRenderer {
   constructor(
     private readonly target: CliRenderTarget,
-    private readonly presentations: CodingToolPresentationRegistry,
+    private readonly renderToolEvent: (event: HarnessToolEvent) => string,
   ) {}
 
   render(event: HarnessEvent): void {
@@ -39,17 +38,17 @@ export class CliHarnessRenderer {
       case "toolcall_end":
         break;
       case "tool_start":
-        this.target.log(`\n\x1b[33m${this.presentations.render(event)}\x1b[0m`);
+        this.target.log(`\n\x1b[33m${this.renderToolEvent(event)}\x1b[0m`);
         break;
       case "tool_end": {
-        this.target.log(this.presentations.render(event));
+        this.target.log(this.renderToolEvent(event));
         if (event.result.content.length > LARGE_OUTPUT_THRESHOLD) {
           this.target.log(`⚠ Large output from ${event.call.name} (${event.result.content.length} characters)`);
         }
         break;
       }
       case "tool_rejected":
-        this.target.log(this.presentations.render(event));
+        this.target.log(this.renderToolEvent(event));
         break;
       case "agent_end": {
         const toolCount = event.messages.filter((message) => message.role === "tool").length;

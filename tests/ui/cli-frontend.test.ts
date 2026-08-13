@@ -4,7 +4,6 @@ import test from "node:test";
 import type { Interface } from "node:readline/promises";
 
 import { CliFrontend } from "../../src/ui/cli-frontend.js";
-import { CodingToolPresentationRegistry } from "../../src/coding-agent/ui/presentation/registry.js";
 import type {
   CodingAgentRuntime,
   ConfirmationRequest,
@@ -83,7 +82,7 @@ test("run suspends its ESC listener during confirm and restores it after", async
         input.emit("data", Buffer.from([0x1b]));
       },
     },
-    presentations: new CodingToolPresentationRegistry(),
+    renderToolEvent: () => "tool",
   } as unknown as CodingAgentRuntime;
 
   await cli.run(runtime);

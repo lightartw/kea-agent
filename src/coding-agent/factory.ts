@@ -15,7 +15,7 @@ import { createTodoWriteToolDefinition } from "./tools/builtin/todo.js";
 import { toAgentTool } from "./tools/definition.js";
 import { createPermissionHooks } from "./hooks/permission.js";
 import { NO_INTERACTIONS } from "./ui/interactions.js";
-import { CodingToolPresentationRegistry } from "./ui/presentation/registry.js";
+import { CodingToolPresentationRegistry } from "./ui/presentation.js";
 import type {
   CodingToolContext,
   CodingToolDefinition,
@@ -84,5 +84,8 @@ export async function createCodingAgent(
       ? { onEventListenerError: config.onEventListenerError }
       : {}),
   });
-  return { harness, presentations };
+  return {
+    harness,
+    renderToolEvent: (event) => presentations.render(event),
+  };
 }

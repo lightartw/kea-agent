@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CodingToolPresentationRegistry } from "../../../../src/coding-agent/ui/presentation/registry.js";
+import { CodingToolPresentationRegistry } from "../../../../src/coding-agent/ui/presentation.js";
 import type { AgentToolCall } from "../../../../src/agent/tools/types.js";
 import type { HarnessToolEvent } from "../../../../src/harness/events/types.js";
 

@@ -2,19 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CliHarnessRenderer } from "../../src/ui/cli-harness-renderer.js";
-import { CodingToolPresentationRegistry } from "../../src/coding-agent/ui/presentation/registry.js";
 import type { AgentToolCall } from "../../src/agent/tools/types.js";
+import type { HarnessToolEvent } from "../../src/harness/events/types.js";
 
 const context = { lane: "main", runId: "run-1" } as const;
 
 function rendererWith(
-  presentations: CodingToolPresentationRegistry = new CodingToolPresentationRegistry(),
+  renderToolEvent: (event: HarnessToolEvent) => string = (event) =>
+    `[${event.type}] ${event.call.name}`,
 ) {
   const writes: string[] = [];
   const logs: string[] = [];
   const renderer = new CliHarnessRenderer(
     { write: (text) => writes.push(text), log: (text) => logs.push(text) },
-    presentations,
+    renderToolEvent,
   );
   return { renderer, writes, logs };
 }
@@ -40,14 +41,12 @@ test("run lifecycle events are no-output", () => {
   assert.deepEqual(logs, []);
 });
 
-test("tool events are delegated to the presentation registry", () => {
-  const presentations = new CodingToolPresentationRegistry();
-  presentations.register("todo_write", {
-    renderStart: () => "todo start",
-    renderEnd: () => "todo end",
-    renderRejected: () => "todo rejected",
+test("tool events are delegated to the runtime rendering function", () => {
+  const { renderer, logs } = rendererWith((event) => {
+    if (event.type === "tool_start") return "todo start";
+    if (event.type === "tool_end") return "todo end";
+    return "todo rejected";
   });
-  const { renderer, logs } = rendererWith(presentations);
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "todo_write", arguments: {},
   };
@@ -100,18 +99,13 @@ test("agent_end emits the final tool-count summary", () => {
   assert.deepEqual(logs, ["session used 2 tool calls"]);
 });
 
-test("throwing presentations are isolated and never throw through the renderer", () => {
-  const presentations = new CodingToolPresentationRegistry();
-  presentations.register("todo_write", {
-    renderStart: () => { throw new Error("crash"); },
-    renderEnd: () => "end",
-  });
-  const { renderer, logs } = rendererWith(presentations);
+test("throwing tool rendering is isolated and never throws through the renderer", () => {
+  const { renderer, logs } = rendererWith(() => { throw new Error("crash"); });
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "todo_write", arguments: {},
   };
 
   renderer.render({ type: "tool_start", call, ...context });
 
-  assert.deepEqual(logs, ["\n\x1b[33m[exec] todo_write: {}\x1b[0m"]);
+  assert.deepEqual(logs, ["[ui error] crash"]);
 });

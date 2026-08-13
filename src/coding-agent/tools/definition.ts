@@ -1,6 +1,6 @@
 import type { Static, TObject } from "typebox";
 import { AgentTool, type AgentToolResult } from "../../agent/tools/types.js";
-import type { CodingToolPresentation } from "../ui/presentation/types.js";
+import type { CodingToolPresentation } from "../ui/presentation.js";
 
 export interface CodingToolContext {
   readonly cwd: string;

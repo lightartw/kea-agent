@@ -4,7 +4,7 @@ import type { StreamFn, ModelConfig } from "../ai/types.js";
 import type { Session } from "../harness/session/session.js";
 import type { AgentHarness } from "../harness/agent-harness.js";
 import type { CodingAgentInteractions } from "./ui/interactions.js";
-import type { CodingToolPresentationRegistry } from "./ui/presentation/registry.js";
+import type { HarnessToolEvent } from "../harness/events/types.js";
 
 /** Configuration for creating a Coding Agent runtime through the public factory. */
 export interface CreateCodingAgentConfig {
@@ -20,5 +20,5 @@ export interface CreateCodingAgentConfig {
 /** The capabilities assembled and returned by createCodingAgent(). */
 export interface CodingAgentRuntime {
   readonly harness: AgentHarness;
-  readonly presentations: CodingToolPresentationRegistry;
+  readonly renderToolEvent: (event: HarnessToolEvent) => string;
 }

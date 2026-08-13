@@ -46,7 +46,7 @@ export class CliFrontend {
   async run(runtime: CodingAgentRuntime): Promise<void> {
     const renderer = new CliHarnessRenderer(
       { write: this.writeFn, log: this.logFn },
-      runtime.presentations,
+      runtime.renderToolEvent,
     );
     const unsubscribe = runtime.harness.subscribe((event) => {
       renderer.render(event);
