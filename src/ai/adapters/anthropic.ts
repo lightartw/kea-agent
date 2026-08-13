@@ -2,11 +2,11 @@ import Anthropic from "@anthropic-ai/sdk";
 
 import type { Adapter, ResolvedOptions } from "../factory.js";
 import type {
-  AssistantMessageEvent,
   ContentBlock,
   Context,
   Message,
   StopReason,
+  StreamChunk,
   TextBlock,
   ThinkingBlock,
   Tool,
@@ -74,7 +74,7 @@ export class AnthropicAdapter implements Adapter {
     model: string,
     context: Context,
     options: ResolvedOptions,
-  ): AsyncIterable<AssistantMessageEvent> {
+  ): AsyncIterable<StreamChunk> {
     const converted = messagesForAnthropic(context.messages);
     const signal = mergeSignals(options.timeout, options.signal);
 

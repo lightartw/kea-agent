@@ -1,8 +1,8 @@
 import type {
   AssistantMessage,
-  AssistantMessageEvent,
   Context,
   Message,
+  StreamChunk,
   StreamFn,
 } from "../../src/ai/types.js";
 

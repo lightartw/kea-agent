@@ -130,7 +130,7 @@ type StreamFn = (
   model: ModelConfig,
   context: Context,
   options?: Partial<StreamOptions>,
-) => AsyncIterable<AssistantMessageEvent>;
+) => AsyncIterable<StreamChunk>;
 ```
 
 ### Message
@@ -225,10 +225,13 @@ messages.push({ role: "user", content: [
 因此凡是模型下一轮需要知道的状态都必须出现在 `content`；`details` 只提供同一事实的
 结构化表示，供 Session、UI 和程序消费。
 
-### Stream event
+### Stream chunk
+
+一个 `StreamChunk` 是一次 provider 响应中的一个片段，由 Agent 直接消费；它不是通过
+`Events` 注册、发布或观察的运行事实，只是从 provider 到 agent 的数据传输。
 
 ```ts
-type AssistantMessageEvent =
+type StreamChunk =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; thinking: string }
   | { type: "toolcall_start"; id: string; name: string }
@@ -250,7 +253,7 @@ type AssistantMessageEvent =
 | `createStreamFn`, `ProviderConfig` | 应用组合根配置 ai 能力 |
 | `StreamFn` | ai 核心能力；直接注入相邻 agent 层 |
 | `ModelConfig` | ai 的模型句柄；agent 和模型选择界面可直接使用 |
-| `Context`, `AssistantMessageEvent` | ai 调用边界；agent 内部消费，不继续向上透传 |
+| `Context`, `StreamChunk` | ai 调用边界；agent 内部消费，不继续向上透传 |
 | `StreamOptions` | ai 直接调用选项 |
 | `Message` | 传入 agent 后使用领域名 `AgentMessage` |
 | `UserMessage`, `AssistantMessage`, `ToolResultMessage` | ai 消息协议成员 |

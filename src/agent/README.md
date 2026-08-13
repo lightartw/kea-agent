@@ -344,7 +344,7 @@ agent 只从相邻 ai 层直接依赖：
 | `ModelConfig` | model/provider 选择 |
 | `Message` | `AgentMessage` 和转换结果 |
 | `Context` | 调用 LLM 前临时构造 |
-| `AssistantMessageEvent` | loop 消费 ai stream |
+| `StreamChunk` | loop 消费 ai stream |
 | `Tool` | `AgentTool` schema 契约 |
 
 其他依赖：

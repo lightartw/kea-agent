@@ -23,6 +23,8 @@ import {
 
 import { CliFrontend } from "../src/ui/index.js";
 
+import type { StreamChunk } from "../src/ai/index.js";
+
 import type {
   AgentEvent,
   AgentHookCall,
@@ -91,9 +93,12 @@ type PublicCodingAgentTypes = [
   CodingToolPresentation<unknown, unknown>,
 ];
 
+type PublicAiTypes = [StreamChunk];
+
 void (null as PublicAgentTypes | null);
 void (null as PublicHarnessTypes | null);
 void (null as PublicCodingAgentTypes | null);
+void (null as PublicAiTypes | null);
 
 test("public core imports without credentials or side effects", () => {
   const environment = { ...process.env };

@@ -1,4 +1,4 @@
-import type { AssistantMessageEvent, Context, ModelConfig, StreamFn, StreamOptions } from "./types.js";
+import type { Context, ModelConfig, StreamChunk, StreamFn, StreamOptions } from "./types.js";
 
 const DEFAULT_TIMEOUT = 120;
 const DEFAULT_MAX_TOKENS = 8000;
@@ -21,7 +21,7 @@ function resolveOptions(options?: Partial<StreamOptions>): ResolvedOptions {
 // ── Adapter ──
 
 export interface Adapter {
-  stream(model: string, context: Context, options: ResolvedOptions): AsyncIterable<AssistantMessageEvent>;
+  stream(model: string, context: Context, options: ResolvedOptions): AsyncIterable<StreamChunk>;
 }
 
 // ── Lazy loading ──
@@ -132,7 +132,7 @@ export function createStreamFn(
     model: ModelConfig,
     context: Context,
     options?: Partial<StreamOptions>,
-  ): AsyncIterable<AssistantMessageEvent> {
+  ): AsyncIterable<StreamChunk> {
     const adapter = getAdapter(model.provider);
     yield* adapter.stream(model.model, context, resolveOptions(options));
   };

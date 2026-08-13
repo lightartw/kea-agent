@@ -1,11 +1,11 @@
 export type {
   AssistantMessage,
-  AssistantMessageEvent,
   ContentBlock,
   Context,
   Message,
   ModelConfig,
   StopReason,
+  StreamChunk,
   StreamFn,
   StreamOptions,
   TextBlock,

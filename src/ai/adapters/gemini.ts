@@ -2,11 +2,11 @@ import { GoogleGenAI } from "@google/genai";
 
 import type { Adapter, ResolvedOptions } from "../factory.js";
 import type {
-  AssistantMessageEvent,
   ContentBlock,
   Context,
   Message,
   StopReason,
+  StreamChunk,
   TextBlock,
   Tool,
   ToolCall,
@@ -104,7 +104,7 @@ export class GeminiAdapter implements Adapter {
     model: string,
     context: Context,
     options: ResolvedOptions,
-  ): AsyncIterable<AssistantMessageEvent> {
+  ): AsyncIterable<StreamChunk> {
     const converted = messagesForGemini(context.messages);
 
     const started = performance.now();

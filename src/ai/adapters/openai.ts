@@ -2,11 +2,11 @@ import OpenAI from "openai";
 
 import type { Adapter, ResolvedOptions } from "../factory.js";
 import type {
-  AssistantMessageEvent,
   ContentBlock,
   Context,
   Message,
   StopReason,
+  StreamChunk,
   TextBlock,
   ThinkingBlock,
   Tool,
@@ -73,7 +73,7 @@ export class OpenAIAdapter implements Adapter {
     model: string,
     context: Context,
     options: ResolvedOptions,
-  ): AsyncIterable<AssistantMessageEvent> {
+  ): AsyncIterable<StreamChunk> {
     const apiMessages: Record<string, unknown>[] = context.systemPrompt
       ? [{ role: "system" as const, content: context.systemPrompt }, ...messagesForOpenAI(context.messages)]
       : messagesForOpenAI(context.messages);

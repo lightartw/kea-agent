@@ -68,7 +68,7 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
 // ── Streaming events ──
 
-export type AssistantMessageEvent =
+export type StreamChunk =
   | { readonly type: "text_delta";      readonly text: string }
   | { readonly type: "thinking_delta";  readonly thinking: string }
   | { readonly type: "toolcall_start";  readonly id: string; readonly name: string }
@@ -109,4 +109,4 @@ export type StreamFn = (
   model: ModelConfig,
   context: Context,
   options?: Partial<StreamOptions>,
-) => AsyncIterable<AssistantMessageEvent>;
+) => AsyncIterable<StreamChunk>;

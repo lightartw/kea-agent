@@ -7,11 +7,11 @@ import { runAgentLoop } from "../../src/agent/agent-loop.js";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage } from "../../src/agent/types.js";
 import type {
   AssistantMessage,
-  AssistantMessageEvent,
   ContentBlock,
   Context,
   Message,
   ModelConfig,
+  StreamChunk,
   StreamFn,
 } from "../../src/ai/types.js";
 import { AgentTool, type AgentToolResult } from "../../src/agent/tools/types.js";
@@ -57,7 +57,7 @@ function assistantMsg(
 }
 
 function streamFnWithEvents(
-  streams: readonly (readonly AssistantMessageEvent[])[],
+  streams: readonly (readonly StreamChunk[])[],
   beforeStream?: (context: Context, index: number) => void,
 ): StreamFn {
   let index = 0;

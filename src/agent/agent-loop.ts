@@ -1,7 +1,7 @@
 import type {
-  AssistantMessageEvent,
   Context,
   Message,
+  StreamChunk,
   StreamFn,
 } from "../ai/types.js";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, ToolRejectedReason } from "./types.js";
@@ -9,7 +9,7 @@ import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
 
 // ── Helpers ──
 
-function aiEventToToolCalls(event: AssistantMessageEvent, toolCalls: AgentToolCall[]): void {
+function aiEventToToolCalls(event: StreamChunk, toolCalls: AgentToolCall[]): void {
   if (event.type === "toolcall_end") {
     toolCalls.push({
       type: "toolCall",
