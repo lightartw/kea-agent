@@ -1,5 +1,5 @@
 import type { HarnessEvent } from "../harness/events/types.js";
-import type { CodingToolPresentationRegistry } from "../coding-agent/ui/presentation-registry.js";
+import type { CodingToolPresentationRegistry } from "../coding-agent/ui/presentation/registry.js";
 
 const LARGE_OUTPUT_THRESHOLD = 100_000;
 

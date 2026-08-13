@@ -15,9 +15,3 @@ export interface CodingAgentInteractions {
   confirm(request: ConfirmationRequest, signal?: AbortSignal): Promise<boolean>;
   notify(notification: Notification): void | Promise<void>;
 }
-
-export const NO_INTERACTIONS: CodingAgentInteractions = Object.freeze({
-  available: false,
-  async confirm() { return false; },
-  notify() { return undefined; },
-});

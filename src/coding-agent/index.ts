@@ -7,10 +7,10 @@ export { createDefaultToolDefinitions } from "./tools/builtin/factory.js";
 export { toAgentTool } from "./tools/wrapper.js";
 export {
   NO_INTERACTIONS,
-} from "./ui/interactions.js";
+} from "./ui/interactions/unavailable.js";
 export {
   CodingToolPresentationRegistry,
-} from "./ui/presentation-registry.js";
+} from "./ui/presentation/registry.js";
 
 export type { CodingAgentRuntime } from "./runtime.js";
 export type { CreateCodingAgentConfig } from "./types.js";
@@ -19,12 +19,12 @@ export type {
   CodingAgentInteractions,
   ConfirmationRequest,
   Notification,
-} from "./ui/interactions.js";
+} from "./ui/interactions/types.js";
 export type {
   CodingToolPresentation,
   ToolPresentationCall,
   ToolPresentationRejected,
-} from "./ui/tool-presentation.js";
+} from "./ui/presentation/types.js";
 export type {
   CodingToolContext,
   CodingToolDefinition,

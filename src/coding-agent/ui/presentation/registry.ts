@@ -1,10 +1,10 @@
-import type { AgentToolCall, AgentToolResult } from "../../agent/tools/types.js";
-import type { HarnessToolEvent } from "../../harness/events/types.js";
+import type { AgentToolCall, AgentToolResult } from "../../../agent/tools/types.js";
+import type { HarnessToolEvent } from "../../../harness/events/types.js";
 import type {
   CodingToolPresentation,
   ToolPresentationRejected,
   ToolPresentationOutput,
-} from "./tool-presentation.js";
+} from "./types.js";
 
 type ErasedPresentation = CodingToolPresentation<unknown, unknown>;
 

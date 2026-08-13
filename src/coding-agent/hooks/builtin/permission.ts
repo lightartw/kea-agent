@@ -1,6 +1,6 @@
 import type { BeforeToolCall, BeforeToolCallResult } from "../../../agent/hooks/types.js";
 import { classifyBashCommand } from "../../tools/builtin/bash/policy.js";
-import type { CodingAgentInteractions } from "../../ui/interactions.js";
+import type { CodingAgentInteractions } from "../../ui/interactions/types.js";
 import type { CodingHookContext } from "../types.js";
 import type { CodingHookRegistry } from "../types.js";
 

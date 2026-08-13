@@ -1,5 +1,5 @@
-import type { AgentToolCall, AgentToolResult } from "../../agent/tools/types.js";
-import type { ToolRejectedReason } from "../../agent/types.js";
+import type { AgentToolCall, AgentToolResult } from "../../../agent/tools/types.js";
+import type { ToolRejectedReason } from "../../../agent/types.js";
 
 export type ToolPresentationOutput = string;
 
