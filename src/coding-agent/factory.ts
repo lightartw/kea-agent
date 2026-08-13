@@ -68,10 +68,7 @@ export async function createCodingAgent(
     }
   }
 
-  const hooks = createPermissionHooks({
-    cwd: context.cwd,
-    interactions,
-  });
+  const hooks = createPermissionHooks(interactions);
   const harness = new AgentHarness({
     session: config.session,
     model: config.model,

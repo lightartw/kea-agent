@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { HookRegistry } from "../../../../src/agent/hooks/registry.js";
+import { HookRegistry } from "../../../src/agent/hooks/registry.js";
 import type {
   CodingAgentInteractions,
   ConfirmationRequest,
-} from "../../../../src/coding-agent/index.js";
-import { createPermissionHooks } from "../../../../src/coding-agent/hooks/permission.js";
-import { classifyBashCommand, hardDeniedBashReason } from "../../../../src/coding-agent/tools/builtin/bash-policy.js";
+} from "../../../src/coding-agent/index.js";
+import { createPermissionHooks } from "../../../src/coding-agent/hooks/permission.js";
+import { classifyBashCommand, hardDeniedBashReason } from "../../../src/coding-agent/tools/builtin/bash-policy.js";
 
 // ── Step 1: Bash classification tests ──
 
@@ -67,22 +67,14 @@ class RecordingUI implements CodingAgentInteractions {
   notify(): void {}
 }
 
-interface PermissionContext {
-  readonly cwd: string;
-  readonly interactions: CodingAgentInteractions;
-}
+type PermissionHooks = HookRegistry<CodingAgentInteractions>;
 
-type CodingHookRegistry = HookRegistry<PermissionContext>;
-
-function codingHooks(ui: CodingAgentInteractions): CodingHookRegistry {
-  return new HookRegistry<PermissionContext>({
-    cwd: process.cwd(),
-    interactions: ui,
-  });
+function codingHooks(ui: CodingAgentInteractions): PermissionHooks {
+  return new HookRegistry<CodingAgentInteractions>(ui);
 }
 
 function triggerBash(
-  hooks: CodingHookRegistry,
+  hooks: PermissionHooks,
   command: string,
   signal?: AbortSignal,
 ) {
@@ -96,7 +88,7 @@ function triggerBash(
 
 test("permission hard-deny never asks UI", async () => {
   const ui = new RecordingUI(true);
-  const hooks = createPermissionHooks({ cwd: process.cwd(), interactions: ui });
+  const hooks = createPermissionHooks(ui);
 
   const result = await triggerBash(hooks, "sudo true");
   assert.equal(result?.block, true);
@@ -106,7 +98,7 @@ test("permission hard-deny never asks UI", async () => {
 
 test("permission asks for rm and accepts explicit approval", async () => {
   const ui = new RecordingUI(true);
-  const hooks = createPermissionHooks({ cwd: process.cwd(), interactions: ui });
+  const hooks = createPermissionHooks(ui);
 
   assert.equal(await triggerBash(hooks, "rm file.txt"), undefined);
   assert.equal(ui.confirmations.length, 1);
@@ -121,7 +113,7 @@ test("permission fails closed on decline and UI error", async () => {
     new RecordingUI(new Error("ui failed")),
   ];
   for (const ui of cases) {
-    const hooks = createPermissionHooks({ cwd: process.cwd(), interactions: ui });
+    const hooks = createPermissionHooks(ui);
     const result = await triggerBash(hooks, "rm file.txt");
     assert.equal(result?.block, true);
   }
@@ -129,7 +121,7 @@ test("permission fails closed on decline and UI error", async () => {
 
 test("permission ignores non-bash tools and safe Bash commands", async () => {
   const ui = new RecordingUI(false);
-  const hooks = createPermissionHooks({ cwd: process.cwd(), interactions: ui });
+  const hooks = createPermissionHooks(ui);
   assert.equal(await hooks.trigger({
     type: "tool_call",
     toolCallId: "c1",
@@ -142,7 +134,7 @@ test("permission ignores non-bash tools and safe Bash commands", async () => {
 
 test("permission forwards the run signal to UI", async () => {
   const ui = new RecordingUI(true);
-  const hooks = createPermissionHooks({ cwd: process.cwd(), interactions: ui });
+  const hooks = createPermissionHooks(ui);
   const controller = new AbortController();
 
   await triggerBash(hooks, "rm file.txt", controller.signal);

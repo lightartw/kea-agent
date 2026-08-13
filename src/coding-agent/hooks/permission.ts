@@ -6,18 +6,13 @@ import type {
 import { classifyBashCommand } from "../tools/builtin/bash-policy.js";
 import type { CodingAgentInteractions } from "../ui/interactions.js";
 
-interface PermissionContext {
-  readonly cwd: string;
-  readonly interactions: CodingAgentInteractions;
-}
-
 export function createPermissionHooks(
-  context: PermissionContext,
-): HookRegistry<PermissionContext> {
-  const hooks = new HookRegistry(context);
+  interactions: CodingAgentInteractions,
+): HookRegistry<CodingAgentInteractions> {
+  const hooks = new HookRegistry(interactions);
   hooks.register("tool_call", async (
     call: BeforeToolCall,
-    current: PermissionContext,
+    current: CodingAgentInteractions,
     signal?: AbortSignal,
   ): Promise<BeforeToolCallResult | undefined> => {
     if (call.toolName !== "bash") return undefined;
@@ -31,7 +26,7 @@ export function createPermissionHooks(
     }
 
     try {
-      const allowed = await current.interactions.confirm({
+      const allowed = await current.confirm({
         source: "permission",
         title: "Allow Bash command?",
         message: `${decision.reason}\nTool: bash(${JSON.stringify(call.input)})`,

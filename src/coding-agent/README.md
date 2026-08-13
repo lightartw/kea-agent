@@ -91,7 +91,10 @@ interface CodingToolDefinition<TParameters, TDetails> {
   readonly parameters: TParameters;
 
   execute(arguments_, signal, context): Promise<AgentToolResult<TDetails>>;
-  readonly presentation?: CodingToolPresentation<arguments_, TDetails>;
+  readonly presentation?: CodingToolPresentation<
+    Static<TParameters>,
+    TDetails
+  >;
 }
 
 interface CodingToolContext {
