@@ -9,7 +9,13 @@ import type {
 type ErasedPresentation = CodingToolPresentation<unknown, unknown>;
 
 function fallbackStart(call: AgentToolCall): ToolPresentationOutput {
-  return `[exec] ${call.name}: ${JSON.stringify(call.arguments)}`;
+  let argumentsText: string;
+  try {
+    argumentsText = JSON.stringify(call.arguments);
+  } catch {
+    argumentsText = "[unserializable arguments]";
+  }
+  return `[exec] ${call.name}: ${argumentsText}`;
 }
 
 function fallbackEnd(call: AgentToolCall, result: AgentToolResult<unknown>): ToolPresentationOutput {

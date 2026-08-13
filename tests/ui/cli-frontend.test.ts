@@ -79,6 +79,7 @@ test("run suspends its ESC listener during confirm and restores it after", async
         assert.equal(input.listenerCount("data"), 1);
         assert.equal(await cli.interactions.confirm(confirmation), true);
         assert.equal(input.listenerCount("data"), 1);
+        assert.equal(input.rawModes.at(-1), true);
         input.emit("data", Buffer.from([0x1b]));
       },
     },

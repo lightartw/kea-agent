@@ -148,17 +148,21 @@ export class AgentHarness {
       started = true;
       await this.events.publish({ type: "run_start", ...eventContext });
 
-      for await (const event of this.runPrompt(input)) {
-        await this.persistNewMessages();
-        await this.events.publish(liftAgentEvent(event, eventContext));
+      if (!this.abortRequested) {
+        for await (const event of this.runPrompt(input)) {
+          await this.persistNewMessages();
+          await this.events.publish(liftAgentEvent(event, eventContext));
+        }
       }
     } catch (error) {
       failure = error;
     } finally {
       try {
         await this.persistNewMessages();
-        sawAborted = this.abortRequested;
+      } catch (error) {
+        failure ??= error;
       } finally {
+        sawAborted = this.abortRequested;
         this.running = false;
         this.abortRequested = false;
       }

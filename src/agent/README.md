@@ -2,15 +2,16 @@
 
 `agent` 在 `ai.StreamFn` 之上实现多 turn 工具循环。
 
-一次 `AgentHarness.prompt()` 是一个 agent run；每次调用 LLM 是一个 turn。assistant
-有 tool call 时，agent 顺序执行工具、保存结果并开始下一 turn；没有 tool call 时结束。
+一次 `runAgentLoop()` 调用是一个 agent run；每次调用 LLM 是一个 turn。assistant
+有 tool call 时，Agent 顺序执行工具、保存结果并开始下一 turn；没有 tool call 时结束。Harness 可以在一次 Harness run 中驱动一次或多次 Agent run，但这属于上层语义。
 
-agent 核心分为四部分：
+agent 包分为三部分：
 
 1. `runAgentLoop`：纯函数，多 turn 事件循环。
 2. `HookRegistry`：类型化 Hook 注册与分发（控制通道）。
 3. `AgentTool` 与 `AgentToolRegistry`：工具定义、校验和执行。
-4. `AgentHarness`：有状态运行时的核心类，位于 sibling 包 `harness/`（见 [harness/README.md](../harness/README.md)）。
+
+有状态的 `AgentHarness` 属于同级 `harness` 包，不是 agent 包的第四部分（见 [harness/README.md](../harness/README.md)）。
 
 ## runAgentLoop
 

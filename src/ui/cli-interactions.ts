@@ -103,11 +103,12 @@ export class CliInteractions implements CodingAgentInteractions {
     } finally {
       if (this.inputStream.isTTY) {
         this.inputStream.removeListener("data", onEsc);
-        this.inputStream.setRawMode(false);
-      }
-      // Restore the run ESC listener
-      if (runAbort !== undefined && this.inputStream.isTTY) {
-        this.inputStream.on("data", runAbort);
+        if (runAbort !== undefined && this.runAbort === runAbort) {
+          this.inputStream.setRawMode(true);
+          this.inputStream.on("data", runAbort);
+        } else {
+          this.inputStream.setRawMode(false);
+        }
       }
     }
   }

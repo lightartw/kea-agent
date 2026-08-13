@@ -84,3 +84,22 @@ test("duplicate registration throws", () => {
     /already registered/,
   );
 });
+
+test("fallback rendering never throws for non-JSON-safe arguments", () => {
+  const registry = new CodingToolPresentationRegistry();
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+
+  assert.doesNotThrow(() => registry.render({
+    type: "tool_start",
+    lane: "main",
+    runId: "run-1",
+    call: { type: "toolCall", id: "c1", name: "unknown", arguments: cyclic },
+  }));
+  assert.match(registry.render({
+    type: "tool_start",
+    lane: "main",
+    runId: "run-2",
+    call: { type: "toolCall", id: "c2", name: "unknown", arguments: { value: 1n } },
+  }), /unknown/);
+});

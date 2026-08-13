@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import { AgentHarness } from "../harness/agent-harness.js";
 import { AgentToolRegistry } from "../agent/tools/registry.js";
 import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
@@ -24,7 +26,7 @@ export async function createCodingAgent(
 ): Promise<CodingAgentRuntime> {
   if (!config.session) throw new Error("session is required");
 
-  const context: CodingToolContext = { cwd: config.project.workDir };
+  const context: CodingToolContext = { cwd: resolve(config.project.workDir) };
   const interactions = config.interactions ?? NO_INTERACTIONS;
   const definitions = createDefaultToolDefinitions();
   const tools = new AgentToolRegistry();

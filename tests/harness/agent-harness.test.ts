@@ -168,6 +168,48 @@ test("listener failure is isolated and does not reject prompt", async () => {
   assert.deepEqual(calls, ["first", "second"]);
 });
 
+test("abort from run_start prevents the Agent execution", async () => {
+  let streamCalls = 0;
+  const harness = makeHarness({
+    streamFn: async function* () {
+      streamCalls++;
+      yield { type: "done", message: assistant };
+    },
+  });
+  const events: string[] = [];
+  harness.subscribe((event) => {
+    events.push(event.type === "run_end"
+      ? `${event.type}:${event.reason}`
+      : event.type);
+    if (event.type === "run_start") harness.abort();
+  });
+
+  await harness.prompt("hello");
+
+  assert.equal(streamCalls, 0);
+  assert.deepEqual(events, ["run_start", "run_end:aborted"]);
+  assert.deepEqual(harness.messages, []);
+});
+
+test("persistence failure still publishes one run_end error", async () => {
+  const session = Session.inMemory();
+  session.appendMessage = async () => {
+    throw new Error("storage failed");
+  };
+  const harness = makeHarness({ session });
+  const events: string[] = [];
+  harness.subscribe((event) => {
+    events.push(event.type === "run_end"
+      ? `${event.type}:${event.reason}`
+      : event.type);
+  });
+
+  await assert.rejects(harness.prompt("hello"), /storage failed/);
+
+  assert.deepEqual(events, ["run_start", "agent_start", "run_end:error"]);
+  assert.equal(harness.isRunning, false);
+});
+
 async function captureRun(): Promise<Array<{ type: string; lane: string; runId: string }>> {
   const harness = makeHarness();
   const events: Array<{ type: string; lane: string; runId: string }> = [];

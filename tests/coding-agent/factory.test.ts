@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { createCodingAgent } from "../../src/coding-agent/factory.js";
@@ -53,7 +53,10 @@ test("factory composes workDir, default tools, and string prompt", async () => {
   });
 
   await runtime.harness.prompt("hello");
-  assert.match(seenPrompt, /^cwd=C:\/workspace\/project date=\d{4}-\d{2}-\d{2}$/);
+  assert.equal(
+    seenPrompt,
+    `cwd=${resolve("C:/workspace/project")} date=${new Date().toISOString().slice(0, 10)}`,
+  );
   assert.deepEqual(seenTools, [
     "bash",
     "read_file",
@@ -62,6 +65,38 @@ test("factory composes workDir, default tools, and string prompt", async () => {
     "glob",
     "todo_write",
   ]);
+});
+
+test("factory resolves a relative workDir once", async () => {
+  const originalCwd = process.cwd();
+  const storageDir = await tempStorage();
+  const firstDir = join(storageDir, "first");
+  const secondDir = join(storageDir, "second");
+  await mkdir(firstDir, { recursive: true });
+  await mkdir(secondDir, { recursive: true });
+  let seenPrompt = "";
+
+  try {
+    process.chdir(storageDir);
+    const runtime = await createCodingAgent({
+      project: { workDir: "first", storageDir: "unused" },
+      streamFn: async function* (_model, context) {
+        seenPrompt = context.systemPrompt ?? "";
+        yield { type: "done", message: assistant };
+      },
+      model,
+      session: Session.inMemory(),
+      systemPrompt: "cwd={{cwd}}",
+    });
+
+    process.chdir(secondDir);
+    await runtime.harness.prompt("hello");
+
+    assert.equal(seenPrompt, `cwd=${firstDir}`);
+  } finally {
+    process.chdir(originalCwd);
+    await rm(storageDir, { recursive: true, force: true });
+  }
 });
 
 test("factory restores the supplied Session", async () => {

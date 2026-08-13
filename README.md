@@ -36,7 +36,7 @@ npm start
 
 ## Provider 配置
 
-`.env` 中必须且只能启用一家 provider。以下三组配置任选其一：
+`.env` 中至少启用一家 provider。只启用一家时自动作为默认；同时启用多家时必须设置 `DEFAULT_PROVIDER`。以下是三组内置 provider 配置：
 
 ```dotenv
 ANTHROPIC_API_KEY=你的_API_密钥
@@ -56,13 +56,13 @@ MODEL_ID=gemini-模型标识
 GEMINI_BASE_URL=可选的兼容接口地址
 ```
 
-Client 自动检测时只检查 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 和 `GEMINI_API_KEY`。没有发现 provider 或同时发现多家 provider 都会抛出配置错误；不会根据模型名、URL、key 内容、已安装 SDK 或网络请求猜测。
+Client 自动检测时只检查 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 和 `GEMINI_API_KEY`。没有发现 provider 会抛出配置错误；同时发现多家但没有设置 `DEFAULT_PROVIDER` 也会抛错。它不会根据模型名、URL、key 内容、已安装 SDK 或网络请求猜测 provider。
 
 CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共库入口本身不会加载 `.env`，也不会在导入时创建 provider client。
 
 ## 使用方法
 
-程序启动后，在 `>>` 提示符后输入任务并回车。模型产生的工具调用会以 `$` 前缀显示。Bash 命令会在执行前请求确认，直接回车默认拒绝。输入 `q`、`exit` 或直接按空回车退出。
+程序启动后，在 `>>` 提示符后输入任务并回车。模型产生的工具调用会显示为 `[tool]`，执行状态使用 `[exec]`、`[done]`、`[error]` 或 `[rejected:*]`。只有被 Bash 安全策略归为 `ask` 的命令会请求确认，直接回车默认拒绝；硬拒绝命令不会询问。输入 `q`、`exit` 或直接按空回车退出。
 
 请只在可信目录中运行本程序，并检查模型生成的命令。BashTool 具有最小危险片段拦截，但它不是完整沙箱，也不能替代系统权限隔离。
 
@@ -164,7 +164,7 @@ npm install --save-dev --save-exact typescript@7.0.2
 
 - 启动时提示缺少 `MODEL_ID`：确认 `.env` 存在且该变量非空。
 - 提示没有配置 provider：填写三家 API key 中的一项。
-- 提示配置了多家 provider：只保留当前要使用的一项 API key。
+- 提示配置了多家 provider：设置 `DEFAULT_PROVIDER`，值为 `anthropic`、`openai` 或 `gemini` 中已配置的一项；也可以移除暂时不用的 API key。
 - SDK 提示缺少 API key：确认所选 provider 的 key 非空且 CLI 已加载正确的 `.env`。
 - 自定义接口无法连接：检查对应的 `*_BASE_URL`、网络以及服务端支持的模型标识。
 - 安装成功但调用失败：本地依赖安装成功不代表凭据、网络或 provider 服务可用。
