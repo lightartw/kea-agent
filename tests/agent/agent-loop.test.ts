@@ -222,7 +222,7 @@ test("tool results are in history before the next model stream", async () => {
   assert.deepEqual(history.at(-1), assistantMsg(""));
 });
 
-test("Registry failures are emitted and returned to the model", async () => {
+test("Registry failures are rejected and returned to the model", async () => {
   const missingCall = { type: "toolCall" as const, id: "c1", name: "missing", arguments: {} };
   const streamFn = streamFnWithEvents([
     [
@@ -243,11 +243,12 @@ test("Registry failures are emitted and returned to the model", async () => {
     ),
   );
 
-  const toolEnd = events.find((event) => event.type === "tool_end");
-  assert.equal(toolEnd?.type, "tool_end");
-  if (toolEnd?.type !== "tool_end") return;
-  assert.equal(toolEnd.result.isError, true);
-  assert.equal(toolEnd.result.content, "Error: Unknown tool 'missing'");
+  const rejected = events.find((event) => event.type === "tool_rejected");
+  assert.equal(rejected?.type, "tool_rejected");
+  if (rejected?.type !== "tool_rejected") return;
+  assert.equal(rejected.reason, "unknown");
+  assert.equal(rejected.result.isError, true);
+  assert.equal(rejected.result.content, "Error: Unknown tool 'missing'");
   assert.deepEqual(history[2], {
     role: "tool",
     toolCallId: "c1",
@@ -762,4 +763,298 @@ test("Agent run signal reaches every Hook trigger", async () => {
     "stop",
   ]);
   assert.ok(seen.every(({ signal }) => signal === controller.signal));
+});
+
+// ── Task 4: terminal lifecycle tests ──
+
+test("successful execution ordering is hook → prepare → start → execute → after → end", async () => {
+  const trace: string[] = [];
+  class TraceTool extends AgentTool<typeof typedParameters> {
+    constructor() {
+      super("typed", "Typed tool.", typedParameters);
+    }
+    override validate(arguments_: unknown): string | undefined {
+      trace.push(`validate:${(arguments_ as { value?: unknown }).value}`);
+      return super.validate(arguments_);
+    }
+    async execute(arguments_: Static<typeof typedParameters>): Promise<AgentToolResult> {
+      trace.push(`execute:${arguments_.value}`);
+      return { content: arguments_.value, isError: false };
+    }
+  }
+  const tools = new AgentToolRegistry();
+  tools.register(new TraceTool());
+  const call: AgentToolCall = {
+    type: "toolCall", id: "c1", name: "typed", arguments: { value: "original" },
+  };
+  const hooks = emptyHooks();
+  hooks.register("tool_call", (event) => {
+    trace.push("hook:before");
+    event.input.value = "changed";
+  });
+  hooks.register("tool_result", (event) => {
+    trace.push(`hook:after:${event.content}`);
+  });
+
+  for await (const event of runAgentLoop(
+    "run",
+    { systemPrompt: "", messages: [], tools },
+    makeConfig({ hooks }),
+    streamForToolCall(call),
+  )) {
+    if (event.type === "tool_start") {
+      trace.push(`event:tool_start:${(event.call.arguments as { value: string }).value}`);
+    } else if (event.type === "tool_end") {
+      trace.push(`event:tool_end:${event.result.content}`);
+    }
+  }
+
+  assert.deepEqual(trace, [
+    "hook:before",
+    "validate:changed",
+    "event:tool_start:changed",
+    "execute:changed",
+    "hook:after:changed",
+    "event:tool_end:changed",
+  ]);
+});
+
+test("AfterToolCall details patch reaches event, history, and next request", async () => {
+  const tool = new NoopTool();
+  const tools = new AgentToolRegistry();
+  tools.register(tool);
+  const history: AgentMessage[] = [];
+  const call: AgentToolCall = {
+    type: "toolCall", id: "c1", name: "noop", arguments: {},
+  };
+  const hooks = emptyHooks();
+  hooks.register("tool_result", () => ({
+    content: "Current tasks:\n1. [completed] tested",
+    details: { todos: [{ content: "tested", status: "completed" }] },
+  }));
+  let secondRequest: readonly Message[] = [];
+  const stream = streamFnWithEvents([
+    [
+      { type: "toolcall_start", id: call.id, name: call.name },
+      { type: "toolcall_end", toolCall: call },
+      { type: "done", message: assistantMsg("", [call]) },
+    ],
+    [{ type: "done", message: assistantMsg("done") }],
+  ], (context, index) => {
+    if (index === 1) secondRequest = [...context.messages];
+  });
+
+  const events = await collect(runAgentLoop(
+    "run",
+    { systemPrompt: "", messages: history, tools },
+    makeConfig({ hooks }),
+    stream,
+  ));
+
+  const expected = {
+    content: "Current tasks:\n1. [completed] tested",
+    details: { todos: [{ content: "tested", status: "completed" }] },
+    isError: false,
+  };
+  const toolEnd = events.find((event) => event.type === "tool_end");
+  assert.equal(toolEnd?.type, "tool_end");
+  if (toolEnd?.type !== "tool_end") return;
+  assert.deepEqual(toolEnd.result, expected);
+  assert.deepEqual(history[2], {
+    role: "tool",
+    toolCallId: "c1",
+    name: "noop",
+    ...expected,
+  });
+  assert.deepEqual(secondRequest.at(-1), history[2]);
+});
+
+test("tool_rejected.call.arguments stays the original object after hook mutation", async () => {
+  const tool = new TypedTool();
+  const tools = new AgentToolRegistry();
+  tools.register(tool);
+  const originalArguments = { value: "valid" };
+  const call: AgentToolCall = {
+    type: "toolCall", id: "c1", name: "typed", arguments: originalArguments,
+  };
+  const hooks = emptyHooks();
+  hooks.register("tool_call", (event) => {
+    event.input.value = 123;
+  });
+
+  const events = await collect(runAgentLoop(
+    "run",
+    { systemPrompt: "", messages: [], tools },
+    makeConfig({ hooks }),
+    streamForToolCall(call),
+  ));
+
+  const rejected = events.find((event) => event.type === "tool_rejected");
+  assert.equal(rejected?.type, "tool_rejected");
+  if (rejected?.type !== "tool_rejected") return;
+  assert.equal(rejected.reason, "invalid");
+  assert.equal(rejected.call.arguments, originalArguments);
+  assert.deepEqual(rejected.call.arguments, { value: "valid" });
+  assert.deepEqual(rejected.effectiveArguments, { value: 123 });
+});
+
+test("blocked, invalid, and unknown each produce exactly one tool_rejected", async () => {
+  const scenarios = [
+    {
+      label: "blocked",
+      call: { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} },
+      register: (registry: AgentToolRegistry) => registry.register(new NoopTool()),
+      hook: (hooks: HookRegistry<Record<string, never>>) => {
+        hooks.register("tool_call", () => ({ block: true, reason: "nope" }));
+      },
+    },
+    {
+      label: "invalid",
+      call: { type: "toolCall" as const, id: "c2", name: "typed", arguments: { value: 1 } },
+      register: (registry: AgentToolRegistry) => registry.register(new TypedTool()),
+      hook: () => undefined,
+    },
+    {
+      label: "unknown",
+      call: { type: "toolCall" as const, id: "c3", name: "missing", arguments: {} },
+      register: () => undefined,
+      hook: () => undefined,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const registry = new AgentToolRegistry();
+    scenario.register(registry);
+    const hooks = emptyHooks();
+    let afterToolCallCount = 0;
+    hooks.register("tool_result", () => { afterToolCallCount++; });
+    scenario.hook(hooks);
+    const history: AgentMessage[] = [];
+
+    const events = await collect(runAgentLoop(
+      "run",
+      { systemPrompt: "", messages: history, tools: registry },
+      makeConfig({ hooks }),
+      streamForToolCall(scenario.call),
+    ));
+
+    assert.equal(
+      events.filter((event) => event.type === "tool_start").length, 0, scenario.label,
+    );
+    assert.equal(
+      events.filter((event) => event.type === "tool_end").length, 0, scenario.label,
+    );
+    assert.equal(
+      events.filter((event) => event.type === "tool_rejected").length, 1, scenario.label,
+    );
+    assert.equal(
+      history.filter((message) =>
+        message.role === "tool" && message.toolCallId === scenario.call.id,
+      ).length,
+      1,
+      scenario.label,
+    );
+    assert.equal(afterToolCallCount, 0, scenario.label);
+  }
+});
+
+test("abort during first execution produces tool_end then aborted rejections", async () => {
+  let resolveStarted: () => void = () => undefined;
+  const started = new Promise<void>((resolve) => { resolveStarted = resolve; });
+  class AbortTool extends AgentTool<typeof emptyParameters> {
+    constructor() {
+      super("first", "Run first.", emptyParameters);
+    }
+    async execute(
+      _arguments_: Static<typeof emptyParameters>,
+      signal: AbortSignal,
+    ): Promise<AgentToolResult> {
+      resolveStarted();
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) return resolve();
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return { content: "Error: aborted", isError: true };
+    }
+  }
+  const registry = new AgentToolRegistry();
+  registry.register(new AbortTool());
+
+  const tc1 = { type: "toolCall" as const, id: "c1", name: "first", arguments: {} };
+  const tc2 = { type: "toolCall" as const, id: "c2", name: "second", arguments: {} };
+  const tc3 = { type: "toolCall" as const, id: "c3", name: "third", arguments: {} };
+  const streamFn: StreamFn = async function* () {
+    yield { type: "toolcall_start", id: "c1", name: "first" };
+    yield { type: "toolcall_end", toolCall: tc1 };
+    yield { type: "toolcall_start", id: "c2", name: "second" };
+    yield { type: "toolcall_end", toolCall: tc2 };
+    yield { type: "toolcall_start", id: "c3", name: "third" };
+    yield { type: "toolcall_end", toolCall: tc3 };
+    yield { type: "done", message: assistantMsg("", [tc1, tc2, tc3]) };
+  };
+
+  const history: AgentMessage[] = [];
+  const controller = new AbortController();
+  const run = collect(runAgentLoop(
+    "run",
+    { systemPrompt: "", messages: history, tools: registry },
+    makeConfig(),
+    streamFn,
+    controller.signal,
+  ));
+
+  await started;
+  controller.abort();
+  const events = await run;
+
+  assert.equal(events.filter((event) => event.type === "tool_start").length, 1);
+  assert.equal(events.filter((event) => event.type === "tool_end").length, 1);
+  const rejected = events.filter((event) => event.type === "tool_rejected");
+  assert.equal(rejected.length, 2);
+  assert.ok(rejected.every((event) =>
+    event.type === "tool_rejected" && event.reason === "aborted",
+  ));
+  assert.equal(
+    history.filter((message) => message.role === "tool").length,
+    3,
+  );
+});
+
+test("run abort wins over a permission confirm returning false", async () => {
+  const tool = new NoopTool();
+  const tools = new AgentToolRegistry();
+  tools.register(tool);
+  const call: AgentToolCall = {
+    type: "toolCall", id: "c1", name: "noop", arguments: {},
+  };
+  let hookEntered: () => void = () => undefined;
+  const entered = new Promise<void>((resolve) => { hookEntered = resolve; });
+  const hooks = emptyHooks();
+  hooks.register("tool_call", async (_event, _context, signal) => {
+    hookEntered();
+    await new Promise<void>((resolve) => {
+      if (signal?.aborted) return resolve();
+      signal?.addEventListener("abort", () => resolve(), { once: true });
+    });
+    return { block: true, reason: "permission denied by user" };
+  });
+
+  const controller = new AbortController();
+  const run = collect(runAgentLoop(
+    "run",
+    { systemPrompt: "", messages: [], tools },
+    makeConfig({ hooks }),
+    streamForToolCall(call),
+    controller.signal,
+  ));
+
+  await entered;
+  controller.abort();
+  const events = await run;
+
+  const rejected = events.find((event) => event.type === "tool_rejected");
+  assert.equal(rejected?.type, "tool_rejected");
+  if (rejected?.type !== "tool_rejected") return;
+  assert.equal(rejected.reason, "aborted");
+  assert.equal(tool.ran, false);
 });

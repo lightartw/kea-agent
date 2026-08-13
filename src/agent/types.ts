@@ -37,6 +37,18 @@ export interface AgentLoopConfig {
  * CLI and future TUI render these independently.
  * All message/tool-call types are agent-layer, not ai-layer.
  */
+export type ToolRejectedReason = "blocked" | "invalid" | "unknown" | "aborted";
+
+export interface ToolRejectedEvent {
+  readonly type: "tool_rejected";
+  /** The model's original request; arguments are never rewritten by Hooks. */
+  readonly call: AgentToolCall;
+  /** Hook-processed arguments, when a working copy was formed before rejection. */
+  readonly effectiveArguments?: Readonly<Record<string, unknown>>;
+  readonly result: AgentToolResult;
+  readonly reason: ToolRejectedReason;
+}
+
 export type AgentEvent =
   // Run lifecycle
   | { readonly type: "agent_start" }
@@ -52,4 +64,5 @@ export type AgentEvent =
   | { readonly type: "toolcall_end";    readonly toolCall: AgentToolCall }
   // Tool execution
   | { readonly type: "tool_start";      readonly call: AgentToolCall }
-  | { readonly type: "tool_end";        readonly call: AgentToolCall; readonly result: AgentToolResult };
+  | { readonly type: "tool_end";        readonly call: AgentToolCall; readonly result: AgentToolResult }
+  | ToolRejectedEvent;

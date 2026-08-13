@@ -368,3 +368,110 @@ test("stop Hook failure keeps the completed assistant message and restores idle"
   assert.equal(harness.messages.at(-1)?.role, "assistant");
   assert.equal(harness.isRunning, false);
 });
+
+// ── Task 4: tool terminal event ordering against persisted Session ──
+
+test("tool_end subscriber sees the persisted result message", async () => {
+  const registry = new AgentToolRegistry();
+  registry.register(new (class extends AgentTool {
+    constructor() {
+      super("echo", "Echo", Type.Object({}));
+    }
+    async execute() {
+      return { content: "ok", details: { count: 1 }, isError: false };
+    }
+  })());
+  const session = Session.inMemory();
+  const tc = { type: "toolCall" as const, id: "c1", name: "echo", arguments: {} };
+  const toolTurn: AssistantMessage = {
+    role: "assistant",
+    content: [tc],
+    model: "model-a",
+    stopReason: "toolUse",
+    latencyMs: 0,
+  };
+  let turn = 0;
+  const streamFn: StreamFn = async function* () {
+    turn += 1;
+    if (turn === 1) {
+      yield { type: "toolcall_start", id: "c1", name: "echo" };
+      yield { type: "toolcall_end", toolCall: tc };
+      yield { type: "done", message: toolTurn };
+    } else {
+      yield { type: "done", message: assistant };
+    }
+  };
+
+  const harness = new AgentHarness({
+    session,
+    model: modelA,
+    streamFn,
+    toolRegistry: registry,
+    systemPrompt: () => "system",
+    cwd: process.cwd(),
+  });
+
+  const observed: Array<{ type: string; matches: boolean }> = [];
+  harness.subscribe((event) => {
+    if (event.type === "tool_end" || event.type === "tool_rejected") {
+      const message = session.buildContext().messages.find(
+        (entry) => entry.role === "tool" && entry.toolCallId === "c1",
+      );
+      const matches = message !== undefined && message.role === "tool" &&
+        message.content === event.result.content &&
+        JSON.stringify(message.details) === JSON.stringify(event.result.details);
+      observed.push({ type: event.type, matches });
+    }
+  });
+
+  await harness.prompt("run");
+  assert.deepEqual(observed, [{ type: "tool_end", matches: true }]);
+});
+
+test("tool_rejected subscriber sees the persisted synthetic message", async () => {
+  const registry = new AgentToolRegistry();
+  const session = Session.inMemory();
+  const tc = { type: "toolCall" as const, id: "c1", name: "missing", arguments: {} };
+  const toolTurn: AssistantMessage = {
+    role: "assistant",
+    content: [tc],
+    model: "model-a",
+    stopReason: "toolUse",
+    latencyMs: 0,
+  };
+  let turn = 0;
+  const streamFn: StreamFn = async function* () {
+    turn += 1;
+    if (turn === 1) {
+      yield { type: "toolcall_start", id: "c1", name: "missing" };
+      yield { type: "toolcall_end", toolCall: tc };
+      yield { type: "done", message: toolTurn };
+    } else {
+      yield { type: "done", message: assistant };
+    }
+  };
+
+  const harness = new AgentHarness({
+    session,
+    model: modelA,
+    streamFn,
+    toolRegistry: registry,
+    systemPrompt: () => "system",
+    cwd: process.cwd(),
+  });
+
+  const observed: Array<{ type: string; matches: boolean }> = [];
+  harness.subscribe((event) => {
+    if (event.type === "tool_end" || event.type === "tool_rejected") {
+      const message = session.buildContext().messages.find(
+        (entry) => entry.role === "tool" && entry.toolCallId === "c1",
+      );
+      const matches = message !== undefined &&
+        message.content === event.result.content;
+      observed.push({ type: event.type, matches });
+    }
+  });
+
+  await harness.prompt("run");
+  assert.deepEqual(observed, [{ type: "tool_rejected", matches: true }]);
+});

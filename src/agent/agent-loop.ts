@@ -4,7 +4,7 @@ import type {
   Message,
   StreamFn,
 } from "../ai/types.js";
-import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage } from "./types.js";
+import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, ToolRejectedReason } from "./types.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
 
 // ── Helpers ──
@@ -18,6 +18,20 @@ function aiEventToToolCalls(event: AssistantMessageEvent, toolCalls: AgentToolCa
       arguments: event.toolCall.arguments,
     });
   }
+}
+
+function toToolResultMessage(
+  call: AgentToolCall,
+  result: AgentToolResult,
+): AgentMessage {
+  return {
+    role: "tool",
+    toolCallId: call.id,
+    name: call.name,
+    content: result.content,
+    ...(result.details === undefined ? {} : { details: result.details }),
+    isError: result.isError,
+  };
 }
 
 /**
@@ -110,13 +124,12 @@ export async function* runAgentLoop(
 
     yield { type: "turn_end", message: turnMessage! };
 
-    if (signal?.aborted) {
-      yield { type: "agent_end", messages: [...context.messages] };
-      return;
-    }
-
     // ── No tool calls → stop check and maybe done ──
     if (toolCalls.length === 0) {
+      if (signal?.aborted) {
+        yield { type: "agent_end", messages: [...context.messages] };
+        return;
+      }
       const stopResult = await config.hooks.trigger(
         { type: "stop", messages: [...context.messages] },
         signal,
@@ -129,76 +142,97 @@ export async function* runAgentLoop(
       return;
     }
 
-    // ── Execute tools ──
-    for (const call of toolCalls) {
-      yield { type: "tool_start", call };
+    // ── Execute tools; synthesize a terminal result even when aborted ──
+    for (const originalCall of toolCalls) {
+      const workingInput: Record<string, unknown> =
+        structuredClone(originalCall.arguments);
 
-      let blockReason: string | undefined;
-      if (!signal?.aborted) {
+      let result: AgentToolResult;
+      let reason: ToolRejectedReason | undefined;
+      let effectiveCall: AgentToolCall = originalCall;
+      let hookRan = false;
+
+      if (signal?.aborted) {
+        reason = "aborted";
+        result = { content: "Error: aborted", isError: true };
+      } else {
         try {
           const blockResult = await config.hooks.trigger({
             type: "tool_call",
-            toolCallId: call.id,
-            toolName: call.name,
-            input: call.arguments as Record<string, unknown>,
+            toolCallId: originalCall.id,
+            toolName: originalCall.name,
+            input: workingInput,
           }, signal);
-          if (blockResult?.block === true) {
-            blockReason = blockResult.reason ?? "blocked";
+          hookRan = true;
+
+          if (signal?.aborted) {
+            // Abort wins over a returned block.
+            reason = "aborted";
+            result = { content: "Error: aborted", isError: true };
+          } else if (blockResult?.block === true) {
+            reason = "blocked";
+            result = { content: `Error: ${blockResult.reason ?? "blocked"}`, isError: true };
+          } else {
+            effectiveCall = { ...originalCall, arguments: workingInput };
+            const preparation = context.tools.prepare(effectiveCall);
+            if (preparation.kind === "rejected") {
+              reason = preparation.reason;
+              result = preparation.result;
+            } else {
+              yield { type: "tool_start", call: effectiveCall };
+              result = await context.tools.execute(preparation.prepared, signal);
+
+              if (!signal?.aborted) {
+                try {
+                  const patch = await config.hooks.trigger({
+                    type: "tool_result",
+                    toolCallId: effectiveCall.id,
+                    toolName: effectiveCall.name,
+                    input: effectiveCall.arguments,
+                    content: result.content,
+                    ...(result.details === undefined ? {} : { details: result.details }),
+                    isError: result.isError,
+                  }, signal);
+                  if (patch !== undefined) {
+                    result = {
+                      content: patch.content ?? result.content,
+                      ...(Object.hasOwn(patch, "details")
+                        ? { details: patch.details }
+                        : result.details === undefined ? {} : { details: result.details }),
+                      isError: patch.isError ?? result.isError,
+                    };
+                  }
+                } catch (error) {
+                  result = {
+                    content: `Error: tool_result hook failed: ${error instanceof Error ? error.message : String(error)}`,
+                    isError: true,
+                  };
+                }
+              }
+            }
           }
         } catch (error) {
-          // Exception in hook handler → block the tool (safe default)
-          blockReason = `tool_call hook failed: ${error instanceof Error ? error.message : String(error)}`;
-        }
-      }
-
-      let result: AgentToolResult;
-      if (blockReason !== undefined) {
-        result = { content: `Error: ${blockReason}`, isError: true };
-      } else if (signal?.aborted) {
-        result = { content: "Error: aborted", isError: true };
-      } else {
-        const preparation = context.tools.prepare(call);
-        result = preparation.kind === "ready"
-          ? await context.tools.execute(preparation.prepared)
-          : preparation.result;
-      }
-
-      // ── tool_result hook (before history + tool_end) ──
-      if (!signal?.aborted) {
-        try {
-          const patch = await config.hooks.trigger({
-            type: "tool_result",
-            toolCallId: call.id,
-            toolName: call.name,
-            input: call.arguments as Record<string, unknown>,
-            content: result.content,
-            isError: result.isError,
-          }, signal);
-          if (patch !== undefined) {
-            result = {
-              content: patch.content ?? result.content,
-              isError: patch.isError ?? result.isError,
-            };
-          }
-        } catch (error) {
+          reason = "blocked";
           result = {
-            content: `Error: tool_result hook failed: ${error instanceof Error ? error.message : String(error)}`,
+            content: `Error: tool_call hook failed: ${error instanceof Error ? error.message : String(error)}`,
             isError: true,
           };
         }
       }
 
-      // Store final result in history, then yield tool_end with same result
-      context.messages.push({
-        role: "tool",
-        toolCallId: call.id,
-        name: call.name,
-        content: result.content,
-        isError: result.isError,
-      } as AgentMessage);
-      yield { type: "tool_end", call, result };
+      context.messages.push(toToolResultMessage(originalCall, result));
 
-      if (signal?.aborted) break;
+      if (reason === undefined) {
+        yield { type: "tool_end", call: effectiveCall, result };
+      } else {
+        yield {
+          type: "tool_rejected",
+          call: originalCall,
+          ...(hookRan ? { effectiveArguments: workingInput } : {}),
+          result,
+          reason,
+        };
+      }
     }
   }
 }
