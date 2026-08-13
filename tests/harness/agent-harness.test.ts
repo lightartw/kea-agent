@@ -32,7 +32,7 @@ const stream: StreamFn = async function* () {
   yield { type: "done", message: assistant };
 };
 
-function createHarness(options: {
+function makeHarness(options: {
   session?: Session;
   streamFn?: StreamFn;
   systemPrompt?: () => string | Promise<string>;
@@ -55,7 +55,7 @@ function createHarness(options: {
 // ── Step 1: Basic prompt/subscribe ──
 
 test("prompt resolves after publishing Harness events", async () => {
-  const harness = createHarness();
+  const harness = makeHarness();
   const events: string[] = [];
   harness.subscribe((event) => {
     events.push(event.type);
@@ -81,7 +81,7 @@ test("prompt resolves after publishing Harness events", async () => {
 
 test("messages are in Session before subscribers observe their event", async () => {
   const session = Session.inMemory();
-  const harness = createHarness({ session });
+  const harness = makeHarness({ session });
   harness.subscribe((event) => {
     if (event.type === "turn_start") {
       assert.deepEqual(
@@ -102,7 +102,7 @@ test("messages are in Session before subscribers observe their event", async () 
 // ── Step 2: Subscription ordering, failure, unsubscribe ──
 
 test("subscribers are awaited in registration order", async () => {
-  const harness = createHarness();
+  const harness = makeHarness();
   const calls: string[] = [];
   harness.subscribe(async (event) => {
     if (event.type !== "agent_start") return;
@@ -118,7 +118,7 @@ test("subscribers are awaited in registration order", async () => {
 });
 
 test("unsubscribe is idempotent", async () => {
-  const harness = createHarness();
+  const harness = makeHarness();
   let calls = 0;
   const unsubscribe = harness.subscribe(() => {
     calls++;
@@ -131,7 +131,7 @@ test("unsubscribe is idempotent", async () => {
 });
 
 test("subscription changes take effect on the next event", async () => {
-  const harness = createHarness();
+  const harness = makeHarness();
   const calls: string[] = [];
   let removeSecond = () => {};
   harness.subscribe((event) => {
@@ -152,7 +152,7 @@ test("subscription changes take effect on the next event", async () => {
 });
 
 test("listener failure is isolated and does not reject prompt", async () => {
-  const harness = createHarness();
+  const harness = makeHarness();
   const calls: string[] = [];
   harness.subscribe((event) => {
     if (event.type !== "run_start") return;
@@ -169,7 +169,7 @@ test("listener failure is isolated and does not reject prompt", async () => {
 });
 
 async function captureRun(): Promise<Array<{ type: string; lane: string; runId: string }>> {
-  const harness = createHarness();
+  const harness = makeHarness();
   const events: Array<{ type: string; lane: string; runId: string }> = [];
   harness.subscribe((event) => {
     events.push({ type: event.type, lane: event.lane, runId: event.runId });
@@ -204,7 +204,7 @@ function deferred(): {
 
 test("Harness is busy while an async system prompt is being built", async () => {
   const gate = deferred();
-  const harness = createHarness({
+  const harness = makeHarness({
     systemPrompt: async () => {
       await gate.promise;
       return "system";
@@ -236,7 +236,7 @@ test("Harness is busy while an async system prompt is being built", async () => 
 test("abort during prompt preparation prevents the Agent run", async () => {
   const gate = deferred();
   let streamCalls = 0;
-  const harness = createHarness({
+  const harness = makeHarness({
     systemPrompt: async () => {
       await gate.promise;
       return "system";
@@ -259,7 +259,7 @@ test("abort during prompt preparation prevents the Agent run", async () => {
 test("restores Session model and persists later switches", async () => {
   const session = Session.inMemory();
   await session.appendModelChange(modelB);
-  const harness = createHarness({ session });
+  const harness = makeHarness({ session });
   assert.deepEqual(harness.model, modelB);
 
   await harness.switchModel(modelA);
@@ -269,7 +269,7 @@ test("restores Session model and persists later switches", async () => {
 
 test("failed model persistence leaves current model unchanged", async () => {
   const session = Session.inMemory();
-  const harness = createHarness({ session });
+  const harness = makeHarness({ session });
   session.appendModelChange = async () => {
     throw new Error("storage failed");
   };
@@ -323,7 +323,7 @@ test("abort during Agent streaming settles the Harness run", async () => {
     stopReason: "aborted",
     errorMessage: "aborted",
   };
-  const harness = createHarness({
+  const harness = makeHarness({
     streamFn: async function* (_model, _context, options) {
       const signal = options?.signal;
       assert.ok(signal);
@@ -370,7 +370,7 @@ test("Harness passes one Hook trigger to Agent Loop", async () => {
     context.calls.push("stop");
   });
 
-  const harness = createHarness({ hooks });
+  const harness = makeHarness({ hooks });
   await harness.prompt("hello");
   assert.deepEqual(hooks.context.calls, [
     "user_prompt", "context", "stop",
@@ -381,7 +381,7 @@ test("user_prompt and context Hook failures reject prompt and restore idle", asy
   for (const type of ["user_prompt", "context"] as const) {
     const hooks = new HookRegistry<Record<string, never>>({});
     hooks.register(type, () => { throw new Error(`${type} failed`); });
-    const harness = createHarness({ hooks });
+    const harness = makeHarness({ hooks });
 
     await assert.rejects(harness.prompt("hello"), new RegExp(`${type} failed`));
     assert.equal(harness.isRunning, false);
@@ -391,7 +391,7 @@ test("user_prompt and context Hook failures reject prompt and restore idle", asy
 test("stop Hook failure keeps the completed assistant message and restores idle", async () => {
   const hooks = new HookRegistry<Record<string, never>>({});
   hooks.register("stop", () => { throw new Error("stop failed"); });
-  const harness = createHarness({ hooks });
+  const harness = makeHarness({ hooks });
 
   await assert.rejects(harness.prompt("hello"), /stop failed/);
   assert.equal(harness.messages.at(-1)?.role, "assistant");
