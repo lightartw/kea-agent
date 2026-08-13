@@ -6,10 +6,9 @@ import type {
 import { classifyBashCommand } from "../tools/builtin/bash-policy.js";
 import type { CodingAgentInteractions } from "../ui/interactions.js";
 
-export function createPermissionHooks(
-  interactions: CodingAgentInteractions,
-): HookRegistry<CodingAgentInteractions> {
-  const hooks = new HookRegistry(interactions);
+export function registerPermissionHook(
+  hooks: HookRegistry<CodingAgentInteractions>,
+): void {
   hooks.register("tool_call", async (
     call: BeforeToolCall,
     current: CodingAgentInteractions,
@@ -39,5 +38,4 @@ export function createPermissionHooks(
       return { block: true, reason: `permission confirmation failed: ${message}` };
     }
   });
-  return hooks;
 }

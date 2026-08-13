@@ -166,10 +166,12 @@ presentation 只负责观察与展示。
 
 ## 8. 源码结构
 
-- `factory.ts`：Project 级 `CodingAgent`、Session 选择和每个 Harness 的默认能力组装；
+- `factory.ts`：Project 级 `CodingAgent`、Session 选择和 Harness 组装；
 - `types.ts`：`CodingProject`、工厂配置和 `CodingAgent`；
 - `coding-system-prompt.ts`：默认 coding system prompt；
+- `hooks/factory.ts`：组装 Coding Agent 默认 Hooks；
 - `hooks/permission.ts`：Bash permission Hook；
+- `tools/factory.ts`：组装内置 Tool definitions 和每个 Harness 独立的 Agent Tool Registry；
 - `tools/definition.ts`：Coding Tool 定义及到 `AgentTool` 的内部转换；
 - `tools/builtin/bash.ts`、`bash-policy.ts`：本地 Bash 与共享安全策略；
 - `tools/builtin/files.ts`：read、write、edit 和 Glob；
