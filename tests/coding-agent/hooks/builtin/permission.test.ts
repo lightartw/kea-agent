@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { HookRegistry } from "../../../src/agent/hooks/registry.js";
+import { HookRegistry } from "../../../../src/agent/hooks/registry.js";
 import type {
   CodingHookContext,
   CodingAgentInteractions,
   ConfirmationRequest,
-} from "../../../src/coding-agent/index.js";
-import { registerPermissionHook } from "../../../src/coding-agent/hooks/permission.js";
-import { classifyBashCommand, hardDeniedBashReason } from "../../../src/coding-agent/tools/bash-policy.js";
+} from "../../../../src/coding-agent/index.js";
+import { registerPermissionHook } from "../../../../src/coding-agent/hooks/builtin/permission.js";
+import { classifyBashCommand, hardDeniedBashReason } from "../../../../src/coding-agent/tools/bash-policy.js";
 
 // ── Step 1: Bash classification tests ──
 

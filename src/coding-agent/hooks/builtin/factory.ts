@@ -1,14 +1,14 @@
-import { HookRegistry } from "../../agent/hooks/registry.js";
-import type { CodingHookContext } from "../types.js";
+import { HookRegistry } from "../../../agent/hooks/registry.js";
+import type { CodingHookContext } from "../../hooks/types.js";
 import { registerPermissionHook } from "./permission.js";
-import type { CodingHookRegistry } from "./types.js";
+import type { CodingHookRegistry } from "../../hooks/types.js";
 
 /**
  * Create a Hook registry pre-configured with the single control Hook that
  * actually changes control flow: permission. Passive display lives in UI
  * subscribe consumers, not here.
  */
-export function createCodingHookRegistry(
+export function createDefaultCodingHookRegistry(
   context: CodingHookContext,
 ): CodingHookRegistry {
   const registry =

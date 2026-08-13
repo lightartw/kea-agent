@@ -19,6 +19,7 @@ import {
 import {
   CodingToolPresentationRegistry,
   createCodingAgent,
+  createDefaultCodingHookRegistry,
 } from "../src/coding-agent/index.js";
 
 import { CliFrontend } from "../src/ui/index.js";
@@ -55,6 +56,7 @@ void [
   SessionManager,
   MAIN_LANE,
   createCodingAgent,
+  createDefaultCodingHookRegistry,
   CodingToolPresentationRegistry,
   CliFrontend,
 ];

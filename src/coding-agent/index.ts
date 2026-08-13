@@ -1,5 +1,5 @@
 export { createCodingAgent } from "./factory.js";
-export { createCodingHookRegistry } from "./hooks/factory.js";
+export { createDefaultCodingHookRegistry } from "./hooks/builtin/factory.js";
 export {
   CODING_SYSTEM_PROMPT,
 } from "./coding-system-prompt.js";

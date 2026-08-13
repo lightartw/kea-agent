@@ -6,7 +6,7 @@ import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
 import { defaultSystemPrompt } from "../harness/system-prompt.js";
 import { createDefaultToolDefinitions } from "./tools/factory.js";
 import { toAgentTool } from "./tools/wrapper.js";
-import { createCodingHookRegistry } from "./hooks/factory.js";
+import { createDefaultCodingHookRegistry } from "./hooks/builtin/factory.js";
 import { NO_INTERACTIONS } from "./ui/interactions.js";
 import { CodingToolPresentationRegistry } from "./ui/presentation-registry.js";
 import type { CodingToolContext } from "./tools/definition.js";
@@ -51,7 +51,7 @@ export async function createCodingAgent(
     }
   }
 
-  const hooks = createCodingHookRegistry({
+  const hooks = createDefaultCodingHookRegistry({
     cwd: context.cwd,
     interactions,
   });

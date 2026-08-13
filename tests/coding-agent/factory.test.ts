@@ -165,7 +165,7 @@ function twoTurnBashStream(command: string): StreamFn {
   };
 }
 
-test("factory assembles the default Hook registry with supplied interactions", async () => {
+test("factory assembles the default built-in Hook registry with supplied interactions", async () => {
   const { interactions, notifications } = recordingInteractions();
   const runtime = await createCodingAgent({
     project: { workDir: process.cwd(), storageDir: "unused" },

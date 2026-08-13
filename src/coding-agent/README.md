@@ -57,7 +57,7 @@ interface Notification {
 
 ## 默认 Hook：只有 permission
 
-默认 `createCodingHookRegistry(context)` 只注册一个真正改变控制流的 Hook——permission。
+默认 `createDefaultCodingHookRegistry(context)` 只注册一个真正改变控制流的 Hook——permission。
 被动的展示（log、大输出提醒、工具计数 summary）不是 Hook，而是 UI 层针对 Harness
 `subscribe` 事件的 renderer 行为。
 
@@ -164,7 +164,7 @@ function createCodingAgent(config: CreateCodingAgentConfig): Promise<CodingAgent
 
 从 `src/coding-agent/index.ts`：
 
-- `createCodingAgent`、`createCodingHookRegistry`、`createDefaultToolDefinitions`、`toAgentTool`
+- `createCodingAgent`、`createDefaultCodingHookRegistry`、`createDefaultToolDefinitions`、`toAgentTool`
 - `CodingToolPresentationRegistry`、`NO_INTERACTIONS`、`CODING_SYSTEM_PROMPT`
 - `CodingAgentRuntime`、`CreateCodingAgentConfig`、`CodingHookContext`
 - `CodingAgentInteractions`、`ConfirmationRequest`、`Notification`

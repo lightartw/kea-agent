@@ -1,8 +1,8 @@
-import type { BeforeToolCall, BeforeToolCallResult } from "../../agent/hooks/types.js";
-import { classifyBashCommand } from "../tools/bash-policy.js";
-import type { CodingAgentInteractions } from "../ui/interactions.js";
+import type { BeforeToolCall, BeforeToolCallResult } from "../../../agent/hooks/types.js";
+import { classifyBashCommand } from "../../tools/bash-policy.js";
+import type { CodingAgentInteractions } from "../../ui/interactions.js";
 import type { CodingHookContext } from "../types.js";
-import type { CodingHookRegistry } from "./types.js";
+import type { CodingHookRegistry } from "../types.js";
 
 /**
  * Register a tool_call handler that gates Bash commands through the shared

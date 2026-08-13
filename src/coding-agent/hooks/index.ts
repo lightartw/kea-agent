@@ -1,3 +1,3 @@
-export { createCodingHookRegistry } from "./factory.js";
-export { registerPermissionHook } from "./permission.js";
-export type { CodingHookRegistry } from "./types.js";
+export { createDefaultCodingHookRegistry } from "./builtin/factory.js";
+export { registerPermissionHook } from "./builtin/permission.js";
+export type { CodingHookContext, CodingHookRegistry } from "./types.js";
