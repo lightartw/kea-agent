@@ -17,9 +17,8 @@ import {
 } from "../src/harness/index.js";
 
 import {
-  CODING_SYSTEM_PROMPT,
-  NO_INTERACTIONS,
-  createCodingAgent,
+  CodingToolPresentationRegistry,
+  createProject,
 } from "../src/coding-agent/index.js";
 
 import { CliFrontend } from "../src/ui/index.js";
@@ -27,7 +26,6 @@ import { CliFrontend } from "../src/ui/index.js";
 import type {
   AgentEvent,
   AgentHookCall,
-  AfterToolCallResult,
   AgentToolCall,
   AgentToolResult,
 } from "../src/agent/index.js";
@@ -39,19 +37,18 @@ import type {
 } from "../src/harness/index.js";
 
 import type {
-  CodingAgent,
+  CreateSessionInput,
+  SessionHeader,
+  SessionInfo,
+} from "../src/harness/index.js";
+
+import type {
   CodingAgentInteractions,
-  CodingProject,
-  CodingToolContext,
   CodingToolDefinition,
   CodingToolPresentation,
-  ConfirmationRequest,
-  CreateCodingAgentConfig,
-  Notification,
-  TodoDetails,
-  TodoItem,
-  ToolPresentationCall,
-  ToolPresentationRejected,
+  CreateProjectConfig,
+  Project,
+  ProjectInfo,
 } from "../src/coding-agent/index.js";
 
 void [
@@ -63,9 +60,8 @@ void [
   Session,
   SessionRepository,
   MAIN_LANE,
-  createCodingAgent,
-  CODING_SYSTEM_PROMPT,
-  NO_INTERACTIONS,
+  createProject,
+  CodingToolPresentationRegistry,
   CliFrontend,
 ];
 
@@ -73,7 +69,6 @@ void [
 type PublicAgentTypes = [
   AgentEvent,
   AgentHookCall,
-  AfterToolCallResult,
   AgentToolCall,
   AgentToolResult,
 ];
@@ -82,22 +77,18 @@ type PublicHarnessTypes = [
   HarnessEvent,
   HarnessToolEvent,
   HarnessConfig,
+  CreateSessionInput,
+  SessionHeader,
+  SessionInfo,
 ];
 
 type PublicCodingAgentTypes = [
-  CodingAgent,
-  CodingProject,
-  CreateCodingAgentConfig,
+  Project,
+  ProjectInfo,
+  CreateProjectConfig,
   CodingAgentInteractions,
-  CodingToolContext,
   CodingToolDefinition,
   CodingToolPresentation<unknown, unknown>,
-  ConfirmationRequest,
-  Notification,
-  TodoDetails,
-  TodoItem,
-  ToolPresentationCall<unknown>,
-  ToolPresentationRejected<unknown>,
 ];
 
 void (null as PublicAgentTypes | null);

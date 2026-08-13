@@ -5,29 +5,23 @@ import { homedir } from "node:os";
 import { config as loadDotenv } from "dotenv";
 
 import { CliFrontend } from "./ui/cli-frontend.js";
-import { createCodingAgent } from "./coding-agent/factory.js";
+import { createProject } from "./coding-agent/factory.js";
 import { createStreamFn } from "./ai/factory.js";
-
-function resolveProject(cwd: string) {
-  const id = cwd.replace(/^([A-Za-z]):/, "-$1").replace(/[/\\]/g, "-");
-  const storageRoot = process.env.KEA_HOME ?? resolve(homedir(), ".kea");
-  return { workDir: cwd, storageDir: resolve(storageRoot, "projects", id) };
-}
 
 export async function asyncMain(): Promise<void> {
   loadDotenv({ override: true });
   const cli = new CliFrontend();
   try {
     const { stream, defaultModel } = createStreamFn();
-    const project = resolveProject(process.cwd());
-    const codingAgent = await createCodingAgent({
-      project,
+    const keaHome = process.env.KEA_HOME ?? resolve(homedir(), ".kea");
+    const project = await createProject({
+      keaHome,
       streamFn: stream,
       model: defaultModel,
       interactions: cli.interactions,
     });
-    const harness = await codingAgent.continueRecent();
-    await cli.run(codingAgent, harness);
+    const harness = await project.continueRecent();
+    await cli.run(project, harness);
   } finally {
     cli.close();
   }

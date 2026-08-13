@@ -24,7 +24,11 @@ test("Harness renders through one subscription while prompt returns a Promise", 
     yield { type: "done", message };
   };
   const harness = new AgentHarness({
-    session: Session.inMemory(),
+    session: Session.inMemory({
+      projectId: "project_test",
+      directory: process.cwd(),
+      cwd: ".",
+    }),
     model: { provider: "test", model: "test" },
     streamFn: stream,
     toolRegistry: new AgentToolRegistry(),

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { createCodingAgent } from "../../src/coding-agent/factory.js";
-import { SessionError } from "../../src/harness/session/types.js";
+import { createProject } from "../../src/coding-agent/factory.js";
+import type { SessionInfo } from "../../src/harness/session/types.js";
 import type {
   AssistantMessage,
   ModelConfig,
@@ -16,10 +16,8 @@ import type { CodingAgentInteractions } from "../../src/coding-agent/index.js";
 import type { HarnessToolEvent } from "../../src/harness/events/types.js";
 import type { TodoItem } from "../../src/coding-agent/tools/builtin/todo.js";
 
-async function tempStorage(): Promise<string> {
-  const path = join(tmpdir(), `kea-factory-${randomUUID()}`);
-  await mkdir(path, { recursive: true });
-  return path;
+async function tempDir(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "kea-project-"));
 }
 
 const model: ModelConfig = { provider: "test", model: "model" };
@@ -36,82 +34,203 @@ const oneTurnStream: StreamFn = async function* () {
   yield { type: "done", message: assistant };
 };
 
-test("factory composes workDir, default tools, and string prompt", async () => {
-  const storageDir = await tempStorage();
+function createProjectAt(keaHome: string, directory: string, options: {
+  streamFn?: StreamFn;
+  systemPrompt?: string;
+  interactions?: CodingAgentInteractions;
+} = {}) {
+  return createProject({
+    keaHome,
+    directory,
+    streamFn: options.streamFn ?? oneTurnStream,
+    model,
+    ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
+    ...(options.interactions !== undefined ? { interactions: options.interactions } : {}),
+  });
+}
+
+test("createSession uses the primary directory with cwd .", async () => {
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
-    let seenPrompt = "";
-    let seenTools: string[] = [];
-    const stream: StreamFn = async function* (_model, context) {
-      seenPrompt = context.systemPrompt ?? "";
-      seenTools = context.tools?.map((tool) => tool.name) ?? [];
-      yield { type: "done", message: assistant };
-    };
-
-    const codingAgent = await createCodingAgent({
-      project: { workDir: "C:/workspace/project", storageDir },
-      streamFn: stream,
-      model,
-      systemPrompt: "cwd={{cwd}} date={{date}}",
-    });
-    const harness = await codingAgent.createSession();
-
-    await harness.prompt("hello");
-    assert.equal(
-      seenPrompt,
-      `cwd=${resolve("C:/workspace/project")} date=${new Date().toISOString().slice(0, 10)}`,
-    );
-    assert.deepEqual(seenTools, [
-      "bash",
-      "read_file",
-      "write_file",
-      "edit_file",
-      "glob",
-      "todo_write",
-    ]);
+    const project = await createProjectAt(keaHome, dir);
+    const session = await project.createSession();
+    const [info] = await project.listSessions();
+    assert.equal(info?.id, session.sessionId);
+    assert.equal(info?.directory, project.primaryDirectory);
+    assert.equal(info?.cwd, ".");
   } finally {
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("factory resolves relative Project paths once", async () => {
-  const originalCwd = process.cwd();
-  const storageDir = await tempStorage();
-  const firstDir = join(storageDir, "first");
-  const secondDir = join(storageDir, "second");
-  await mkdir(firstDir, { recursive: true });
-  await mkdir(secondDir, { recursive: true });
-  let seenPrompt = "";
-
+test("continueRecent creates a Session at the startup cwd when empty", async () => {
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
-    process.chdir(storageDir);
-    const codingAgent = await createCodingAgent({
-      project: { workDir: "first", storageDir: "history" },
+    const sub = join(dir, "src");
+    await mkdir(sub, { recursive: true });
+    await createProjectAt(keaHome, dir);
+    const project = await createProject({ keaHome, cwd: sub, streamFn: oneTurnStream, model });
+    const harness = await project.continueRecent();
+    const [info] = await project.listSessions();
+    assert.equal(info?.id, harness.sessionId);
+    assert.equal(info?.directory, resolve(dir));
+    assert.equal(info?.cwd, "src");
+  } finally {
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("openSession rebuilds system prompt and tools from the stored cwd", async () => {
+  const keaHome = await tempDir();
+  const dir = await tempDir();
+  try {
+    let seenPrompt = "";
+    let seenTools: string[] = [];
+    const project = await createProject({
+      keaHome,
+      directory: dir,
       streamFn: async function* (_model, context) {
         seenPrompt = context.systemPrompt ?? "";
+        seenTools = context.tools?.map((tool) => tool.name) ?? [];
         yield { type: "done", message: assistant };
       },
       model,
       systemPrompt: "cwd={{cwd}}",
     });
+    const created = await project.createSession();
+    await created.prompt("hello");
 
-    process.chdir(secondDir);
-    const harness = await codingAgent.createSession();
-    await harness.prompt("hello");
-
-    assert.equal(seenPrompt, `cwd=${firstDir}`);
-    assert.deepEqual(await codingAgent.listSessions(), [harness.sessionId]);
+    const reopened = await project.openSession(created.sessionId);
+    await reopened.prompt("again");
+    assert.equal(seenPrompt, `cwd=${resolve(dir)}`);
+    assert.deepEqual(seenTools, [
+      "bash", "read_file", "write_file", "edit_file", "glob", "todo_write",
+    ]);
   } finally {
-    process.chdir(originalCwd);
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("factory restores a Session opened through the CodingAgent", async () => {
-  const storageDir = await tempStorage();
+test("switching primaryDirectory changes later createSession but not old headers", async () => {
+  const keaHome = await tempDir();
+  const dirA = await tempDir();
+  const dirB = await tempDir();
+  try {
+    const project = await createProjectAt(keaHome, dirA);
+    const first = await project.createSession();
+    const [firstInfo] = await project.listSessions();
+    assert.equal(firstInfo?.directory, resolve(dirA));
+
+    await project.update({ primaryDirectory: resolve(dirB), directories: [resolve(dirA), resolve(dirB)] });
+    const second = await project.createSession();
+    const [secondInfo, ...rest] = await project.listSessions();
+    assert.equal(secondInfo?.directory, resolve(dirB));
+    assert.equal(rest[0]?.id, first.sessionId);
+    assert.equal(rest[0]?.directory, resolve(dirA));
+  } finally {
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dirA, { recursive: true, force: true });
+    await rm(dirB, { recursive: true, force: true });
+  }
+});
+
+test("Project.update survives a second createProject call", async () => {
+  const keaHome = await tempDir();
+  const dirA = await tempDir();
+  const dirB = await tempDir();
+  try {
+    const first = await createProjectAt(keaHome, dirA);
+    await first.update({
+      name: "research",
+      directories: [resolve(dirA), resolve(dirB)],
+      primaryDirectory: resolve(dirB),
+    });
+
+    const reopened = await createProjectAt(keaHome, dirA);
+    assert.equal(reopened.id, first.id);
+    assert.equal(reopened.name, "research");
+    assert.equal(reopened.primaryDirectory, resolve(dirB));
+  } finally {
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dirA, { recursive: true, force: true });
+    await rm(dirB, { recursive: true, force: true });
+  }
+});
+
+test("openSession rejects foreign projectId, removed directories, and missing cwd", async () => {
+  const keaHome = await tempDir();
+  const dirA = await tempDir();
+  const dirB = await tempDir();
+  try {
+    const projectA = await createProjectAt(keaHome, dirA);
+    const session = await projectA.createSession();
+    const sid = session.sessionId;
+
+    // Foreign projectId: craft a session file whose header belongs to another Project.
+    const foreignStorage = join(keaHome, "projects", projectA.id, "sessions");
+    const foreignId = "foreignsession";
+    await writeFile(
+      join(foreignStorage, `${foreignId}.jsonl`),
+      `${JSON.stringify({
+        type: "session",
+        version: 1,
+        id: foreignId,
+        projectId: "some_other_project",
+        directory: resolve(dirA),
+        cwd: ".",
+        title: "unknown",
+        createdAt: "2026-08-13T00:00:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+    await assert.rejects(
+      projectA.openSession(foreignId),
+      /different Project/,
+    );
+    await rm(join(foreignStorage, `${foreignId}.jsonl`), { force: true });
+
+    // Directory removed from the Project after the Session was created.
+    const beforeRemove = await projectA.createSession();
+    await beforeRemove.prompt("x");
+    const removedId = beforeRemove.sessionId;
+    await projectA.update({
+      directories: [resolve(dirB)],
+      primaryDirectory: resolve(dirB),
+    });
+    await assert.rejects(
+      projectA.openSession(removedId),
+      /not registered/,
+    );
+
+    // Resolved cwd no longer exists on disk.
+    const goneDir = join(dirB, "gone");
+    await mkdir(goneDir, { recursive: true });
+    const missing = await projectA.createSession({ cwd: "gone" });
+    await rm(goneDir, { recursive: true, force: true });
+    await assert.rejects(
+      projectA.openSession(missing.sessionId),
+      /does not exist/,
+    );
+  } finally {
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dirA, { recursive: true, force: true });
+    await rm(dirB, { recursive: true, force: true });
+  }
+});
+
+test("project restores a Session opened through the Project", async () => {
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
     const seenRoles: string[][] = [];
-    const codingAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
+    const project = await createProject({
+      keaHome,
+      directory: dir,
       streamFn: async function* (_model, context) {
         seenRoles.push(context.messages.map((message) => message.role));
         yield { type: "done", message: assistant };
@@ -119,9 +238,9 @@ test("factory restores a Session opened through the CodingAgent", async () => {
       model,
     });
 
-    const first = await codingAgent.createSession();
+    const first = await project.createSession();
     await first.prompt("old");
-    const restored = await codingAgent.openSession(first.sessionId);
+    const restored = await project.openSession(first.sessionId);
     await restored.prompt("new");
 
     assert.deepEqual(seenRoles, [
@@ -129,89 +248,72 @@ test("factory restores a Session opened through the CodingAgent", async () => {
       ["user", "assistant", "user"],
     ]);
   } finally {
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("CodingAgent lists, creates, opens, and continues project Sessions", async () => {
-  const storageDir = await tempStorage();
+test("project lists, creates, opens, and continues Sessions", async () => {
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
-    const codingAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
-      streamFn: oneTurnStream,
-      model,
-    });
+    const project = await createProjectAt(keaHome, dir);
+    assert.deepEqual(await project.listSessions(), []);
 
-    assert.deepEqual(await codingAgent.listSessions(), []);
-
-    const created = await codingAgent.createSession();
+    const created = await project.createSession();
     await created.prompt("persist me");
-    assert.deepEqual(await codingAgent.listSessions(), [created.sessionId]);
+    const [info] = await project.listSessions();
+    assert.equal(info?.id, created.sessionId);
 
-    const opened = await codingAgent.openSession(created.sessionId);
+    const opened = await project.openSession(created.sessionId);
     assert.equal(opened.sessionId, created.sessionId);
     assert.deepEqual(opened.messages.map((message) => message.role), ["user", "assistant"]);
 
-    const continued = await codingAgent.continueRecent();
+    const continued = await project.continueRecent();
     assert.equal(continued.sessionId, created.sessionId);
   } finally {
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("continueRecent creates a Session when the project has no history", async () => {
-  const storageDir = await tempStorage();
+test("continueRecent propagates an invalid newest Session", async () => {
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
-    const codingAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
-      streamFn: oneTurnStream,
-      model,
-    });
-    const harness = await codingAgent.continueRecent();
-    assert.ok(harness.sessionId.length > 0);
-    assert.deepEqual(harness.messages, []);
-  } finally {
-    await rm(storageDir, { recursive: true, force: true });
-  }
-});
-
-test("continueRecent propagates an invalid newest Session without creating a replacement", async () => {
-  const storageDir = await tempStorage();
-  const sessionId = "20260813T120000_corrupt";
-  try {
-    const sessionsDir = join(storageDir, "sessions");
+    const project = await createProjectAt(keaHome, dir);
+    const created = await project.createSession();
+    await created.prompt("x");
+    const sessionsDir = join(keaHome, "projects", project.id, "sessions");
     await mkdir(sessionsDir, { recursive: true });
-    await writeFile(join(sessionsDir, `${sessionId}.jsonl`), "not-json\n", "utf8");
-    const codingAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
-      streamFn: oneTurnStream,
-      model,
-    });
+    await writeFile(join(sessionsDir, "corrupt.jsonl"), "not-json\n", "utf8");
 
     await assert.rejects(
-      codingAgent.continueRecent(),
-      (error: unknown) => error instanceof SessionError && error.code === "invalid_session",
+      project.continueRecent(),
+      /invalid/,
     );
-    assert.deepEqual(await codingAgent.listSessions(), [sessionId]);
   } finally {
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
 test("Harnesses created for one Project do not share mutable state", async () => {
-  const storageDir = await tempStorage();
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
     const seenTools: string[][] = [];
-    const codingAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
+    const project = await createProject({
+      keaHome,
+      directory: dir,
       streamFn: async function* (_model, context) {
         seenTools.push(context.tools?.map((tool) => tool.name) ?? []);
         yield { type: "done", message: assistant };
       },
       model,
     });
-    const first = await codingAgent.createSession();
-    const second = await codingAgent.createSession();
+    const first = await project.createSession();
+    const second = await project.createSession();
 
     await first.switchModel({ provider: "test", model: "other" });
     assert.deepEqual(second.model, model);
@@ -228,7 +330,8 @@ test("Harnesses created for one Project do not share mutable state", async () =>
       ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write"],
     ]);
   } finally {
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -273,40 +376,40 @@ function twoTurnBashStream(command: string): StreamFn {
   };
 }
 
-test("factory assembles the default built-in Hook registry with supplied interactions", async () => {
-  const storageDir = await tempStorage();
+test("project assembles the default built-in Hook registry with supplied interactions", async () => {
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
     const { interactions, notifications } = recordingInteractions();
-    const codingAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
-      streamFn: oneTurnStream,
-      model,
-      interactions,
-    });
-    const harness = await codingAgent.createSession();
+    const project = await createProjectAt(keaHome, dir, { interactions });
+    const harness = await project.createSession();
 
     await harness.prompt("hello");
     assert.deepEqual(notifications, []);
   } finally {
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("factory defaults to fail-closed interactions for ask commands", async () => {
-  const storageDir = await tempStorage();
+test("project defaults to fail-closed interactions for ask commands", async () => {
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
-    const codingAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
+    const project = await createProject({
+      keaHome,
+      directory: dir,
       streamFn: twoTurnBashStream("rm file.txt"),
       model,
     });
-    const harness = await codingAgent.createSession();
+    const harness = await project.createSession();
     await harness.prompt("remove file");
     const toolMessage = harness.messages.find((message) => message.role === "tool");
     assert.equal(toolMessage?.role, "tool");
     assert.match(toolMessage?.content ?? "", /permission denied by user/);
   } finally {
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -320,20 +423,24 @@ function denyingInteractions(confirmations: string[]): CodingAgentInteractions {
   };
 }
 
-test("factory returns distinct Coding Agents and tool render functions per call", async () => {
-  const firstStorageDir = await tempStorage();
-  const secondStorageDir = await tempStorage();
+test("createProject returns distinct Projects and tool render functions per call", async () => {
+  const keaHomeA = await tempDir();
+  const keaHomeB = await tempDir();
+  const dirA = await tempDir();
+  const dirB = await tempDir();
   try {
     const firstConfirmations: string[] = [];
     const secondConfirmations: string[] = [];
-    const first = await createCodingAgent({
-      project: { workDir: "C:/first", storageDir: firstStorageDir },
+    const first = await createProject({
+      keaHome: keaHomeA,
+      directory: dirA,
       streamFn: twoTurnBashStream("rm file.txt"),
       model,
       interactions: denyingInteractions(firstConfirmations),
     });
-    const second = await createCodingAgent({
-      project: { workDir: "C:/second", storageDir: secondStorageDir },
+    const second = await createProject({
+      keaHome: keaHomeB,
+      directory: dirB,
       streamFn: twoTurnBashStream("rm file.txt"),
       model,
       interactions: denyingInteractions(secondConfirmations),
@@ -341,7 +448,7 @@ test("factory returns distinct Coding Agents and tool render functions per call"
     const firstHarness = await first.createSession();
     const secondHarness = await second.createSession();
 
-    assert.notEqual(first, second);
+    assert.notEqual(first.id, second.id);
     assert.notEqual(first.renderToolEvent, second.renderToolEvent);
 
     await firstHarness.prompt("one");
@@ -349,19 +456,18 @@ test("factory returns distinct Coding Agents and tool render functions per call"
     assert.deepEqual(firstConfirmations, ["permission"]);
     assert.deepEqual(secondConfirmations, ["permission"]);
   } finally {
-    await rm(firstStorageDir, { recursive: true, force: true });
-    await rm(secondStorageDir, { recursive: true, force: true });
+    await rm(keaHomeA, { recursive: true, force: true });
+    await rm(keaHomeB, { recursive: true, force: true });
+    await rm(dirA, { recursive: true, force: true });
+    await rm(dirB, { recursive: true, force: true });
   }
 });
 
-test("CodingAgent presentations render todo details from the Coding Tool definition", async () => {
-  const storageDir = await tempStorage();
+test("project presentations render todo details from the Coding Tool definition", async () => {
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
-    const codingAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
-      streamFn: oneTurnStream,
-      model,
-    });
+    const project = await createProjectAt(keaHome, dir);
 
     const todoEndEvent: HarnessToolEvent = {
       type: "tool_end",
@@ -380,32 +486,36 @@ test("CodingAgent presentations render todo details from the Coding Tool definit
       },
     };
     assert.equal(
-      codingAgent.renderToolEvent(todoEndEvent),
+      project.renderToolEvent(todoEndEvent),
       "1. [in_progress] Design UI",
     );
   } finally {
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
 test("default Harness system prompt contains the coding agent opening text", async () => {
-  const storageDir = await tempStorage();
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
     let seenPrompt = "";
-    const codingAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
+    const project = await createProject({
+      keaHome,
+      directory: dir,
       streamFn: async function* (_model, context) {
         seenPrompt = context.systemPrompt ?? "";
         yield { type: "done", message: assistant };
       },
       model,
     });
-    const harness = await codingAgent.createSession();
+    const harness = await project.createSession();
 
     await harness.prompt("hello");
     assert.match(seenPrompt, /You are Kea, a coding agent that runs inside a terminal/);
   } finally {
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -437,18 +547,20 @@ function todoTurnStream(todos: readonly TodoItem[]): StreamFn {
 }
 
 test("todo content is model-visible while details stay in the in-memory message", async () => {
-  const storageDir = await tempStorage();
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
     const todos: TodoItem[] = [
       { content: "Read code", status: "completed" },
       { content: "Design UI", status: "in_progress" },
     ];
-    const codingAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
+    const project = await createProject({
+      keaHome,
+      directory: dir,
       streamFn: todoTurnStream(todos),
       model,
     });
-    const harness = await codingAgent.createSession();
+    const harness = await project.createSession();
 
     await harness.prompt("plan");
 
@@ -461,23 +573,26 @@ test("todo content is model-visible while details stay in the in-memory message"
     assert.match(toolMessage.content, /in_progress/);
     assert.deepEqual(toolMessage.details, { todos });
   } finally {
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
 test("todo state recovers from a restored Session after a model switch", async () => {
-  const storageDir = await tempStorage();
+  const keaHome = await tempDir();
+  const dir = await tempDir();
   try {
     const todos: TodoItem[] = [
       { content: "Read code", status: "completed" },
       { content: "Design UI", status: "in_progress" },
     ];
-    const firstAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
+    const firstProject = await createProject({
+      keaHome,
+      directory: dir,
       streamFn: todoTurnStream(todos),
       model,
     });
-    const first = await firstAgent.createSession();
+    const first = await firstProject.createSession();
     await first.prompt("plan");
 
     let recoveredContent = "";
@@ -488,12 +603,13 @@ test("todo state recovers from a restored Session after a model switch", async (
       recoveredContent = toolMessage?.role === "tool" ? toolMessage.content : "";
       yield { type: "done", message: assistant };
     };
-    const secondAgent = await createCodingAgent({
-      project: { workDir: process.cwd(), storageDir },
+    const secondProject = await createProject({
+      keaHome,
+      directory: dir,
       streamFn: recoveryStream,
       model: { provider: "test", model: "model-2" },
     });
-    const restored = await secondAgent.openSession(first.sessionId);
+    const restored = await secondProject.openSession(first.sessionId);
     await restored.switchModel({ provider: "test", model: "model-2" });
     await restored.prompt("resume");
 
@@ -502,6 +618,7 @@ test("todo state recovers from a restored Session after a model switch", async (
     assert.match(recoveredContent, /completed/);
     assert.match(recoveredContent, /in_progress/);
   } finally {
-    await rm(storageDir, { recursive: true, force: true });
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });

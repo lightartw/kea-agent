@@ -1,24 +1,24 @@
-import { readdir, stat } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import { Session, sessionsDir } from "./session.js";
-import { SessionError } from "./types.js";
+import { SessionError, type CreateSessionInput, type SessionInfo } from "./types.js";
 
 const SESSION_FILE_RE = /^[A-Za-z0-9_-]+\.jsonl$/;
 
 export class SessionRepository {
   constructor(readonly storageDir: string) {}
 
-  create(): Promise<Session> {
-    return Session.create(this.storageDir);
+  create(input: CreateSessionInput): Promise<Session> {
+    return Session.create(this.storageDir, input);
   }
 
   open(sessionId: string): Promise<Session> {
     return Session.open(this.storageDir, sessionId);
   }
 
-  /** List all session IDs, newest first. */
-  async list(): Promise<readonly string[]> {
+  /** List all Sessions by stored metadata, newest first. */
+  async list(): Promise<readonly SessionInfo[]> {
     const dir = sessionsDir(this.storageDir);
     let entries: string[];
 
@@ -38,21 +38,18 @@ export class SessionRepository {
         SESSION_FILE_RE.test(entry) && !entry.startsWith("."),
     );
 
-    if (jsonlFiles.length === 0) return [];
-
-    const stats = await Promise.all(
+    const sessions = await Promise.all(
       jsonlFiles.map(async (filename) => {
-        try {
-          const s = await stat(join(dir, filename));
-          return { filename, mtimeMs: s.mtimeMs };
-        } catch {
-          return { filename, mtimeMs: 0 };
-        }
+        const session = await Session.open(this.storageDir, filename.replace(/\.jsonl$/, ""));
+        return session.info;
       }),
     );
 
-    stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    sessions.sort((a, b) => {
+      const byUpdated = b.updatedAt.localeCompare(a.updatedAt);
+      return byUpdated !== 0 ? byUpdated : b.id.localeCompare(a.id);
+    });
 
-    return stats.map((s) => s.filename.replace(/\.jsonl$/, ""));
+    return sessions;
   }
 }

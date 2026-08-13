@@ -1,16 +1,29 @@
-export { createCodingAgent } from "./factory.js";
+export { createProject } from "./factory.js";
 export {
   CODING_SYSTEM_PROMPT,
 } from "./coding-system-prompt.js";
 export {
   NO_INTERACTIONS,
 } from "./ui/interactions.js";
+export {
+  CodingToolPresentationRegistry,
+} from "./ui/presentation.js";
+export {
+  openOrCreateProject,
+  persistProject,
+  applyProjectUpdate,
+  assertDirectoryOwnership,
+} from "./project/storage.js";
 
 export type {
-  CodingAgent,
-  CodingProject,
-  CreateCodingAgentConfig,
-} from "./types.js";
+  Project,
+  ProjectInfo,
+  OpenedProject,
+  OpenProjectInput,
+  UpdateProjectInput,
+  CreateSessionOptions,
+} from "./project/types.js";
+export type { CreateProjectConfig } from "./types.js";
 export type {
   CodingAgentInteractions,
   ConfirmationRequest,

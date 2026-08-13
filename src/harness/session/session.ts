@@ -1,13 +1,17 @@
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import type { AgentMessage } from "../../agent/types.js";
 import type { ModelConfig } from "../../ai/types.js";
 import {
+  type CreateSessionInput,
   type SessionContext,
-  type SessionEntry,
+  type SessionHeader,
+  type SessionInfo,
   type SessionMessageEntry,
   type SessionModelChangeEntry,
+  type SessionRecord,
+  type SessionTitleEntry,
   SessionError,
 } from "./types.js";
 
@@ -28,6 +32,10 @@ function isString(value: unknown): value is string {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function isTimestamp(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }
 
 function isJsonValue(value: unknown, seen = new Set<object>()): boolean {
@@ -92,58 +100,114 @@ function invalidEntry(message: string): never {
   throw new SessionError("invalid_entry", message);
 }
 
-function parseEntry(raw: unknown): SessionEntry {
-  if (!isRecord(raw) || !isString(raw.id) || !SESSION_ID_PATTERN.test(raw.id) ||
-    (raw.parentId !== null && (!isString(raw.parentId) || !SESSION_ID_PATTERN.test(raw.parentId))) ||
-    !isString(raw.type)) {
-    return invalidEntry("Session entry has invalid metadata");
+function invalidSession(message: string): never {
+  throw new SessionError("invalid_session", message);
+}
+
+function validateCwd(directory: string, cwd: string): void {
+  if (isAbsolute(cwd)) {
+    invalidEntry("Session cwd must be relative");
+  }
+  const resolved = resolve(directory, cwd);
+  const fromDirectory = resolve(directory);
+  if (resolved !== fromDirectory && !resolved.startsWith(fromDirectory + sep)) {
+    invalidEntry("Session cwd escapes its directory");
+  }
+}
+
+function parseHeader(raw: unknown): SessionHeader {
+  if (!isRecord(raw) || raw.type !== "session" || raw.version !== 1 ||
+    !isString(raw.id) || !SESSION_ID_PATTERN.test(raw.id) ||
+    !isString(raw.projectId) || !isString(raw.directory) ||
+    !isString(raw.cwd) || !isString(raw.title) ||
+    !isTimestamp(raw.createdAt)) {
+    invalidSession("Session header is invalid");
+  }
+  const directory = resolve(raw.directory);
+  validateCwd(directory, raw.cwd);
+  return {
+    type: "session",
+    version: 1,
+    id: raw.id,
+    projectId: raw.projectId,
+    directory,
+    cwd: raw.cwd,
+    title: raw.title,
+    createdAt: raw.createdAt,
+  };
+}
+
+function parseRecord(raw: unknown): SessionRecord {
+  if (!isRecord(raw) || !isString(raw.type) || !isTimestamp(raw.createdAt)) {
+    return invalidEntry("Session record has invalid metadata");
   }
 
   if (raw.type === "message") {
-    if (!isAgentMessage(raw.message)) {
-      return invalidEntry("Session message entry has an invalid message");
+    if (!isString(raw.id) || !SESSION_ID_PATTERN.test(raw.id) ||
+      (raw.parentId !== null && (!isString(raw.parentId) || !SESSION_ID_PATTERN.test(raw.parentId))) ||
+      !isAgentMessage(raw.message)) {
+      return invalidEntry("Session message record is invalid");
     }
     return {
       type: "message",
       id: raw.id,
-      parentId: raw.parentId,
+      parentId: raw.parentId as string | null,
+      createdAt: raw.createdAt,
       message: raw.message,
     };
   }
 
   if (raw.type === "model_change") {
-    if (!isString(raw.provider) || !isString(raw.modelId)) {
-      return invalidEntry("Session model change entry has invalid model fields");
+    if (!isString(raw.id) || !SESSION_ID_PATTERN.test(raw.id) ||
+      (raw.parentId !== null && (!isString(raw.parentId) || !SESSION_ID_PATTERN.test(raw.parentId))) ||
+      !isString(raw.provider) || !isString(raw.modelId)) {
+      return invalidEntry("Session model change record is invalid");
     }
     return {
       type: "model_change",
       id: raw.id,
-      parentId: raw.parentId,
+      parentId: raw.parentId as string | null,
+      createdAt: raw.createdAt,
       provider: raw.provider,
       modelId: raw.modelId,
     };
   }
 
-  return invalidEntry("Session entry has an unknown type");
-}
-
-function validateTree(entries: readonly SessionEntry[]): void {
-  const byId = new Set<string>();
-  let rootCount = 0;
-
-  for (const entry of entries) {
-    if (byId.has(entry.id)) {
-      invalidEntry("Session contains duplicate entry IDs");
+  if (raw.type === "session_title") {
+    if (raw.title === undefined || !isString(raw.title)) {
+      return invalidEntry("Session title record is invalid");
     }
-    if (entry.parentId === null) {
-      rootCount += 1;
-    } else if (!byId.has(entry.parentId)) {
-      invalidEntry("Session entry references a missing parent");
-    }
-    byId.add(entry.id);
+    return {
+      type: "session_title",
+      createdAt: raw.createdAt,
+      title: raw.title,
+    };
   }
 
-  if (rootCount !== 1) {
+  return invalidEntry("Session record has an unknown type");
+}
+
+function validateTree(records: readonly SessionRecord[]): void {
+  const byId = new Set<string>();
+  let rootCount = 0;
+  let treeCount = 0;
+
+  for (const record of records) {
+    if (record.type === "session_title") continue;
+    treeCount += 1;
+    if (byId.has(record.id)) {
+      invalidEntry("Session contains duplicate entry IDs");
+    }
+    if (record.parentId === null) {
+      rootCount += 1;
+    } else if (!byId.has(record.parentId)) {
+      invalidEntry("Session entry references a missing parent");
+    }
+    byId.add(record.id);
+  }
+
+  // A fresh Session may contain only a header and no tree records yet.
+  if (treeCount > 0 && rootCount !== 1) {
     invalidEntry("Session entries must form one rooted tree");
   }
 }
@@ -165,32 +229,39 @@ function asStorageError(message: string, error: unknown): SessionError {
 }
 
 export class Session {
-  // id/parentId/leafId below form a tree, not a flat list. Today the agent
-  // appends in one straight line (parentId always == the previous leaf), but
-  // the tree format is deliberate: it keeps the on-disk contract ready for
-  // fork conversations (branching from a historical node to test different
-  // models or paths) without a file-format migration later.
-  private entries: SessionEntry[] = [];
-  private byId = new Map<string, SessionEntry>();
+  private records: SessionRecord[] = [];
   private leafId: string | null = null;
-  private flushed = false;
   private pending = Promise.resolve();
 
   private constructor(
     readonly id: string,
     private readonly persistPath: string | null,
+    private readonly header: SessionHeader,
   ) {}
 
-  static async create(storageDir: string): Promise<Session> {
+  static async create(storageDir: string, input: CreateSessionInput): Promise<Session> {
+    const directory = resolve(input.directory);
+    validateCwd(directory, input.cwd);
+
+    const id = newId();
+    const header: SessionHeader = {
+      type: "session",
+      version: 1,
+      id,
+      projectId: input.projectId,
+      directory,
+      cwd: input.cwd,
+      title: "unknown",
+      createdAt: new Date().toISOString(),
+    };
+    const path = sessionPath(storageDir, id);
     try {
       await mkdir(sessionsDir(storageDir), { recursive: true });
+      await writeFile(path, `${JSON.stringify(header)}\n`, { encoding: "utf8", flag: "wx" });
     } catch (error) {
       throw asStorageError("Could not create session storage", error);
     }
-
-    const timestamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-    const id = `${timestamp}_${randomUUID().slice(0, 8)}`;
-    return new Session(id, sessionPath(storageDir, id));
+    return new Session(id, path, header);
   }
 
   static async open(storageDir: string, sessionId: string): Promise<Session> {
@@ -208,105 +279,102 @@ export class Session {
     }
 
     if (contents.trim() === "") {
-      throw new SessionError("invalid_session", "Session file is empty");
+      invalidSession("Session file is empty");
     }
 
-    const entries: SessionEntry[] = [];
-    for (const line of contents.split(/\r?\n/)) {
-      if (line.trim() === "") continue;
-      let raw: unknown;
-      try {
-        raw = JSON.parse(line);
-      } catch (error) {
-        throw new SessionError("invalid_session", "Session file contains invalid JSON", {
-          cause: error,
-        });
-      }
-      entries.push(parseEntry(raw));
+    const lines = contents.split(/\r?\n/).filter((line) => line.trim() !== "");
+    const header = parseHeader(parseJson(lines[0]!, path));
+    if (header.id !== sessionId) {
+      invalidSession("Session header ID does not match the filename");
     }
 
-    validateTree(entries);
-
-    const session = new Session(sessionId, path);
-    for (const entry of entries) {
-      session.push(entry);
+    const records: SessionRecord[] = [];
+    for (let index = 1; index < lines.length; index++) {
+      records.push(parseRecord(parseJson(lines[index]!, path)));
     }
-    session.flushed = true;
+    validateTree(records);
+
+    const session = new Session(sessionId, path, header);
+    for (const record of records) {
+      session.push(record);
+    }
     return session;
   }
 
-  static inMemory(): Session {
-    return new Session(newId(), null);
+  static inMemory(input: CreateSessionInput): Session {
+    const directory = resolve(input.directory);
+    validateCwd(directory, input.cwd);
+    const header: SessionHeader = {
+      type: "session",
+      version: 1,
+      id: newId(),
+      projectId: input.projectId,
+      directory,
+      cwd: input.cwd,
+      title: "unknown",
+      createdAt: new Date().toISOString(),
+    };
+    return new Session(header.id, null, header);
   }
 
-  private push(entry: SessionEntry): void {
-    this.entries.push(entry);
-    this.byId.set(entry.id, entry);
-    this.leafId = entry.id;
+  private push(record: SessionRecord): void {
+    this.records.push(record);
+    if (record.type !== "session_title") {
+      this.leafId = record.id;
+    }
   }
 
-  private rollback(entry: SessionEntry, previousLeafId: string | null): void {
-    const popped = this.entries.pop();
-    if (popped !== entry) {
+  private rollback(record: SessionRecord, previousLeafId: string | null): void {
+    const popped = this.records.pop();
+    if (popped !== record) {
       throw new Error("Session append rollback lost the appended entry");
     }
-    this.byId.delete(entry.id);
-    this.leafId = previousLeafId;
+    if (record.type !== "session_title") {
+      this.leafId = previousLeafId;
+    }
   }
 
-  private async persist(entry: SessionEntry): Promise<void> {
+  private async persist(record: SessionRecord): Promise<void> {
     if (this.persistPath === null) return;
-
-    const hasAssistant = this.entries.some(
-      (candidate) => candidate.type === "message" && candidate.message.role === "assistant",
-    );
-    if (!hasAssistant) return;
-
     try {
-      if (!this.flushed) {
-        const allLines = this.entries.map((candidate) => `${JSON.stringify(candidate)}\n`).join("");
-        await writeFile(this.persistPath, allLines, { encoding: "utf8", flag: "wx" });
-        this.flushed = true;
-      } else {
-        const file = await open(this.persistPath, "r+");
-        try {
-          const { size } = await file.stat();
-          const contents = Buffer.from(`${JSON.stringify(entry)}\n`, "utf8");
-          let offset = 0;
-          while (offset < contents.length) {
-            const { bytesWritten } = await file.write(
-              contents,
-              offset,
-              contents.length - offset,
-              size + offset,
-            );
-            if (bytesWritten === 0) {
-              throw new Error("Session append wrote zero bytes");
-            }
-            offset += bytesWritten;
+      const file = await open(this.persistPath, "r+");
+      try {
+        const { size } = await file.stat();
+        const contents = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
+        let offset = 0;
+        while (offset < contents.length) {
+          const { bytesWritten } = await file.write(
+            contents,
+            offset,
+            contents.length - offset,
+            size + offset,
+          );
+          if (bytesWritten === 0) {
+            throw new Error("Session append wrote zero bytes");
           }
-        } finally {
-          await file.close();
+          offset += bytesWritten;
         }
+      } finally {
+        await file.close();
       }
     } catch (error) {
       throw asStorageError("Could not persist session entry", error);
     }
   }
 
-  private async append(entry: SessionEntry): Promise<void> {
-    const validatedEntry = parseEntry(entry);
+  private async append(record: SessionRecord): Promise<void> {
+    const validated = parseRecord(record);
     const previousLeafId = this.leafId;
-    this.push(validatedEntry);
+    this.push(validated);
     try {
-      await this.persist(validatedEntry);
+      await this.persist(validated);
     } catch (error) {
-      this.rollback(validatedEntry, previousLeafId);
+      this.rollback(validated, previousLeafId);
       throw error;
     }
   }
 
-  private enqueue(operation: () => Promise<void>): Promise<void> {
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.pending.then(operation, operation);
     this.pending = result.then(
       () => undefined,
@@ -320,6 +388,7 @@ export class Session {
       type: "message",
       id: newId(),
       parentId: this.leafId,
+      createdAt: new Date().toISOString(),
       message,
     } satisfies SessionMessageEntry));
   }
@@ -329,21 +398,53 @@ export class Session {
       type: "model_change",
       id: newId(),
       parentId: this.leafId,
+      createdAt: new Date().toISOString(),
       provider: model.provider,
       modelId: model.model,
     } satisfies SessionModelChangeEntry));
   }
 
-  private branch(): SessionEntry[] {
-    const branch: SessionEntry[] = [];
+  private normalizeTitle(title: string): string {
+    const trimmed = title.trim();
+    if (trimmed === "" || trimmed.includes("\n")) {
+      throw new Error("Session title must be a single non-empty line");
+    }
+    return trimmed;
+  }
+
+  async setTitle(title: string): Promise<void> {
+    const normalized = this.normalizeTitle(title);
+    await this.enqueue(() => this.append({
+      type: "session_title",
+      createdAt: new Date().toISOString(),
+      title: normalized,
+    } satisfies SessionTitleEntry));
+  }
+
+  async setTitleIfUnknown(title: string): Promise<boolean> {
+    return this.enqueue(async () => {
+      if (this.info.title !== "unknown") return false;
+      const normalized = this.normalizeTitle(title);
+      await this.append({
+        type: "session_title",
+        createdAt: new Date().toISOString(),
+        title: normalized,
+      } satisfies SessionTitleEntry);
+      return true;
+    });
+  }
+
+  private branch(): (SessionMessageEntry | SessionModelChangeEntry)[] {
+    const branch: (SessionMessageEntry | SessionModelChangeEntry)[] = [];
     let cursor = this.leafId;
     while (cursor !== null) {
-      const entry = this.byId.get(cursor);
-      if (entry === undefined) {
+      const record = this.records.find((candidate): candidate is SessionMessageEntry | SessionModelChangeEntry =>
+        candidate.type !== "session_title" && candidate.id === cursor);
+      if (record === undefined) {
         throw new SessionError("invalid_entry", "Session leaf points to a missing entry");
       }
-      branch.push(entry);
-      cursor = entry.parentId;
+      branch.push(record);
+      cursor = record.parentId;
     }
     return branch.reverse();
   }
@@ -361,5 +462,33 @@ export class Session {
     }
 
     return { messages, model };
+  }
+
+  get info(): SessionInfo {
+    let title = this.header.title;
+    let updatedAt = this.header.createdAt;
+    for (const record of this.records) {
+      if (record.createdAt > updatedAt) updatedAt = record.createdAt;
+      if (record.type === "session_title") title = record.title;
+    }
+    return {
+      id: this.id,
+      projectId: this.header.projectId,
+      directory: this.header.directory,
+      cwd: this.header.cwd,
+      title,
+      createdAt: this.header.createdAt,
+      updatedAt,
+    };
+  }
+}
+
+function parseJson(line: string, path: string): unknown {
+  try {
+    return JSON.parse(line);
+  } catch (error) {
+    throw new SessionError("invalid_session", "Session file contains invalid JSON", {
+      cause: error,
+    });
   }
 }

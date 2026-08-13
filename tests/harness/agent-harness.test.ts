@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { AgentHarness } from "../../src/harness/agent-harness.js";
 import { Session } from "../../src/harness/session/session.js";
+import type { CreateSessionInput } from "../../src/harness/session/types.js";
 import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
 import { AgentTool } from "../../src/agent/tools/types.js";
 import type { AgentEvent } from "../../src/agent/types.js";
@@ -32,6 +33,19 @@ const stream: StreamFn = async function* () {
   yield { type: "done", message: assistant };
 };
 
+function sessionInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {
+  return {
+    projectId: "project_test",
+    directory: process.cwd(),
+    cwd: ".",
+    ...overrides,
+  };
+}
+
+function memorySession(): Session {
+  return Session.inMemory(sessionInput());
+}
+
 function makeHarness(options: {
   session?: Session;
   streamFn?: StreamFn;
@@ -39,7 +53,7 @@ function makeHarness(options: {
   hooks?: AgentHookTrigger;
 } = {}): AgentHarness {
   const base: Omit<HarnessConfig, "hooks"> = {
-    session: options.session ?? Session.inMemory(),
+    session: options.session ?? memorySession(),
     model: modelA,
     streamFn: options.streamFn ?? stream,
     toolRegistry: new AgentToolRegistry(),
@@ -53,7 +67,7 @@ function makeHarness(options: {
 }
 
 test("sessionId exposes the bound Session identity", () => {
-  const session = Session.inMemory();
+  const session = memorySession();
   const harness = makeHarness({ session });
 
   assert.equal(harness.sessionId, session.id);
@@ -87,7 +101,7 @@ test("prompt resolves after publishing Harness events", async () => {
 });
 
 test("messages are in Session before subscribers observe their event", async () => {
-  const session = Session.inMemory();
+  const session = memorySession();
   const harness = makeHarness({ session });
   harness.subscribe((event) => {
     if (event.type === "turn_start") {
@@ -199,7 +213,7 @@ test("abort from run_start prevents the Agent execution", async () => {
 });
 
 test("persistence failure still publishes one run_end error", async () => {
-  const session = Session.inMemory();
+  const session = memorySession();
   session.appendMessage = async () => {
     throw new Error("storage failed");
   };
@@ -306,7 +320,7 @@ test("abort during prompt preparation prevents the Agent run", async () => {
 });
 
 test("restores Session model and persists later switches", async () => {
-  const session = Session.inMemory();
+  const session = memorySession();
   await session.appendModelChange(modelB);
   const harness = makeHarness({ session });
   assert.deepEqual(harness.model, modelB);
@@ -317,7 +331,7 @@ test("restores Session model and persists later switches", async () => {
 });
 
 test("failed model persistence leaves current model unchanged", async () => {
-  const session = Session.inMemory();
+  const session = memorySession();
   const harness = makeHarness({ session });
   session.appendModelChange = async () => {
     throw new Error("storage failed");
@@ -340,7 +354,7 @@ test("tool changes and async prompt builder affect the next run", async () => {
     }
   })();
   const harness = new AgentHarness({
-    session: Session.inMemory(),
+    session: memorySession(),
     model: modelA,
     streamFn: async function* (_model, context) {
       seenTools = context.tools?.map((entry) => entry.name) ?? [];
@@ -459,7 +473,7 @@ test("tool_end subscriber sees the persisted result message", async () => {
       return { content: "ok", details: { count: 1 }, isError: false };
     }
   })());
-  const session = Session.inMemory();
+  const session = memorySession();
   const tc = { type: "toolCall" as const, id: "c1", name: "echo", arguments: {} };
   const toolTurn: AssistantMessage = {
     role: "assistant",
@@ -508,7 +522,7 @@ test("tool_end subscriber sees the persisted result message", async () => {
 
 test("tool_rejected subscriber sees the persisted synthetic message", async () => {
   const registry = new AgentToolRegistry();
-  const session = Session.inMemory();
+  const session = memorySession();
   const tc = { type: "toolCall" as const, id: "c1", name: "missing", arguments: {} };
   const toolTurn: AssistantMessage = {
     role: "assistant",

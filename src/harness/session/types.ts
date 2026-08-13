@@ -1,25 +1,54 @@
 import type { AgentMessage } from "../../agent/types.js";
 import type { ModelConfig } from "../../ai/types.js";
 
-export interface SessionEntryBase {
-  readonly id: string;
-  readonly parentId: string | null;
+export interface CreateSessionInput {
+  readonly projectId: string;
+  readonly directory: string;
+  readonly cwd: string;
 }
 
-export interface SessionMessageEntry extends SessionEntryBase {
+export interface SessionHeader extends CreateSessionInput {
+  readonly type: "session";
+  readonly version: 1;
+  readonly id: string;
+  readonly title: string;
+  readonly createdAt: string;
+}
+
+export interface SessionTitleEntry {
+  readonly type: "session_title";
+  readonly createdAt: string;
+  readonly title: string;
+}
+
+export interface SessionMessageEntry {
   readonly type: "message";
+  readonly id: string;
+  readonly parentId: string | null;
+  readonly createdAt: string;
   readonly message: AgentMessage;
 }
 
-export interface SessionModelChangeEntry extends SessionEntryBase {
+export interface SessionModelChangeEntry {
   readonly type: "model_change";
+  readonly id: string;
+  readonly parentId: string | null;
+  readonly createdAt: string;
   readonly provider: string;
   readonly modelId: string;
 }
 
-export type SessionEntry =
+export type SessionRecord =
   | SessionMessageEntry
-  | SessionModelChangeEntry;
+  | SessionModelChangeEntry
+  | SessionTitleEntry;
+
+export interface SessionInfo extends CreateSessionInput {
+  readonly id: string;
+  readonly title: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
 
 export interface SessionContext {
   readonly messages: AgentMessage[];

@@ -5,8 +5,9 @@ import type { Interface } from "node:readline/promises";
 
 import { CliFrontend } from "../../src/ui/cli-frontend.js";
 import type {
-  CodingAgent,
+  CodingAgentInteractions,
   ConfirmationRequest,
+  Project,
 } from "../../src/coding-agent/index.js";
 import type { AgentHarness } from "../../src/harness/index.js";
 
@@ -82,11 +83,11 @@ test("run suspends its ESC listener during confirm and restores it after", async
       input.emit("data", Buffer.from([0x1b]));
     },
   } as unknown as AgentHarness;
-  const codingAgent = {
+  const project = {
     renderToolEvent: () => "tool",
-  } as unknown as CodingAgent;
+  } as unknown as Project;
 
-  await cli.run(codingAgent, harness);
+  await cli.run(project, harness);
   assert.equal(aborts, 1);
   assert.equal(input.listenerCount("data"), 0);
   cli.close();

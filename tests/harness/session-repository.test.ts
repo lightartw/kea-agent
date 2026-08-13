@@ -6,8 +6,9 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import type { AgentMessage } from "../../src/agent/types.js";
-import { Session } from "../../src/harness/session/session.js";
+import { Session, sessionsDir } from "../../src/harness/session/session.js";
 import { SessionRepository } from "../../src/harness/session/repository.js";
+import type { CreateSessionInput } from "../../src/harness/session/types.js";
 
 const user: AgentMessage = { role: "user", content: "hello" };
 const assistant: AgentMessage = {
@@ -29,8 +30,25 @@ function repository(storageDir: string): SessionRepository {
   return new SessionRepository(storageDir);
 }
 
+function firstInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {
+  return {
+    projectId: "project_first",
+    directory: process.cwd(),
+    cwd: ".",
+    ...overrides,
+  };
+}
+
+function secondInput(): CreateSessionInput {
+  return {
+    projectId: "project_second",
+    directory: process.cwd(),
+    cwd: "src",
+  };
+}
+
 async function createPersistedSession(storageDir: string): Promise<Session> {
-  const session = await Session.create(storageDir);
+  const session = await Session.create(storageDir, firstInput());
   await session.appendMessage(user);
   await session.appendMessage(assistant);
   return session;
@@ -45,27 +63,48 @@ test("list returns empty when sessions directory does not exist", async () => {
   }
 });
 
-test("list returns empty when the sessions directory is empty", async () => {
+test("new empty Sessions are immediately listed", async () => {
   const storageDir = await tempStorage();
   try {
-    await mkdir(join(storageDir, "sessions"), { recursive: true });
-    assert.deepEqual(await repository(storageDir).list(), []);
+    const first = await repository(storageDir).create(firstInput());
+    const listed = await repository(storageDir).list();
+    assert.deepEqual(listed.map((item) => item.id), [first.id]);
+    assert.equal(listed[0]?.title, "unknown");
+    assert.equal(listed[0]?.updatedAt, first.info.createdAt);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
 });
 
-test("list returns most recent first", async () => {
+test("a later stored record controls metadata ordering", async () => {
   const storageDir = await tempStorage();
   try {
+    const repo = repository(storageDir);
+    const first = await repo.create(firstInput());
+    const second = await repo.create(secondInput());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await first.setTitle("newest");
+    assert.deepEqual(
+      (await repo.list()).map((item) => item.id),
+      [first.id, second.id],
+    );
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
+test("list orders by stored updatedAt descending, breaking ties by id", async () => {
+  const storageDir = await tempStorage();
+  try {
+    const repo = repository(storageDir);
     const s1 = await createPersistedSession(storageDir);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     const s2 = await createPersistedSession(storageDir);
 
-    const list = await repository(storageDir).list();
+    const list = await repo.list();
     assert.equal(list.length, 2);
-    assert.equal(list[0], s2.id);
-    assert.equal(list[1], s1.id);
+    assert.equal(list[0]?.id, s2.id);
+    assert.equal(list[1]?.id, s1.id);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
@@ -76,13 +115,13 @@ test("list ignores non-jsonl files and hidden files", async () => {
   try {
     const session = await createPersistedSession(storageDir);
 
-    const sessionsDir = join(storageDir, "sessions");
-    await writeFile(join(sessionsDir, "notes.txt"), "not a session");
-    await writeFile(join(sessionsDir, ".hidden.jsonl"), "{}");
+    const dir = sessionsDir(storageDir);
+    await writeFile(join(dir, "notes.txt"), "not a session");
+    await writeFile(join(dir, ".hidden.jsonl"), "{}");
 
     const list = await repository(storageDir).list();
     assert.equal(list.length, 1);
-    assert.equal(list[0], session.id);
+    assert.equal(list[0]?.id, session.id);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
@@ -93,25 +132,29 @@ test("list filters out invalid session id filenames", async () => {
   try {
     const session = await createPersistedSession(storageDir);
 
-    const sessionsDir = join(storageDir, "sessions");
-    await writeFile(join(sessionsDir, "not-valid$.jsonl"), "{}");
-    await writeFile(join(sessionsDir, "../escape.jsonl"), "{}");
+    const dir = sessionsDir(storageDir);
+    await writeFile(join(dir, "not-valid$.jsonl"), "{}");
+    await writeFile(join(dir, "../escape.jsonl"), "{}");
 
     const list = await repository(storageDir).list();
     assert.equal(list.length, 1);
-    assert.equal(list[0], session.id);
+    assert.equal(list[0]?.id, session.id);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
 });
 
-test("create returns a Session owned by this repository", async () => {
+test("list rejects corrupt JSONL instead of silently omitting it", async () => {
   const storageDir = await tempStorage();
   try {
-    const session = await repository(storageDir).create();
-    assert.ok(session.id.length > 0);
-    assert.deepEqual(session.buildContext().messages, []);
-    assert.deepEqual(await repository(storageDir).list(), []);
+    await createPersistedSession(storageDir);
+    const dir = sessionsDir(storageDir);
+    await writeFile(join(dir, "corrupt.jsonl"), "this is not json");
+
+    await assert.rejects(
+      repository(storageDir).list(),
+      (error: unknown) => error instanceof Error && error.message.includes("invalid"),
+    );
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
