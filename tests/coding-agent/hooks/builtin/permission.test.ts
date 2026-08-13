@@ -3,11 +3,10 @@ import test from "node:test";
 
 import { HookRegistry } from "../../../../src/agent/hooks/registry.js";
 import type {
-  CodingHookContext,
   CodingAgentInteractions,
   ConfirmationRequest,
 } from "../../../../src/coding-agent/index.js";
-import { registerPermissionHook } from "../../../../src/coding-agent/hooks/builtin/permission.js";
+import { createPermissionHooks } from "../../../../src/coding-agent/hooks/permission.js";
 import { classifyBashCommand, hardDeniedBashReason } from "../../../../src/coding-agent/tools/builtin/bash/policy.js";
 
 // ── Step 1: Bash classification tests ──
@@ -52,7 +51,6 @@ class RecordingUI implements CodingAgentInteractions {
   readonly signals: (AbortSignal | undefined)[] = [];
 
   constructor(
-    readonly available: boolean,
     private readonly answer: boolean | Error,
   ) {}
 
@@ -69,10 +67,15 @@ class RecordingUI implements CodingAgentInteractions {
   notify(): void {}
 }
 
-type CodingHookRegistry = HookRegistry<CodingHookContext>;
+interface PermissionContext {
+  readonly cwd: string;
+  readonly interactions: CodingAgentInteractions;
+}
+
+type CodingHookRegistry = HookRegistry<PermissionContext>;
 
 function codingHooks(ui: CodingAgentInteractions): CodingHookRegistry {
-  return new HookRegistry<CodingHookContext>({
+  return new HookRegistry<PermissionContext>({
     cwd: process.cwd(),
     interactions: ui,
   });
@@ -92,9 +95,8 @@ function triggerBash(
 }
 
 test("permission hard-deny never asks UI", async () => {
-  const ui = new RecordingUI(true, true);
-  const hooks = codingHooks(ui);
-  registerPermissionHook(hooks);
+  const ui = new RecordingUI(true);
+  const hooks = createPermissionHooks({ cwd: process.cwd(), interactions: ui });
 
   const result = await triggerBash(hooks, "sudo true");
   assert.equal(result?.block, true);
@@ -103,9 +105,8 @@ test("permission hard-deny never asks UI", async () => {
 });
 
 test("permission asks for rm and accepts explicit approval", async () => {
-  const ui = new RecordingUI(true, true);
-  const hooks = codingHooks(ui);
-  registerPermissionHook(hooks);
+  const ui = new RecordingUI(true);
+  const hooks = createPermissionHooks({ cwd: process.cwd(), interactions: ui });
 
   assert.equal(await triggerBash(hooks, "rm file.txt"), undefined);
   assert.equal(ui.confirmations.length, 1);
@@ -114,24 +115,21 @@ test("permission asks for rm and accepts explicit approval", async () => {
   assert.match(ui.confirmations[0]?.message ?? "", /rm file\.txt/);
 });
 
-test("permission fails closed without UI, on decline, and on UI error", async () => {
+test("permission fails closed on decline and UI error", async () => {
   const cases = [
-    new RecordingUI(false, true),
-    new RecordingUI(true, false),
-    new RecordingUI(true, new Error("ui failed")),
+    new RecordingUI(false),
+    new RecordingUI(new Error("ui failed")),
   ];
   for (const ui of cases) {
-    const hooks = codingHooks(ui);
-    registerPermissionHook(hooks);
+    const hooks = createPermissionHooks({ cwd: process.cwd(), interactions: ui });
     const result = await triggerBash(hooks, "rm file.txt");
     assert.equal(result?.block, true);
   }
 });
 
 test("permission ignores non-bash tools and safe Bash commands", async () => {
-  const ui = new RecordingUI(true, false);
-  const hooks = codingHooks(ui);
-  registerPermissionHook(hooks);
+  const ui = new RecordingUI(false);
+  const hooks = createPermissionHooks({ cwd: process.cwd(), interactions: ui });
   assert.equal(await hooks.trigger({
     type: "tool_call",
     toolCallId: "c1",
@@ -143,9 +141,8 @@ test("permission ignores non-bash tools and safe Bash commands", async () => {
 });
 
 test("permission forwards the run signal to UI", async () => {
-  const ui = new RecordingUI(true, true);
-  const hooks = codingHooks(ui);
-  registerPermissionHook(hooks);
+  const ui = new RecordingUI(true);
+  const hooks = createPermissionHooks({ cwd: process.cwd(), interactions: ui });
   const controller = new AbortController();
 
   await triggerBash(hooks, "rm file.txt", controller.signal);

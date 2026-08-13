@@ -1,5 +1,4 @@
 export { createCodingAgent } from "./factory.js";
-export { createDefaultCodingHookRegistry } from "./hooks/builtin/factory.js";
 export {
   CODING_SYSTEM_PROMPT,
 } from "./coding-system-prompt.js";
@@ -7,7 +6,7 @@ export { createDefaultToolDefinitions } from "./tools/builtin/factory.js";
 export { toAgentTool } from "./tools/wrapper.js";
 export {
   NO_INTERACTIONS,
-} from "./ui/interactions/unavailable.js";
+} from "./ui/interactions.js";
 export {
   CodingToolPresentationRegistry,
 } from "./ui/presentation/registry.js";
@@ -16,12 +15,11 @@ export type {
   CodingAgentRuntime,
   CreateCodingAgentConfig,
 } from "./types.js";
-export type { CodingHookContext } from "./hooks/types.js";
 export type {
   CodingAgentInteractions,
   ConfirmationRequest,
   Notification,
-} from "./ui/interactions/types.js";
+} from "./ui/interactions.js";
 export type {
   CodingToolPresentation,
   ToolPresentationCall,

@@ -1,19 +1,23 @@
-import type { BeforeToolCall, BeforeToolCallResult } from "../../../agent/hooks/types.js";
-import { classifyBashCommand } from "../../tools/builtin/bash/policy.js";
-import type { CodingAgentInteractions } from "../../ui/interactions/types.js";
-import type { CodingHookContext } from "../types.js";
-import type { CodingHookRegistry } from "../types.js";
+import { HookRegistry } from "../../agent/hooks/registry.js";
+import type {
+  BeforeToolCall,
+  BeforeToolCallResult,
+} from "../../agent/hooks/types.js";
+import { classifyBashCommand } from "../tools/builtin/bash/policy.js";
+import type { CodingAgentInteractions } from "../ui/interactions.js";
 
-/**
- * Register a tool_call handler that gates Bash commands through the shared
- * allow/ask/deny policy. Non-bash tools pass through unchanged.
- */
-export function registerPermissionHook(
-  registry: CodingHookRegistry,
-): void {
-  registry.register("tool_call", async (
+interface PermissionContext {
+  readonly cwd: string;
+  readonly interactions: CodingAgentInteractions;
+}
+
+export function createPermissionHooks(
+  context: PermissionContext,
+): HookRegistry<PermissionContext> {
+  const hooks = new HookRegistry(context);
+  hooks.register("tool_call", async (
     call: BeforeToolCall,
-    context: CodingHookContext,
+    current: PermissionContext,
     signal?: AbortSignal,
   ): Promise<BeforeToolCallResult | undefined> => {
     if (call.toolName !== "bash") return undefined;
@@ -21,20 +25,13 @@ export function registerPermissionHook(
     if (typeof command !== "string") return undefined;
 
     const decision = classifyBashCommand(command);
-
     if (decision.decision === "allow") return undefined;
-
     if (decision.decision === "deny") {
       return { block: true, reason: decision.reason };
     }
 
-    // decision === "ask"
-    const interactions: CodingAgentInteractions = context.interactions;
-    if (!interactions.available) {
-      return { block: true, reason: `${decision.reason}; no confirmation UI available` };
-    }
     try {
-      const allowed = await interactions.confirm({
+      const allowed = await current.interactions.confirm({
         source: "permission",
         title: "Allow Bash command?",
         message: `${decision.reason}\nTool: bash(${JSON.stringify(call.input)})`,
@@ -47,4 +44,5 @@ export function registerPermissionHook(
       return { block: true, reason: `permission confirmation failed: ${message}` };
     }
   });
+  return hooks;
 }

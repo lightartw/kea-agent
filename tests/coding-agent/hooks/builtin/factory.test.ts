@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createDefaultCodingHookRegistry } from "../../../../src/coding-agent/hooks/builtin/factory.js";
+import { createPermissionHooks } from "../../../../src/coding-agent/hooks/permission.js";
 import type { CodingAgentInteractions } from "../../../../src/coding-agent/index.js";
 
 class RecordingInteractions implements CodingAgentInteractions {
-  readonly available = true;
   readonly confirmations: string[] = [];
   readonly notifications: string[] = [];
 
@@ -21,7 +20,7 @@ class RecordingInteractions implements CodingAgentInteractions {
 
 test("default registry registers only the permission Hook", async () => {
   const interactions = new RecordingInteractions();
-  const hooks = createDefaultCodingHookRegistry({
+  const hooks = createPermissionHooks({
     cwd: process.cwd(),
     interactions,
   });
@@ -47,7 +46,7 @@ test("default registry registers only the permission Hook", async () => {
 
 test("default registry produces no passive notifications", async () => {
   const interactions = new RecordingInteractions();
-  const hooks = createDefaultCodingHookRegistry({
+  const hooks = createPermissionHooks({
     cwd: process.cwd(),
     interactions,
   });

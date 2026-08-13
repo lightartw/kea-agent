@@ -127,7 +127,6 @@ function recordingInteractions(): {
   return {
     notifications,
     interactions: {
-      available: true,
       async confirm() { return true; },
       notify(notification) { notifications.push(notification.source); },
     },
@@ -189,12 +188,11 @@ test("factory defaults to fail-closed interactions for ask commands", async () =
   await runtime.harness.prompt("remove file");
   const toolMessage = runtime.harness.messages.find((message) => message.role === "tool");
   assert.equal(toolMessage?.role, "tool");
-  assert.match(toolMessage?.content ?? "", /no confirmation UI available/);
+  assert.match(toolMessage?.content ?? "", /permission denied by user/);
 });
 
 function denyingInteractions(confirmations: string[]): CodingAgentInteractions {
   return {
-    available: true,
     async confirm(request) {
       confirmations.push(request.source);
       return false;

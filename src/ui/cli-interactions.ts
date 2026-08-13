@@ -14,7 +14,6 @@ interface CliInteractionsOptions {
 
 /** Concrete input adapter that implements CodingAgentInteractions. */
 export class CliInteractions implements CodingAgentInteractions {
-  readonly available = true;
   private readonly readline: Interface;
   private readonly inputStream: NodeJS.ReadStream;
   private readonly logFn: (text: string) => void;
