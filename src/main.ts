@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 
 import { config as loadDotenv } from "dotenv";
 
-import { CliFrontend } from "./cli/frontend.js";
+import { CliFrontend } from "./ui/frontend.js";
 import { createHarness } from "./coding-agent/factory.js";
 import { Session } from "./agent/harness/session/session.js";
 import { createStreamFn } from "./ai/factory.js";

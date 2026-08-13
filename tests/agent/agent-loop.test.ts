@@ -588,10 +588,10 @@ test("tool_call block false continues and block true creates an error result", a
   };
   const hooks = emptyHooks();
   const calls: string[] = [];
-  hooks.registerListener((event) => {
-    if (event.type === "tool_call") calls.push("observed");
+  hooks.register("tool_call", () => {
+    calls.push("observed");
+    return { block: false, reason: "ignored" };
   });
-  hooks.register("tool_call", () => ({ block: false, reason: "ignored" }));
   hooks.register("tool_call", () => ({ block: true, reason: "denied" }));
 
   await collect(runAgentLoop(
@@ -742,9 +742,11 @@ test("Agent run signal reaches every Hook trigger", async () => {
   };
   const hooks = emptyHooks();
   const seen: Array<{ type: string; signal: AbortSignal | undefined }> = [];
-  hooks.registerListener((event, _context, signal) => {
-    seen.push({ type: event.type, signal });
-  });
+  for (const type of ["user_prompt", "context", "tool_call", "tool_result", "stop"] as const) {
+    hooks.register(type, (_event, _context, signal) => {
+      seen.push({ type, signal });
+    });
+  }
   const controller = new AbortController();
 
   await collect(runAgentLoop(

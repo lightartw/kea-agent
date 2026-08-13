@@ -92,12 +92,6 @@ export type HookHandler<TCall, TContext> = (
   | void
   | Promise<ResultOf<TCall> | void>;
 
-export type HookListener<TCall, TContext> = (
-  call: TCall,
-  context: TContext,
-  signal?: AbortSignal,
-) => void | Promise<void>;
-
 export type Cleanup = () => void | Promise<void>;
 
 export type Unregister = () => void;

@@ -10,7 +10,6 @@ import type {
   BeforeUserPromptResult,
   Cleanup,
   HookHandler,
-  HookListener,
   ResultOf,
   TransformContextCall,
   TransformContextResult,
@@ -32,7 +31,6 @@ export class HookRegistry<TContext> {
     string,
     Set<HookHandler<AgentHookCall, TContext>>
   >();
-  private readonly listeners = new Set<HookListener<AgentHookCall, TContext>>();
   private readonly cleanups: Cleanup[] = [];
   private disposed = false;
 
@@ -69,31 +67,13 @@ export class HookRegistry<TContext> {
     };
   }
 
-  registerListener(
-    listener: HookListener<AgentHookCall, TContext>,
-  ): Unregister {
-    this.assertActive();
-    this.listeners.add(listener);
-    let active = true;
-    return () => {
-      if (!active) return;
-      active = false;
-      this.listeners.delete(listener);
-    };
-  }
-
   async trigger<T extends AgentHookCall>(
     call: T,
     signal?: AbortSignal,
   ): Promise<ResultOf<T> | undefined> {
     this.assertActive();
     const context = this._context;
-    const listeners = [...this.listeners];
     const handlers = [...(this.handlers.get(call.type) ?? [])];
-
-    for (const listener of listeners) {
-      await listener(call, context, signal);
-    }
 
     switch (call.type) {
       case "user_prompt":
@@ -170,7 +150,6 @@ export class HookRegistry<TContext> {
   private async clearRegistrations(): Promise<void> {
     const cleanups = [...this.cleanups].reverse();
     this.handlers.clear();
-    this.listeners.clear();
     this.cleanups.length = 0;
     const errors: unknown[] = [];
     for (const cleanup of cleanups) {

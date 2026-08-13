@@ -2,11 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HookRegistry } from "../../../src/agent/hooks/registry.js";
-import type {
-  AgentHookCall,
-  HookListener,
-  Unregister,
-} from "../../../src/agent/hooks/types.js";
+import type { AgentHookCall, Unregister } from "../../../src/agent/hooks/types.js";
 
 type TestContext = { label: string };
 
@@ -16,7 +12,7 @@ function registry(
   return new HookRegistry<TestContext>(context);
 }
 
-// ── Step 1: Typed event-combination tests ──
+// ── Handler combination tests ──
 
 test("user_prompt ignores block false and exits on block true", async () => {
   const hooks = registry();
@@ -114,196 +110,6 @@ test("stop uses the first continueWith result", async () => {
   );
 });
 
-// ── Step 2: Listener, snapshot, signal, and error tests ──
-
-test("listeners run before handlers and cannot control the result", async () => {
-  const hooks = registry();
-  const calls: string[] = [];
-  const unsafeObserver = ((
-    _event: AgentHookCall,
-    context: TestContext,
-    signal?: AbortSignal,
-  ) => {
-    calls.push(`listener:${context.label}:${String(signal?.aborted)}`);
-    return { block: true };
-  }) as unknown as HookListener<AgentHookCall, TestContext>;
-  hooks.registerListener(unsafeObserver);
-  hooks.register("tool_call", () => {
-    calls.push("handler");
-  });
-  const controller = new AbortController();
-
-  assert.equal(await hooks.trigger({
-    type: "tool_call",
-    toolCallId: "c1",
-    toolName: "bash",
-    input: {},
-  }, controller.signal), undefined);
-  assert.deepEqual(calls, ["listener:initial:false", "handler"]);
-});
-
-test("trigger snapshots listeners handlers and context", async () => {
-  const hooks = registry();
-  const calls: string[] = [];
-  let removeSecond: Unregister = () => undefined;
-  hooks.registerListener((_event, context) => {
-    calls.push(`listener:${context.label}`);
-    hooks.setContext({ label: "next" });
-    removeSecond();
-    hooks.register("user_prompt", () => {
-      calls.push("late");
-    });
-  });
-  hooks.register("user_prompt", (_event, context) => {
-    calls.push(`first:${context.label}`);
-  });
-  removeSecond = hooks.register("user_prompt", (_event, context) => {
-    calls.push(`second:${context.label}`);
-  });
-
-  await hooks.trigger({ type: "user_prompt", prompt: "one" });
-  await hooks.trigger({ type: "user_prompt", prompt: "two" });
-  assert.deepEqual(calls, [
-    "listener:initial", "first:initial", "second:initial",
-    "listener:next", "first:next", "late",
-  ]);
-});
-
-test("handler and listener errors propagate by identity", async () => {
-  const handlerFailure = new Error("handler failed");
-  const handlerHooks = registry();
-  handlerHooks.register("stop", () => { throw handlerFailure; });
-  await assert.rejects(
-    handlerHooks.trigger({ type: "stop", messages: [] }),
-    (error) => error === handlerFailure,
-  );
-
-  const listenerFailure = new Error("listener failed");
-  const listenerHooks = registry();
-  listenerHooks.registerListener(() => { throw listenerFailure; });
-  await assert.rejects(
-    listenerHooks.trigger({ type: "stop", messages: [] }),
-    (error) => error === listenerFailure,
-  );
-});
-
-test("handler and listener receive the exact AbortSignal object", async () => {
-  const hooks = registry();
-  const controller = new AbortController();
-  const handlerSignal: AbortSignal[] = [];
-  const listenerSignal: AbortSignal[] = [];
-
-  hooks.registerListener((_event, _context, signal) => {
-    listenerSignal.push(signal!);
-  });
-  hooks.register("user_prompt", (_event, _context, signal) => {
-    handlerSignal.push(signal!);
-  });
-
-  await hooks.trigger(
-    { type: "user_prompt", prompt: "test" },
-    controller.signal,
-  );
-  assert.equal(handlerSignal[0], controller.signal);
-  assert.equal(listenerSignal[0], controller.signal);
-});
-
-// ── Step 3: Unregister, cleanup, clear, and dispose tests ──
-
-test("clear removes registrations, runs every cleanup in reverse, and is reusable", async () => {
-  const hooks = registry();
-  const calls: string[] = [];
-  const unregister = hooks.register("user_prompt", () => {
-    calls.push("handler");
-  });
-  unregister();
-  unregister();
-  hooks.addCleanup(() => { calls.push("cleanup-1"); });
-  hooks.addCleanup(async () => { calls.push("cleanup-2"); });
-
-  await hooks.clear();
-  await hooks.trigger({ type: "user_prompt", prompt: "ignored" });
-  assert.deepEqual(calls, ["cleanup-2", "cleanup-1"]);
-
-  hooks.register("user_prompt", () => { calls.push("reused"); });
-  await hooks.trigger({ type: "user_prompt", prompt: "again" });
-  assert.deepEqual(calls, ["cleanup-2", "cleanup-1", "reused"]);
-});
-
-test("handler listener and cleanup unregister functions are idempotent", async () => {
-  const hooks = registry();
-  const calls: string[] = [];
-  const removeHandler = hooks.register("user_prompt", () => {
-    calls.push("handler");
-  });
-  const removeObserver = hooks.registerListener(() => {
-    calls.push("listener");
-  });
-  const removeCleanup = hooks.addCleanup(() => {
-    calls.push("cleanup");
-  });
-
-  removeHandler();
-  removeHandler();
-  removeObserver();
-  removeObserver();
-  removeCleanup();
-  removeCleanup();
-  await hooks.trigger({ type: "user_prompt", prompt: "ignored" });
-  await hooks.clear();
-  assert.deepEqual(calls, []);
-});
-
-test("clear runs all failing cleanups and aggregates multiple failures", async () => {
-  const hooks = registry();
-  const first = new Error("first");
-  const second = new Error("second");
-  const calls: string[] = [];
-  hooks.addCleanup(() => { calls.push("first"); throw first; });
-  hooks.addCleanup(() => { calls.push("second"); throw second; });
-
-  await assert.rejects(
-    hooks.clear(),
-    (error: unknown) =>
-      error instanceof AggregateError &&
-      error.errors[0] === second &&
-      error.errors[1] === first,
-  );
-  assert.deepEqual(calls, ["second", "first"]);
-});
-
-test("dispose is idempotent and permanently rejects operations", async () => {
-  const hooks = registry();
-  await hooks.dispose();
-  await hooks.dispose();
-
-  assert.throws(() => hooks.register("stop", () => undefined), /disposed/);
-  assert.throws(() => hooks.registerListener(() => undefined), /disposed/);
-  assert.throws(() => hooks.addCleanup(() => undefined), /disposed/);
-  assert.throws(() => hooks.setContext({ label: "next" }), /disposed/);
-  await assert.rejects(
-    hooks.trigger({ type: "stop", messages: [] }),
-    /disposed/,
-  );
-});
-
-test("clear rethrows one cleanup error by identity", async () => {
-  const hooks = registry();
-  const failure = new Error("cleanup failed");
-  hooks.addCleanup(() => { throw failure; });
-  await assert.rejects(hooks.clear(), (error) => error === failure);
-});
-
-test("unknown event types return undefined (type system guards at compile time)", async () => {
-  const hooks = registry();
-  const result = await hooks.trigger(
-    { type: "custom" } as unknown as AgentHookCall,
-  );
-  assert.equal(result, undefined);
-});
-
-// ── Step 4: AfterToolCall patch invariants ──
-
 test("tool_result carries details through accumulated patches", async () => {
   const hooks = registry();
   hooks.register("tool_result", () => ({
@@ -345,3 +151,152 @@ test("tool_result rejects a details patch without string content", async () => {
     /details.*content/,
   );
 });
+
+// ── Snapshot, signal, and error tests ──
+
+test("trigger snapshots handlers and context", async () => {
+  const hooks = registry();
+  const calls: string[] = [];
+  let removeSecond: Unregister = () => undefined;
+  hooks.register("user_prompt", (_event, context) => {
+    calls.push(`first:${context.label}`);
+    hooks.setContext({ label: "next" });
+    removeSecond();
+    hooks.register("user_prompt", () => {
+      calls.push("late");
+    });
+  });
+  removeSecond = hooks.register("user_prompt", (_event, context) => {
+    calls.push(`second:${context.label}`);
+  });
+
+  await hooks.trigger({ type: "user_prompt", prompt: "one" });
+  await hooks.trigger({ type: "user_prompt", prompt: "two" });
+  assert.deepEqual(calls, [
+    "first:initial", "second:initial",
+    "first:next", "late",
+  ]);
+});
+
+test("handler errors propagate by identity", async () => {
+  const handlerFailure = new Error("handler failed");
+  const handlerHooks = registry();
+  handlerHooks.register("stop", () => { throw handlerFailure; });
+  await assert.rejects(
+    handlerHooks.trigger({ type: "stop", messages: [] }),
+    (error) => error === handlerFailure,
+  );
+});
+
+test("handler receives the exact AbortSignal object", async () => {
+  const hooks = registry();
+  const controller = new AbortController();
+  const handlerSignal: AbortSignal[] = [];
+
+  hooks.register("user_prompt", (_event, _context, signal) => {
+    handlerSignal.push(signal!);
+  });
+
+  await hooks.trigger(
+    { type: "user_prompt", prompt: "test" },
+    controller.signal,
+  );
+  assert.equal(handlerSignal[0], controller.signal);
+});
+
+// ── Unregister, cleanup, clear, and dispose tests ──
+
+test("clear removes registrations, runs every cleanup in reverse, and is reusable", async () => {
+  const hooks = registry();
+  const calls: string[] = [];
+  const unregister = hooks.register("user_prompt", () => {
+    calls.push("handler");
+  });
+  unregister();
+  unregister();
+  hooks.addCleanup(() => { calls.push("cleanup-1"); });
+  hooks.addCleanup(async () => { calls.push("cleanup-2"); });
+
+  await hooks.clear();
+  await hooks.trigger({ type: "user_prompt", prompt: "ignored" });
+  assert.deepEqual(calls, ["cleanup-2", "cleanup-1"]);
+
+  hooks.register("user_prompt", () => { calls.push("reused"); });
+  await hooks.trigger({ type: "user_prompt", prompt: "again" });
+  assert.deepEqual(calls, ["cleanup-2", "cleanup-1", "reused"]);
+});
+
+test("handler and cleanup unregister functions are idempotent", async () => {
+  const hooks = registry();
+  const calls: string[] = [];
+  const removeHandler = hooks.register("user_prompt", () => {
+    calls.push("handler");
+  });
+  const removeCleanup = hooks.addCleanup(() => {
+    calls.push("cleanup");
+  });
+
+  removeHandler();
+  removeHandler();
+  removeCleanup();
+  removeCleanup();
+  await hooks.trigger({ type: "user_prompt", prompt: "ignored" });
+  await hooks.clear();
+  assert.deepEqual(calls, []);
+});
+
+test("clear runs all failing cleanups and aggregates multiple failures", async () => {
+  const hooks = registry();
+  const first = new Error("first");
+  const second = new Error("second");
+  const calls: string[] = [];
+  hooks.addCleanup(() => { calls.push("first"); throw first; });
+  hooks.addCleanup(() => { calls.push("second"); throw second; });
+
+  await assert.rejects(
+    hooks.clear(),
+    (error: unknown) =>
+      error instanceof AggregateError &&
+      error.errors[0] === second &&
+      error.errors[1] === first,
+  );
+  assert.deepEqual(calls, ["second", "first"]);
+});
+
+test("dispose is idempotent and permanently rejects operations", async () => {
+  const hooks = registry();
+  await hooks.dispose();
+  await hooks.dispose();
+
+  assert.throws(() => hooks.register("stop", () => undefined), /disposed/);
+  assert.throws(() => hooks.addCleanup(() => undefined), /disposed/);
+  assert.throws(() => hooks.setContext({ label: "next" }), /disposed/);
+  await assert.rejects(
+    hooks.trigger({ type: "stop", messages: [] }),
+    /disposed/,
+  );
+});
+
+test("clear rethrows one cleanup error by identity", async () => {
+  const hooks = registry();
+  const failure = new Error("cleanup failed");
+  hooks.addCleanup(() => { throw failure; });
+  await assert.rejects(hooks.clear(), (error) => error === failure);
+});
+
+test("unknown event types return undefined (type system guards at compile time)", async () => {
+  const hooks = registry();
+  const result = await hooks.trigger(
+    { type: "custom" } as unknown as AgentHookCall,
+  );
+  assert.equal(result, undefined);
+});
+
+// ── Compile-time assertion: the passive listener API is absent ──
+
+type PassiveListenerName = `register${"Listener"}`;
+type PassiveListenerIsAbsent = PassiveListenerName extends keyof HookRegistry<TestContext>
+  ? false
+  : true;
+const passiveListenerIsAbsent: PassiveListenerIsAbsent = true;
+void passiveListenerIsAbsent;

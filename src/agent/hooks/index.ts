@@ -12,7 +12,6 @@ export type {
   BeforeUserPromptResult,
   Cleanup,
   HookHandler,
-  HookListener,
   ResultOf,
   TransformContextCall,
   TransformContextResult,

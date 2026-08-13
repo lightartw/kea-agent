@@ -6,7 +6,8 @@ import type {
   HookConfirmation,
   HookNotification,
 } from "../coding-agent/types.js";
-import { renderAgentEvent } from "./render.js";
+import { CliHarnessRenderer } from "./harness-renderer.js";
+import { createDefaultToolRenderers } from "./tool-renderers.js";
 
 const CYAN = "\x1b[36m";
 const RESET = "\x1b[0m";
@@ -114,12 +115,15 @@ export class CliFrontend implements CodingHookUI {
 
   /** Keep accepting user turns while AgentHarness owns conversation state. */
   async run(harness: AgentHarness): Promise<void> {
+    const tools = createDefaultToolRenderers(
+      (message) => this.logFn(`[ui error] ${message}`),
+    );
+    const renderer = new CliHarnessRenderer(
+      { write: this.writeFn, log: this.logFn },
+      tools,
+    );
     const unsubscribe = harness.subscribe((event) => {
-      renderAgentEvent(
-        event,
-        (text) => this.writeFn(text),
-        (text) => this.logFn(text),
-      );
+      renderer.render(event);
     });
 
     this.logFn("Agent Loop");

@@ -143,8 +143,7 @@ test("factory assembles the default Hook registry with supplied UI", async () =>
   });
 
   await harness.prompt("hello");
-  assert.equal(notifications[0]?.source, "context_inject");
-  assert.equal(notifications.at(-1)?.source, "summary");
+  assert.deepEqual(notifications, []);
 });
 
 test("factory defaults to fail-closed NO_UI for ask commands", async () => {
@@ -160,33 +159,37 @@ test("factory defaults to fail-closed NO_UI for ask commands", async () => {
   assert.match(toolMessage?.content ?? "", /no confirmation UI available/);
 });
 
-test("factory creates independent Hook context for each Harness", async () => {
-  const {
-    ui: firstUi,
-    notifications: firstNotifications,
-  } = recordingUi();
-  const {
-    ui: secondUi,
-    notifications: secondNotifications,
-  } = recordingUi();
+test("factory creates an independent permission Hook for each Harness", async () => {
+  const firstConfirmations: string[] = [];
+  const secondConfirmations: string[] = [];
+  function denyingUi(confirmations: string[]): CodingHookUI {
+    return {
+      available: true,
+      async confirm(confirmation) {
+        confirmations.push(confirmation.source);
+        return false;
+      },
+      notify() {},
+    };
+  }
   const first = await createHarness({
     project: { workDir: "C:/first", storageDir: "unused" },
-    streamFn: oneTurnStream,
+    streamFn: twoTurnBashStream("rm file.txt"),
     model,
     session: Session.inMemory(),
-    ui: firstUi,
+    ui: denyingUi(firstConfirmations),
   });
   const second = await createHarness({
     project: { workDir: "C:/second", storageDir: "unused" },
-    streamFn: oneTurnStream,
+    streamFn: twoTurnBashStream("rm file.txt"),
     model,
     session: Session.inMemory(),
-    ui: secondUi,
+    ui: denyingUi(secondConfirmations),
   });
   await first.prompt("one");
   await second.prompt("two");
-  assert.match(firstNotifications[0]?.message ?? "", /C:\/first/);
-  assert.match(secondNotifications[0]?.message ?? "", /C:\/second/);
+  assert.deepEqual(firstConfirmations, ["permission"]);
+  assert.deepEqual(secondConfirmations, ["permission"]);
 });
 
 test("default Harness system prompt contains the coding agent opening text", async () => {
