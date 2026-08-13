@@ -5,6 +5,8 @@ import { CliHarnessRenderer } from "../../src/ui/harness-renderer.js";
 import { CliToolRendererRegistry } from "../../src/ui/tool-renderers.js";
 import type { AgentToolCall } from "../../src/agent/tools/types.js";
 
+const context = { lane: "main", runId: "run-1" } as const;
+
 function rendererWith(tools: CliToolRendererRegistry = new CliToolRendererRegistry(() => undefined)) {
   const writes: string[] = [];
   const logs: string[] = [];
@@ -17,14 +19,23 @@ function rendererWith(tools: CliToolRendererRegistry = new CliToolRendererRegist
 
 test("ordinary streaming and lifecycle events preserve line CLI behavior", () => {
   const { renderer, writes, logs } = rendererWith();
-  renderer.render({ type: "text_delta", text: "hello" });
-  renderer.render({ type: "thinking_delta", thinking: "hmm" });
-  renderer.render({ type: "toolcall_start", id: "c1", name: "bash" });
-  renderer.render({ type: "toolcall_delta", id: "c1", argumentsDelta: "{}" });
-  renderer.render({ type: "agent_start" });
+  renderer.render({ type: "text_delta", text: "hello", ...context });
+  renderer.render({ type: "thinking_delta", thinking: "hmm", ...context });
+  renderer.render({ type: "toolcall_start", id: "c1", name: "bash", ...context });
+  renderer.render({ type: "toolcall_delta", id: "c1", argumentsDelta: "{}", ...context });
+  renderer.render({ type: "agent_start", ...context });
 
   assert.deepEqual(writes, ["hello", "\x1b[90mhmm\x1b[0m", "{}"]);
   assert.deepEqual(logs, ["\n\x1b[33m[tool] bash\x1b[0m"]);
+});
+
+test("run lifecycle events are no-output", () => {
+  const { renderer, writes, logs } = rendererWith();
+  renderer.render({ type: "run_start", ...context });
+  renderer.render({ type: "run_end", ...context, reason: "completed" });
+
+  assert.deepEqual(writes, []);
+  assert.deepEqual(logs, []);
 });
 
 test("tool events are delegated to the Tool Registry", () => {
@@ -39,13 +50,14 @@ test("tool events are delegated to the Tool Registry", () => {
     type: "toolCall", id: "c1", name: "todo_write", arguments: {},
   };
 
-  renderer.render({ type: "tool_start", call });
-  renderer.render({ type: "tool_end", call, result: { content: "ok", isError: false } });
+  renderer.render({ type: "tool_start", call, ...context });
+  renderer.render({ type: "tool_end", call, result: { content: "ok", isError: false }, ...context });
   renderer.render({
     type: "tool_rejected",
     call,
     result: { content: "no", isError: true },
     reason: "blocked",
+    ...context,
   });
 
   assert.deepEqual(logs, [
@@ -64,6 +76,7 @@ test("tool_end above 100000 characters emits the large-output warning", () => {
     type: "tool_end",
     call,
     result: { content: "x".repeat(100_001), isError: false },
+    ...context,
   });
 
   assert.equal(logs.length, 2);
@@ -79,6 +92,7 @@ test("agent_end emits the final tool-count summary", () => {
       { role: "tool", toolCallId: "c1", name: "bash", content: "one", isError: false },
       { role: "tool", toolCallId: "c2", name: "bash", content: "two", isError: true },
     ],
+    ...context,
   });
 
   assert.deepEqual(logs, ["session used 2 tool calls"]);
@@ -97,7 +111,7 @@ test("rendering failures never throw back through the renderer", () => {
     type: "toolCall", id: "c1", name: "todo_write", arguments: {},
   };
 
-  renderer.render({ type: "tool_start", call });
+  renderer.render({ type: "tool_start", call, ...context });
 
   assert.match(logs.join("\n"), /\[ui error\] onError: crash/);
 });

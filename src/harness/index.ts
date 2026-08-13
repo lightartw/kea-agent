@@ -7,13 +7,13 @@ export { Session } from "./session/session.js";
 export { SessionError } from "./session/types.js";
 export { SessionManager } from "./session/manager.js";
 
+export * from "./events/index.js";
+
 export type {
   HarnessConfig,
-  HarnessListener,
   HarnessProject,
   SystemPromptBuilder,
   SystemPromptContext,
-  Unsubscribe,
 } from "./types.js";
 export type {
   SessionContext,

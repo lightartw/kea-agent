@@ -1,4 +1,4 @@
-import type { AgentEvent } from "../agent/types.js";
+import type { HarnessEvent } from "../harness/events/types.js";
 import type { CliToolRendererRegistry } from "./tool-renderers.js";
 
 const LARGE_OUTPUT_THRESHOLD = 100_000;
@@ -14,7 +14,7 @@ export class CliHarnessRenderer {
     private readonly tools: CliToolRendererRegistry,
   ) {}
 
-  render(event: AgentEvent): void {
+  render(event: HarnessEvent): void {
     try {
       this.renderEvent(event);
     } catch (error) {
@@ -22,7 +22,7 @@ export class CliHarnessRenderer {
     }
   }
 
-  private renderEvent(event: AgentEvent): void {
+  private renderEvent(event: HarnessEvent): void {
     switch (event.type) {
       case "text_delta":
         this.target.write(event.text);
@@ -59,6 +59,8 @@ export class CliHarnessRenderer {
       case "turn_start":
       case "turn_end":
       case "agent_start":
+      case "run_start":
+      case "run_end":
         break;
     }
   }

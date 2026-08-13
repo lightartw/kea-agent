@@ -54,9 +54,9 @@ function createHarness(options: {
 
 // ── Step 1: Basic prompt/subscribe ──
 
-test("prompt resolves after publishing Agent events", async () => {
+test("prompt resolves after publishing Harness events", async () => {
   const harness = createHarness();
-  const events: AgentEvent["type"][] = [];
+  const events: string[] = [];
   harness.subscribe((event) => {
     events.push(event.type);
   });
@@ -64,11 +64,13 @@ test("prompt resolves after publishing Agent events", async () => {
   await harness.prompt("hello");
 
   assert.deepEqual(events, [
+    "run_start",
     "agent_start",
     "turn_start",
     "text_delta",
     "turn_end",
     "agent_end",
+    "run_end",
   ]);
   assert.equal(harness.isRunning, false);
   assert.deepEqual(harness.messages.map((message) => message.role), [
@@ -143,21 +145,48 @@ test("subscription changes take effect on the next event", async () => {
   await harness.prompt("hello");
 
   assert.deepEqual(calls.slice(0, 3), [
+    "first:run_start",
+    "second:run_start",
     "first:agent_start",
-    "second:agent_start",
-    "first:turn_start",
   ]);
 });
 
-test("subscriber failure rejects prompt and restores idle", async () => {
+test("listener failure is isolated and does not reject prompt", async () => {
   const harness = createHarness();
-  const failure = new Error("listener failed");
+  const calls: string[] = [];
   harness.subscribe((event) => {
-    if (event.type === "turn_start") throw failure;
+    if (event.type !== "run_start") return;
+    calls.push("first");
+    throw new Error("listener failed");
+  });
+  harness.subscribe((event) => {
+    if (event.type === "run_end") calls.push("second");
   });
 
-  await assert.rejects(harness.prompt("hello"), (error) => error === failure);
+  await harness.prompt("hello");
   assert.equal(harness.isRunning, false);
+  assert.deepEqual(calls, ["first", "second"]);
+});
+
+async function captureRun(): Promise<Array<{ type: string; lane: string; runId: string }>> {
+  const harness = createHarness();
+  const events: Array<{ type: string; lane: string; runId: string }> = [];
+  harness.subscribe((event) => {
+    events.push({ type: event.type, lane: event.lane, runId: event.runId });
+  });
+  await harness.prompt("hello");
+  return events;
+}
+
+test("run identity wraps every event and differs across runs", async () => {
+  const first = await captureRun();
+  const second = await captureRun();
+
+  assert.equal(first[0]?.type, "run_start");
+  assert.equal(first.at(-1)?.type, "run_end");
+  assert.ok(first.every((event) => event.lane === "main"));
+  assert.equal(new Set(first.map((event) => event.runId)).size, 1);
+  assert.notEqual(first[0]?.runId, second[0]?.runId);
 });
 
 // ── Step 3: Active-run, abort, model, tool, prompt-builder ──

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { runAgentLoop } from "../agent/agent-loop.js";
 import type { AgentLoopConfig, AgentEvent, AgentMessage } from "../agent/types.js";
 import type { AgentTool } from "../agent/tools/types.js";
@@ -6,11 +8,19 @@ import { HookRegistry } from "../agent/hooks/registry.js";
 import type { AgentHookTrigger } from "../agent/hooks/types.js";
 import type { Message, ModelConfig, StreamFn } from "../ai/types.js";
 import { Session } from "./session/session.js";
+import { HarnessEventBus } from "./events/event-bus.js";
+import {
+  liftAgentEvent,
+  MAIN_LANE,
+  type HarnessEventContext,
+  type HarnessListener,
+  type HarnessListenerErrorHandler,
+  type HarnessRunEndEvent,
+  type Unsubscribe,
+} from "./events/types.js";
 import type {
   HarnessConfig,
-  HarnessListener,
   SystemPromptBuilder,
-  Unsubscribe,
 } from "./types.js";
 
 /** Tracks an in-flight prompt so abort() can cancel it. */
@@ -18,12 +28,16 @@ interface ActiveRun {
   readonly abortController: AbortController;
 }
 
+function errorMessage(failure: unknown): string {
+  return failure instanceof Error ? failure.message : String(failure);
+}
+
 export class AgentHarness {
   private readonly session: Session;
   private readonly toolRegistry: AgentToolRegistry;
   private readonly buildSystemPrompt: SystemPromptBuilder;
   private readonly cwd: string;
-  private readonly listeners = new Set<HarnessListener>();
+  private readonly events: HarnessEventBus;
 
   // Absorbed from Agent
   private _messages: AgentMessage[];
@@ -54,6 +68,7 @@ export class AgentHarness {
     this.persistedMessageCount = context.messages.length;
     this.hooks = config.hooks ??
       new HookRegistry<Record<string, never>>({});
+    this.events = new HarnessEventBus(config.onEventListenerError);
   }
 
   // ── Private helpers ──
@@ -76,12 +91,6 @@ export class AgentHarness {
       const message = this.messages[this.persistedMessageCount]!;
       await this.session.appendMessage(message);
       this.persistedMessageCount++;
-    }
-  }
-
-  private async publish(event: AgentEvent): Promise<void> {
-    for (const listener of [...this.listeners]) {
-      await listener(event);
     }
   }
 
@@ -127,29 +136,46 @@ export class AgentHarness {
     this.running = true;
     this.abortRequested = false;
 
+    const eventContext: HarnessEventContext = { lane: MAIN_LANE, runId: randomUUID() };
+    let started = false;
+    let sawAborted = false;
+    let failure: unknown;
+
     try {
       await this.prepareAgentForRun();
       if (this.abortRequested) return;
 
+      started = true;
+      await this.events.publish({ type: "run_start", ...eventContext });
+
       for await (const event of this.runPrompt(input)) {
         await this.persistNewMessages();
-        await this.publish(event);
+        await this.events.publish(liftAgentEvent(event, eventContext));
       }
+    } catch (error) {
+      failure = error;
     } finally {
       try {
         await this.persistNewMessages();
+        sawAborted = this.abortRequested;
       } finally {
         this.running = false;
         this.abortRequested = false;
       }
     }
+
+    if (started) {
+      const endEvent: HarnessRunEndEvent = failure === undefined
+        ? { type: "run_end", ...eventContext, reason: sawAborted ? "aborted" : "completed" }
+        : { type: "run_end", ...eventContext, reason: "error", errorMessage: errorMessage(failure) };
+      await this.events.publish(endEvent);
+    }
+
+    if (failure !== undefined) throw failure;
   }
 
   subscribe(listener: HarnessListener): Unsubscribe {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
+    return this.events.subscribe(listener);
   }
 
   // ── Control ──
