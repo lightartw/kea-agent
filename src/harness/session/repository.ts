@@ -1,27 +1,25 @@
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { HarnessProject } from "../types.js";
 import { Session, sessionsDir } from "./session.js";
 import { SessionError } from "./types.js";
 
 const SESSION_FILE_RE = /^[A-Za-z0-9_-]+\.jsonl$/;
 
-export class SessionManager {
-  constructor(readonly project: HarnessProject) {}
+export class SessionRepository {
+  constructor(readonly storageDir: string) {}
 
-  /** Open the most recently modified session, or create a new one if none exist. */
-  async continueRecent(): Promise<Session> {
-    const sessions = await this.listSessions();
-    if (sessions.length === 0) {
-      return Session.create(this.project.storageDir);
-    }
-    return Session.open(this.project.storageDir, sessions[0]!);
+  create(): Promise<Session> {
+    return Session.create(this.storageDir);
+  }
+
+  open(sessionId: string): Promise<Session> {
+    return Session.open(this.storageDir, sessionId);
   }
 
   /** List all session IDs, newest first. */
-  async listSessions(): Promise<string[]> {
-    const dir = sessionsDir(this.project.storageDir);
+  async list(): Promise<readonly string[]> {
+    const dir = sessionsDir(this.storageDir);
     let entries: string[];
 
     try {

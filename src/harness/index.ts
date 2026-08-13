@@ -5,7 +5,7 @@ export {
 } from "./system-prompt.js";
 export { Session } from "./session/session.js";
 export { SessionError } from "./session/types.js";
-export { SessionManager } from "./session/manager.js";
+export { SessionRepository } from "./session/repository.js";
 
 export * from "./events/index.js";
 

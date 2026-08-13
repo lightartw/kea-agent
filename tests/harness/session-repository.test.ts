@@ -7,7 +7,7 @@ import test from "node:test";
 
 import type { AgentMessage } from "../../src/agent/types.js";
 import { Session } from "../../src/harness/session/session.js";
-import { SessionManager } from "../../src/harness/session/manager.js";
+import { SessionRepository } from "../../src/harness/session/repository.js";
 
 const user: AgentMessage = { role: "user", content: "hello" };
 const assistant: AgentMessage = {
@@ -20,13 +20,13 @@ const assistant: AgentMessage = {
 };
 
 async function tempStorage(): Promise<string> {
-  const path = join(tmpdir(), `kea-sm-${randomUUID()}`);
+  const path = join(tmpdir(), `kea-sr-${randomUUID()}`);
   await mkdir(path, { recursive: true });
   return path;
 }
 
-function manager(storageDir: string): SessionManager {
-  return new SessionManager({ workDir: process.cwd(), storageDir });
+function repository(storageDir: string): SessionRepository {
+  return new SessionRepository(storageDir);
 }
 
 async function createPersistedSession(storageDir: string): Promise<Session> {
@@ -36,33 +36,33 @@ async function createPersistedSession(storageDir: string): Promise<Session> {
   return session;
 }
 
-test("listSessions returns empty when sessions directory does not exist", async () => {
+test("list returns empty when sessions directory does not exist", async () => {
   const storageDir = await tempStorage();
   try {
-    assert.deepEqual(await manager(storageDir).listSessions(), []);
+    assert.deepEqual(await repository(storageDir).list(), []);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
 });
 
-test("listSessions returns empty when the sessions directory is empty", async () => {
+test("list returns empty when the sessions directory is empty", async () => {
   const storageDir = await tempStorage();
   try {
     await mkdir(join(storageDir, "sessions"), { recursive: true });
-    assert.deepEqual(await manager(storageDir).listSessions(), []);
+    assert.deepEqual(await repository(storageDir).list(), []);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
 });
 
-test("listSessions returns most recent first", async () => {
+test("list returns most recent first", async () => {
   const storageDir = await tempStorage();
   try {
     const s1 = await createPersistedSession(storageDir);
     await new Promise((resolve) => setTimeout(resolve, 50));
     const s2 = await createPersistedSession(storageDir);
 
-    const list = await manager(storageDir).listSessions();
+    const list = await repository(storageDir).list();
     assert.equal(list.length, 2);
     assert.equal(list[0], s2.id);
     assert.equal(list[1], s1.id);
@@ -71,7 +71,7 @@ test("listSessions returns most recent first", async () => {
   }
 });
 
-test("listSessions ignores non-jsonl files and hidden files", async () => {
+test("list ignores non-jsonl files and hidden files", async () => {
   const storageDir = await tempStorage();
   try {
     const session = await createPersistedSession(storageDir);
@@ -80,7 +80,7 @@ test("listSessions ignores non-jsonl files and hidden files", async () => {
     await writeFile(join(sessionsDir, "notes.txt"), "not a session");
     await writeFile(join(sessionsDir, ".hidden.jsonl"), "{}");
 
-    const list = await manager(storageDir).listSessions();
+    const list = await repository(storageDir).list();
     assert.equal(list.length, 1);
     assert.equal(list[0], session.id);
   } finally {
@@ -88,7 +88,7 @@ test("listSessions ignores non-jsonl files and hidden files", async () => {
   }
 });
 
-test("listSessions filters out invalid session id filenames", async () => {
+test("list filters out invalid session id filenames", async () => {
   const storageDir = await tempStorage();
   try {
     const session = await createPersistedSession(storageDir);
@@ -97,7 +97,7 @@ test("listSessions filters out invalid session id filenames", async () => {
     await writeFile(join(sessionsDir, "not-valid$.jsonl"), "{}");
     await writeFile(join(sessionsDir, "../escape.jsonl"), "{}");
 
-    const list = await manager(storageDir).listSessions();
+    const list = await repository(storageDir).list();
     assert.equal(list.length, 1);
     assert.equal(list[0], session.id);
   } finally {
@@ -105,37 +105,28 @@ test("listSessions filters out invalid session id filenames", async () => {
   }
 });
 
-test("continueRecent opens the newest session", async () => {
+test("create returns a Session owned by this repository", async () => {
   const storageDir = await tempStorage();
   try {
-    const s1 = await Session.create(storageDir);
-    await s1.appendMessage({ role: "user", content: "old" });
-    await s1.appendMessage(assistant);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    const s2 = await Session.create(storageDir);
-    await s2.appendMessage({ role: "user", content: "new" });
-    await s2.appendMessage(assistant);
-
-    const latest = await manager(storageDir).continueRecent();
-    assert.equal(latest.id, s2.id);
-    assert.deepEqual(
-      latest.buildContext().messages.map((m) =>
-        m.role === "user" ? (m as { role: "user"; content: string }).content : m.role,
-      ),
-      ["new", "assistant"],
-    );
+    const session = await repository(storageDir).create();
+    assert.ok(session.id.length > 0);
+    assert.deepEqual(session.buildContext().messages, []);
+    assert.deepEqual(await repository(storageDir).list(), []);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
 });
 
-test("continueRecent creates a new session when none exist", async () => {
+test("open restores a persisted Session by id", async () => {
   const storageDir = await tempStorage();
   try {
-    const session = await manager(storageDir).continueRecent();
-    assert.ok(session.id.length > 0);
-    assert.deepEqual(session.buildContext().messages, []);
+    const created = await createPersistedSession(storageDir);
+    const opened = await repository(storageDir).open(created.id);
+    assert.equal(opened.id, created.id);
+    assert.deepEqual(
+      opened.buildContext().messages.map((message) => message.role),
+      ["user", "assistant"],
+    );
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }

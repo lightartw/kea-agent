@@ -13,7 +13,7 @@ import {
   AgentHarness,
   MAIN_LANE,
   Session,
-  SessionManager,
+  SessionRepository,
 } from "../src/harness/index.js";
 
 import {
@@ -63,7 +63,7 @@ void [
   HookRegistry,
   AgentHarness,
   Session,
-  SessionManager,
+  SessionRepository,
   MAIN_LANE,
   createCodingAgent,
   CODING_SYSTEM_PROMPT,
