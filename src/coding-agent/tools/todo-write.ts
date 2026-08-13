@@ -1,12 +1,13 @@
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import { AgentTool } from "../../agent/tools/types.js";
 import {
   formatTodoContent,
+  isTodoDetails,
   type TodoDetails,
   type TodoItem,
 } from "./todo-state.js";
+import type { CodingToolDefinition } from "./definition.js";
 
 export type { TodoDetails, TodoItem } from "./todo-state.js";
 
@@ -27,30 +28,39 @@ const parameters = Type.Object(
   { additionalProperties: false },
 );
 
-export class TodoWriteTool extends AgentTool<typeof parameters, TodoDetails> {
-  constructor() {
-    super(
-      "todo_write",
-      "Create and manage a task list for the current session. " +
-        "Use this to plan your work before starting, track progress, " +
-        "and keep one task in_progress at a time. Send the full list " +
-        "each call — it replaces the previous one.",
-      parameters,
-    );
-  }
-
-  async execute(
-    arguments_: Static<typeof parameters>,
-    _signal: AbortSignal,
-  ): Promise<{ content: string; details: TodoDetails; isError: false }> {
-    const todos: readonly TodoItem[] = arguments_.todos.map((todo) => ({
-      content: todo.content,
-      status: todo.status,
-    }));
-    return {
-      content: formatTodoContent(todos),
-      details: { todos },
-      isError: false,
-    };
-  }
+export function createTodoWriteToolDefinition(): CodingToolDefinition<typeof parameters, TodoDetails> {
+  return {
+    name: "todo_write",
+    description: "Create and manage a task list for the current session. " +
+      "Use this to plan your work before starting, track progress, " +
+      "and keep one task in_progress at a time. Send the full list " +
+      "each call — it replaces the previous one.",
+    parameters,
+    async execute(
+      arguments_: Static<typeof parameters>,
+      _signal: AbortSignal,
+      _context,
+    ): Promise<{ content: string; details: TodoDetails; isError: false }> {
+      const todos: readonly TodoItem[] = arguments_.todos.map((todo) => ({
+        content: todo.content,
+        status: todo.status,
+      }));
+      return {
+        content: formatTodoContent(todos),
+        details: { todos },
+        isError: false,
+      };
+    },
+    presentation: {
+      renderStart() {
+        return undefined;
+      },
+      renderEnd(_call, result) {
+        if (!isTodoDetails(result.details)) return undefined;
+        return result.details.todos
+          .map((todo, index) => `${index + 1}. [${todo.status}] ${todo.content}`)
+          .join("\n");
+      },
+    },
+  };
 }

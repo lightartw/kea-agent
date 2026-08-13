@@ -3,7 +3,8 @@ export { createCodingHookRegistry } from "./hooks/factory.js";
 export {
   CODING_SYSTEM_PROMPT,
 } from "./coding-system-prompt.js";
-export { createToolRegistry } from "./tools/factory.js";
+export { createDefaultToolDefinitions } from "./tools/factory.js";
+export { toAgentTool } from "./tools/wrapper.js";
 export {
   NO_INTERACTIONS,
 } from "./ui/interactions.js";
@@ -23,6 +24,10 @@ export type {
   ToolPresentationCall,
   ToolPresentationRejected,
 } from "./ui/tool-presentation.js";
+export type {
+  CodingToolContext,
+  CodingToolDefinition,
+} from "./tools/definition.js";
 export type {
   TodoItem,
   TodoDetails,

@@ -2,9 +2,9 @@ import { resolve } from "node:path";
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import { AgentTool, type AgentToolResult } from "../../agent/tools/types.js";
 import { LocalBashOperations } from "./bash-ops.js";
 import { hardDeniedBashReason } from "./bash-policy.js";
+import type { CodingToolDefinition } from "./definition.js";
 
 /** Swappable execution backend for shell commands. */
 export interface BashOperations {
@@ -18,34 +18,32 @@ const parameters = Type.Object(
   { additionalProperties: false },
 );
 
-export class BashTool extends AgentTool<typeof parameters> {
-  private readonly resolvedCwd: string;
-
-  constructor(
-    cwd: string = process.cwd(),
-    private readonly ops: BashOperations = new LocalBashOperations(),
-  ) {
-    super("bash", "Run a shell command.", parameters);
-    this.resolvedCwd = resolve(cwd);
-  }
-
-  async execute(
-    arguments_: Static<typeof parameters>,
-    signal: AbortSignal,
-  ): Promise<AgentToolResult> {
-    const { command } = arguments_;
-    const reason = hardDeniedBashReason(command);
-    if (reason !== undefined) {
-      return {
-        content: `Error: Permission denied: ${reason}`,
-        isError: true,
-      };
-    }
-    try {
-      const content = await this.ops.exec(command, this.resolvedCwd, signal);
-      return { content, isError: false };
-    } catch (error) {
-      return { content: error instanceof Error ? error.message : String(error), isError: true };
-    }
-  }
+export function createBashToolDefinition(
+  ops: BashOperations = new LocalBashOperations(),
+): CodingToolDefinition<typeof parameters> {
+  return {
+    name: "bash",
+    description: "Run a shell command.",
+    parameters,
+    async execute(
+      arguments_: Static<typeof parameters>,
+      signal: AbortSignal,
+      context,
+    ) {
+      const { command } = arguments_;
+      const reason = hardDeniedBashReason(command);
+      if (reason !== undefined) {
+        return {
+          content: `Error: Permission denied: ${reason}`,
+          isError: true,
+        };
+      }
+      try {
+        const content = await ops.exec(command, resolve(context.cwd), signal);
+        return { content, isError: false };
+      } catch (error) {
+        return { content: error instanceof Error ? error.message : String(error), isError: true };
+      }
+    },
+  };
 }

@@ -1,19 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TodoWriteTool } from "../../../src/coding-agent/tools/todo-write.js";
+import { createTodoWriteToolDefinition } from "../../../src/coding-agent/tools/todo-write.js";
 
 function signal(): AbortSignal {
   return new AbortController().signal;
 }
 
+const context = { cwd: process.cwd() };
+
 test("todo_write returns the complete list in content and details", async () => {
-  const tool = new TodoWriteTool();
-  const result = await tool.execute({ todos: [
+  const definition = createTodoWriteToolDefinition();
+  const result = await definition.execute({ todos: [
     { content: "Read code", status: "completed" },
     { content: "Design UI", status: "in_progress" },
     { content: "Add tests", status: "pending" },
-  ] }, signal());
+  ] }, signal(), context);
 
   assert.equal(result.content, [
     "Current tasks:",
@@ -30,14 +32,14 @@ test("todo_write returns the complete list in content and details", async () => 
 });
 
 test("todo_write second call depends only on the second full input", async () => {
-  const tool = new TodoWriteTool();
-  await tool.execute({ todos: [
+  const definition = createTodoWriteToolDefinition();
+  await definition.execute({ todos: [
     { content: "first", status: "completed" },
-  ] }, signal());
+  ] }, signal(), context);
 
-  const second = await tool.execute({ todos: [
+  const second = await definition.execute({ todos: [
     { content: "second", status: "pending" },
-  ] }, signal());
+  ] }, signal(), context);
 
   assert.equal(second.content, [
     "Current tasks:",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BashTool } from "../../../src/coding-agent/tools/bash.js";
+import { createBashToolDefinition } from "../../../src/coding-agent/tools/bash.js";
 import type { BashOperations } from "../../../src/coding-agent/tools/bash.js";
 
 class RecordingBashOperations implements BashOperations {
@@ -17,35 +17,37 @@ function signal(): AbortSignal {
   return new AbortController().signal;
 }
 
+const context = { cwd: process.cwd() };
+
 test("bash tool captures output", async () => {
-  const tool = new BashTool();
-  const result = await tool.execute({ command: "echo ok" }, signal());
+  const definition = createBashToolDefinition();
+  const result = await definition.execute({ command: "echo ok" }, signal(), context);
   assert.equal(result.content, "ok");
   assert.equal(result.isError, false);
 });
 
 test("bash tool preserves UTF-8 command output", async () => {
-  const tool = new BashTool();
-  const result = await tool.execute({ command: "echo 目录" }, signal());
+  const definition = createBashToolDefinition();
+  const result = await definition.execute({ command: "echo 目录" }, signal(), context);
   assert.equal(result.content, "目录");
 });
 
 test("bash tool uses its configured working directory", async () => {
-  const tool = new BashTool(process.cwd());
-  const result = await tool.execute({ command: "pwd" }, signal());
+  const definition = createBashToolDefinition();
+  const result = await definition.execute({ command: "pwd" }, signal(), context);
   assert.match(result.content.replaceAll("\\", "/"), /kea_agent$/i);
 });
 
 test("bash tool reports command failures", async () => {
-  const tool = new BashTool();
-  const result = await tool.execute({ command: "exit 7" }, signal());
+  const definition = createBashToolDefinition();
+  const result = await definition.execute({ command: "exit 7" }, signal(), context);
   assert.equal(result.isError, true);
   assert.match(result.content, /code 7/);
 });
 
 test("bash tool independently blocks only hard-denied commands", async () => {
   const ops = new RecordingBashOperations();
-  const tool = new BashTool(process.cwd(), ops);
+  const definition = createBashToolDefinition(ops);
   for (const command of [
     "rm -rf /",
     "sudo true",
@@ -55,7 +57,7 @@ test("bash tool independently blocks only hard-denied commands", async () => {
     "dd if=/dev/zero of=disk.img",
     "echo x > /dev/sda",
   ]) {
-    const result = await tool.execute({ command }, signal());
+    const result = await definition.execute({ command }, signal(), context);
     assert.equal(result.isError, true, command);
     assert.match(result.content, /Permission denied/, command);
   }
@@ -64,13 +66,13 @@ test("bash tool independently blocks only hard-denied commands", async () => {
 
 test("bash tool leaves ask-class commands to the Hook layer", async () => {
   const ops = new RecordingBashOperations();
-  const tool = new BashTool(process.cwd(), ops);
+  const definition = createBashToolDefinition(ops);
   for (const command of [
     "rm file.txt",
     "echo x > /etc/hosts",
     "chmod 777 script.sh",
   ]) {
-    assert.equal((await tool.execute({ command }, signal())).isError, false);
+    assert.equal((await definition.execute({ command }, signal(), context)).isError, false);
   }
   assert.deepEqual(ops.calls, [
     "rm file.txt",
@@ -81,9 +83,9 @@ test("bash tool leaves ask-class commands to the Hook layer", async () => {
 
 test("bash tool invokes its backend for a safe command", async () => {
   const ops = new RecordingBashOperations();
-  const tool = new BashTool(process.cwd(), ops);
+  const definition = createBashToolDefinition(ops);
   assert.deepEqual(
-    await tool.execute({ command: "pwd" }, signal()),
+    await definition.execute({ command: "pwd" }, signal(), context),
     { content: "executed", isError: false },
   );
   assert.deepEqual(ops.calls, ["pwd"]);

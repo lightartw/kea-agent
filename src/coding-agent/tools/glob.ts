@@ -4,8 +4,8 @@ import { sep } from "node:path";
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import { AgentTool, type AgentToolResult } from "../../agent/tools/types.js";
 import { safePath } from "../../utils/workspace.js";
+import type { CodingToolDefinition } from "./definition.js";
 
 const parameters = Type.Object(
   {
@@ -16,19 +16,20 @@ const parameters = Type.Object(
   { additionalProperties: false },
 );
 
-export class GlobTool extends AgentTool<typeof parameters> {
-  constructor(private readonly workspace: string) {
-    super("glob", "Find files matching a glob pattern.", parameters);
-  }
-
-  async execute(arguments_: Static<typeof parameters>, _signal: AbortSignal): Promise<AgentToolResult> {
-    const matches: string[] = [];
-    for await (const match of glob(arguments_.pattern, {
-      cwd: this.workspace,
-    })) {
-      safePath(this.workspace, match);
-      matches.push(match.split(sep).join("/"));
-    }
-    return { content: matches.length ? matches.join("\n") : "(no matches)", isError: false };
-  }
+export function createGlobToolDefinition(): CodingToolDefinition<typeof parameters> {
+  return {
+    name: "glob",
+    description: "Find files matching a glob pattern.",
+    parameters,
+    async execute(arguments_: Static<typeof parameters>, _signal, context) {
+      const matches: string[] = [];
+      for await (const match of glob(arguments_.pattern, {
+        cwd: context.cwd,
+      })) {
+        safePath(context.cwd, match);
+        matches.push(match.split(sep).join("/"));
+      }
+      return { content: matches.length ? matches.join("\n") : "(no matches)", isError: false };
+    },
+  };
 }

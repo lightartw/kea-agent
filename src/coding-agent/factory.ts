@@ -1,7 +1,9 @@
 import { AgentHarness } from "../harness/agent-harness.js";
+import { AgentToolRegistry } from "../agent/tools/registry.js";
 import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
 import { defaultSystemPrompt } from "../harness/system-prompt.js";
-import { createToolRegistry } from "./tools/factory.js";
+import { createDefaultToolDefinitions } from "./tools/factory.js";
+import { toAgentTool } from "./tools/wrapper.js";
 import { createCodingHookRegistry } from "./hooks/factory.js";
 import { NO_INTERACTIONS } from "./ui/interactions.js";
 import type { SystemPromptBuilder } from "../harness/types.js";
@@ -20,8 +22,14 @@ export async function createHarness(
   if (!config.session) throw new Error("session is required");
   const session = config.session;
 
+  const context = { cwd: config.project.workDir };
+  const tools = new AgentToolRegistry();
+  for (const definition of createDefaultToolDefinitions()) {
+    tools.register(toAgentTool(definition, context));
+  }
+
   const hooks = createCodingHookRegistry({
-    cwd: config.project.workDir,
+    cwd: context.cwd,
     interactions: config.interactions ?? NO_INTERACTIONS,
   });
 
@@ -29,9 +37,9 @@ export async function createHarness(
     session,
     model: config.model,
     streamFn: config.streamFn,
-    toolRegistry: createToolRegistry(config.project.workDir),
+    toolRegistry: tools,
     systemPrompt: resolveSystemPrompt(config.systemPrompt),
-    cwd: config.project.workDir,
+    cwd: context.cwd,
     hooks,
   });
 }

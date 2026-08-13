@@ -1,17 +1,21 @@
-import { AgentToolRegistry } from "../../agent/tools/registry.js";
-import { BashTool } from "./bash.js";
-import { ReadFileTool, WriteFileTool, EditFileTool } from "./files.js";
-import { GlobTool } from "./glob.js";
-import { TodoWriteTool } from "./todo-write.js";
+import type { CodingToolDefinition } from "./definition.js";
+import { createBashToolDefinition } from "./bash.js";
+import {
+  createReadFileToolDefinition,
+  createWriteFileToolDefinition,
+  createEditFileToolDefinition,
+} from "./files.js";
+import { createGlobToolDefinition } from "./glob.js";
+import { createTodoWriteToolDefinition } from "./todo-write.js";
 
-/** Build the default tool set for one workspace. */
-export function createToolRegistry(cwd: string): AgentToolRegistry {
-  const registry = new AgentToolRegistry();
-  registry.register(new BashTool(cwd));
-  registry.register(new ReadFileTool(cwd));
-  registry.register(new WriteFileTool(cwd));
-  registry.register(new EditFileTool(cwd));
-  registry.register(new GlobTool(cwd));
-  registry.register(new TodoWriteTool());
-  return registry;
+/** Build the default Coding Tool definitions. */
+export function createDefaultToolDefinitions(): readonly CodingToolDefinition[] {
+  return [
+    createBashToolDefinition(),
+    createReadFileToolDefinition(),
+    createWriteFileToolDefinition(),
+    createEditFileToolDefinition(),
+    createGlobToolDefinition(),
+    createTodoWriteToolDefinition(),
+  ];
 }

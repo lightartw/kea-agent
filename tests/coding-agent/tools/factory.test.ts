@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createToolRegistry } from "../../../src/coding-agent/tools/factory.js";
+import { createDefaultToolDefinitions } from "../../../src/coding-agent/tools/factory.js";
 
-test("createToolRegistry installs built-in tools", () => {
+test("createDefaultToolDefinitions installs built-in tools", () => {
   assert.deepEqual(
-    createToolRegistry(process.cwd()).schemas().map((schema) => schema.name),
+    createDefaultToolDefinitions().map((definition) => definition.name),
     ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write"],
   );
 });
