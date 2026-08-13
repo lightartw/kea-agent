@@ -4,8 +4,11 @@ import test from "node:test";
 import type { Interface } from "node:readline/promises";
 
 import { CliFrontend } from "../../src/ui/frontend.js";
-import type { ConfirmationRequest } from "../../src/coding-agent/index.js";
-import type { AgentHarness } from "../../src/harness/agent-harness.js";
+import { CodingToolPresentationRegistry } from "../../src/coding-agent/ui/presentation-registry.js";
+import type {
+  CodingAgentRuntime,
+  ConfirmationRequest,
+} from "../../src/coding-agent/index.js";
 
 type QuestionFn = (
   query: string,
@@ -135,22 +138,25 @@ test("run suspends its ESC listener during confirm and restores it after", async
     return mainQuestions === 1 ? "run command" : "q";
   }, input);
 
-  const harness = {
-    subscribe() {
-      return () => undefined;
+  const runtime = {
+    harness: {
+      subscribe() {
+        return () => undefined;
+      },
+      abort() {
+        aborts++;
+      },
+      async prompt() {
+        assert.equal(input.listenerCount("data"), 1);
+        assert.equal(await cli.confirm(confirmation), true);
+        assert.equal(input.listenerCount("data"), 1);
+        input.emit("data", Buffer.from([0x1b]));
+      },
     },
-    abort() {
-      aborts++;
-    },
-    async prompt() {
-      assert.equal(input.listenerCount("data"), 1);
-      assert.equal(await cli.confirm(confirmation), true);
-      assert.equal(input.listenerCount("data"), 1);
-      input.emit("data", Buffer.from([0x1b]));
-    },
-  } as unknown as AgentHarness;
+    presentations: new CodingToolPresentationRegistry(),
+  } as unknown as CodingAgentRuntime;
 
-  await cli.run(harness);
+  await cli.run(runtime);
   assert.equal(aborts, 1);
   assert.equal(input.listenerCount("data"), 0);
   cli.close();

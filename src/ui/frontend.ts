@@ -1,13 +1,12 @@
 import { createInterface, type Interface } from "node:readline/promises";
 
-import type { AgentHarness } from "../harness/agent-harness.js";
 import type {
   CodingAgentInteractions,
+  CodingAgentRuntime,
   ConfirmationRequest,
   Notification,
 } from "../coding-agent/index.js";
 import { CliHarnessRenderer } from "./harness-renderer.js";
-import { createDefaultToolRenderers } from "./tool-renderers.js";
 
 const CYAN = "\x1b[36m";
 const RESET = "\x1b[0m";
@@ -114,15 +113,12 @@ export class CliFrontend implements CodingAgentInteractions {
   // ── Run loop ──
 
   /** Keep accepting user turns while AgentHarness owns conversation state. */
-  async run(harness: AgentHarness): Promise<void> {
-    const tools = createDefaultToolRenderers(
-      (message) => this.logFn(`[ui error] ${message}`),
-    );
+  async run(runtime: CodingAgentRuntime): Promise<void> {
     const renderer = new CliHarnessRenderer(
       { write: this.writeFn, log: this.logFn },
-      tools,
+      runtime.presentations,
     );
-    const unsubscribe = harness.subscribe((event) => {
+    const unsubscribe = runtime.harness.subscribe((event) => {
       renderer.render(event);
     });
 
@@ -142,7 +138,7 @@ export class CliFrontend implements CodingAgentInteractions {
         if (this.inputStream.isTTY) {
           this.runOnData = (buf: Buffer): void => {
             if (buf[0] === 0x1b) {
-              harness.abort();
+              runtime.harness.abort();
             } else if (buf[0] === 0x03) {
               process.kill(process.pid, "SIGINT");
             }
@@ -152,7 +148,7 @@ export class CliFrontend implements CodingAgentInteractions {
         }
 
         try {
-          await harness.prompt(query);
+          await runtime.harness.prompt(query);
         } finally {
           if (this.runOnData !== undefined) {
             this.inputStream.removeListener("data", this.runOnData);

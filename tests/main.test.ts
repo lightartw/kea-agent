@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CliHarnessRenderer } from "../src/ui/harness-renderer.js";
-import { createDefaultToolRenderers } from "../src/ui/tool-renderers.js";
+import { CodingToolPresentationRegistry } from "../src/coding-agent/ui/presentation-registry.js";
 import { AgentHarness } from "../src/harness/agent-harness.js";
 import { Session } from "../src/harness/session/session.js";
 import { AgentToolRegistry } from "../src/agent/tools/registry.js";
@@ -34,7 +34,7 @@ test("Harness renders through one subscription while prompt returns a Promise", 
   });
   const renderer = new CliHarnessRenderer(
     { write: (text) => rendered.push(text), log: (text) => logs.push(text) },
-    createDefaultToolRenderers(() => undefined),
+    new CodingToolPresentationRegistry(),
   );
   const unsubscribe = harness.subscribe((event) => {
     renderer.render(event);

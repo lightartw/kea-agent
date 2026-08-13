@@ -5,17 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { createHarness } from "../../src/coding-agent/factory.js";
+import { createCodingAgent } from "../../src/coding-agent/factory.js";
 import { Session } from "../../src/harness/session/session.js";
 import type {
   AssistantMessage,
   ModelConfig,
   StreamFn,
 } from "../../src/ai/types.js";
-import type {
-  CodingAgentInteractions,
-  Notification,
-} from "../../src/coding-agent/index.js";
+import type { CodingAgentInteractions } from "../../src/coding-agent/index.js";
+import type { HarnessToolEvent } from "../../src/harness/events/types.js";
 import type { TodoItem } from "../../src/coding-agent/tools/todo-state.js";
 
 async function tempStorage(): Promise<string> {
@@ -43,7 +41,7 @@ test("factory composes workDir, default tools, and string prompt", async () => {
     yield { type: "done", message: assistant };
   };
 
-  const harness = await createHarness({
+  const runtime = await createCodingAgent({
     project: {
       workDir: "C:/workspace/project",
       storageDir: "unused-because-session-is-in-memory",
@@ -54,7 +52,7 @@ test("factory composes workDir, default tools, and string prompt", async () => {
     systemPrompt: "cwd={{cwd}} date={{date}}",
   });
 
-  await harness.prompt("hello");
+  await runtime.harness.prompt("hello");
   assert.match(seenPrompt, /^cwd=C:\/workspace\/project date=\d{4}-\d{2}-\d{2}$/);
   assert.deepEqual(seenTools, [
     "bash",
@@ -72,7 +70,7 @@ test("factory restores the supplied Session", async () => {
   await session.appendMessage(assistant);
 
   let seenRoles: string[] = [];
-  const harness = await createHarness({
+  const runtime = await createCodingAgent({
     project: { workDir: process.cwd(), storageDir: "unused" },
     streamFn: async function* (_model, context) {
       seenRoles = context.messages.map((message) => message.role);
@@ -82,21 +80,21 @@ test("factory restores the supplied Session", async () => {
     session,
   });
 
-  await harness.prompt("new");
+  await runtime.harness.prompt("new");
   assert.deepEqual(seenRoles, ["user", "assistant", "user"]);
 });
 
 function recordingInteractions(): {
   interactions: CodingAgentInteractions;
-  notifications: Notification[];
+  notifications: string[];
 } {
-  const notifications: Notification[] = [];
+  const notifications: string[] = [];
   return {
     notifications,
     interactions: {
       available: true,
       async confirm() { return true; },
-      notify(notification) { notifications.push(notification); },
+      notify(notification) { notifications.push(notification.source); },
     },
   };
 }
@@ -134,7 +132,7 @@ function twoTurnBashStream(command: string): StreamFn {
 
 test("factory assembles the default Hook registry with supplied interactions", async () => {
   const { interactions, notifications } = recordingInteractions();
-  const harness = await createHarness({
+  const runtime = await createCodingAgent({
     project: { workDir: process.cwd(), storageDir: "unused" },
     streamFn: oneTurnStream,
     model,
@@ -142,59 +140,94 @@ test("factory assembles the default Hook registry with supplied interactions", a
     interactions,
   });
 
-  await harness.prompt("hello");
+  await runtime.harness.prompt("hello");
   assert.deepEqual(notifications, []);
 });
 
 test("factory defaults to fail-closed interactions for ask commands", async () => {
-  const harness = await createHarness({
+  const runtime = await createCodingAgent({
     project: { workDir: process.cwd(), storageDir: "unused" },
     streamFn: twoTurnBashStream("rm file.txt"),
     model,
     session: Session.inMemory(),
   });
-  await harness.prompt("remove file");
-  const toolMessage = harness.messages.find((message) => message.role === "tool");
+  await runtime.harness.prompt("remove file");
+  const toolMessage = runtime.harness.messages.find((message) => message.role === "tool");
   assert.equal(toolMessage?.role, "tool");
   assert.match(toolMessage?.content ?? "", /no confirmation UI available/);
 });
 
-test("factory creates an independent permission Hook for each Harness", async () => {
+function denyingInteractions(confirmations: string[]): CodingAgentInteractions {
+  return {
+    available: true,
+    async confirm(request) {
+      confirmations.push(request.source);
+      return false;
+    },
+    notify() {},
+  };
+}
+
+test("factory returns distinct harness and presentation registries per call", async () => {
   const firstConfirmations: string[] = [];
   const secondConfirmations: string[] = [];
-  function denyingInteractions(confirmations: string[]): CodingAgentInteractions {
-    return {
-      available: true,
-      async confirm(request) {
-        confirmations.push(request.source);
-        return false;
-      },
-      notify() {},
-    };
-  }
-  const first = await createHarness({
+  const first = await createCodingAgent({
     project: { workDir: "C:/first", storageDir: "unused" },
     streamFn: twoTurnBashStream("rm file.txt"),
     model,
     session: Session.inMemory(),
     interactions: denyingInteractions(firstConfirmations),
   });
-  const second = await createHarness({
+  const second = await createCodingAgent({
     project: { workDir: "C:/second", storageDir: "unused" },
     streamFn: twoTurnBashStream("rm file.txt"),
     model,
     session: Session.inMemory(),
     interactions: denyingInteractions(secondConfirmations),
   });
-  await first.prompt("one");
-  await second.prompt("two");
+
+  assert.notEqual(first.harness, second.harness);
+  assert.notEqual(first.presentations, second.presentations);
+
+  await first.harness.prompt("one");
+  await second.harness.prompt("two");
   assert.deepEqual(firstConfirmations, ["permission"]);
   assert.deepEqual(secondConfirmations, ["permission"]);
 });
 
+test("runtime presentations render todo details from the Coding Tool definition", async () => {
+  const runtime = await createCodingAgent({
+    project: { workDir: process.cwd(), storageDir: "unused" },
+    streamFn: oneTurnStream,
+    model,
+    session: Session.inMemory(),
+  });
+
+  const todoEndEvent: HarnessToolEvent = {
+    type: "tool_end",
+    lane: "main",
+    runId: "run-1",
+    call: {
+      type: "toolCall",
+      id: "c1",
+      name: "todo_write",
+      arguments: { todos: [{ content: "Design UI", status: "in_progress" }] },
+    },
+    result: {
+      content: "Current tasks:\n1. [in_progress] Design UI\nUpdated 1 tasks",
+      details: { todos: [{ content: "Design UI", status: "in_progress" }] },
+      isError: false,
+    },
+  };
+  assert.equal(
+    runtime.presentations.render(todoEndEvent),
+    "1. [in_progress] Design UI",
+  );
+});
+
 test("default Harness system prompt contains the coding agent opening text", async () => {
   let seenPrompt = "";
-  const harness = await createHarness({
+  const runtime = await createCodingAgent({
     project: { workDir: process.cwd(), storageDir: "unused" },
     streamFn: async function* (_model, context) {
       seenPrompt = context.systemPrompt ?? "";
@@ -204,7 +237,7 @@ test("default Harness system prompt contains the coding agent opening text", asy
     session: Session.inMemory(),
   });
 
-  await harness.prompt("hello");
+  await runtime.harness.prompt("hello");
   assert.match(seenPrompt, /You are Kea, a coding agent that runs inside a terminal/);
 });
 
@@ -241,16 +274,16 @@ test("todo content is model-visible while details stay in the in-memory message"
     { content: "Design UI", status: "in_progress" },
   ];
   const session = Session.inMemory();
-  const harness = await createHarness({
+  const runtime = await createCodingAgent({
     project: { workDir: process.cwd(), storageDir: "unused" },
     streamFn: todoTurnStream(todos),
     model,
     session,
   });
 
-  await harness.prompt("plan");
+  await runtime.harness.prompt("plan");
 
-  const toolMessage = harness.messages.find((message) => message.role === "tool");
+  const toolMessage = runtime.harness.messages.find((message) => message.role === "tool");
   assert.equal(toolMessage?.role, "tool");
   if (toolMessage?.role !== "tool") return;
   assert.match(toolMessage.content, /Read code/);
@@ -268,13 +301,13 @@ test("todo state recovers from a restored Session after a model switch", async (
       { content: "Design UI", status: "in_progress" },
     ];
     const first = await Session.create(storageDir);
-    const firstHarness = await createHarness({
+    const firstRuntime = await createCodingAgent({
       project: { workDir: process.cwd(), storageDir },
       streamFn: todoTurnStream(todos),
       model,
       session: first,
     });
-    await firstHarness.prompt("plan");
+    await firstRuntime.harness.prompt("plan");
 
     const restored = await Session.open(storageDir, first.id);
     let recoveredContent = "";
@@ -285,13 +318,13 @@ test("todo state recovers from a restored Session after a model switch", async (
       recoveredContent = toolMessage?.role === "tool" ? toolMessage.content : "";
       yield { type: "done", message: assistant };
     };
-    const secondHarness = await createHarness({
+    const secondRuntime = await createCodingAgent({
       project: { workDir: process.cwd(), storageDir },
       streamFn: recoveryStream,
       model: { provider: "test", model: "model-2" },
       session: restored,
     });
-    await secondHarness.prompt("resume");
+    await secondRuntime.harness.prompt("resume");
 
     assert.match(recoveredContent, /Read code/);
     assert.match(recoveredContent, /Design UI/);

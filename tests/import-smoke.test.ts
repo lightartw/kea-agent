@@ -13,8 +13,8 @@ import {
 
 import {
   CODING_SYSTEM_PROMPT,
-  createHarness,
-  createToolRegistry,
+  createCodingAgent,
+  createDefaultToolDefinitions,
 } from "../src/coding-agent/index.js";
 
 import { HookRegistry } from "../src/agent/hooks/index.js";
@@ -42,7 +42,8 @@ import type {
 import type {
   CodingHookContext,
   CodingAgentInteractions,
-  CreateHarnessConfig,
+  CodingAgentRuntime,
+  CreateCodingAgentConfig,
   ConfirmationRequest,
   Notification,
   TodoDetails,
@@ -85,8 +86,8 @@ void [
   defaultSystemPrompt,
   formatSystemPrompt,
   CODING_SYSTEM_PROMPT,
-  createHarness,
-  createToolRegistry,
+  createCodingAgent,
+  createDefaultToolDefinitions,
   HookRegistry,
   AgentTool,
   AgentToolRegistry,
@@ -116,11 +117,12 @@ type PublicAgentHookTypes = [
 type PublicCodingAgentTypes = [
   CodingHookContext,
   CodingAgentInteractions,
+  CodingAgentRuntime,
   ConfirmationRequest,
   Notification,
   TodoItem,
   TodoDetails,
-  CreateHarnessConfig,
+  CreateCodingAgentConfig,
 ];
 
 type PublicAgentToolTypes = [

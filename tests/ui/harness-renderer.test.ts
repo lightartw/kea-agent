@@ -2,17 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CliHarnessRenderer } from "../../src/ui/harness-renderer.js";
-import { CliToolRendererRegistry } from "../../src/ui/tool-renderers.js";
+import { CodingToolPresentationRegistry } from "../../src/coding-agent/ui/presentation-registry.js";
 import type { AgentToolCall } from "../../src/agent/tools/types.js";
 
 const context = { lane: "main", runId: "run-1" } as const;
 
-function rendererWith(tools: CliToolRendererRegistry = new CliToolRendererRegistry(() => undefined)) {
+function rendererWith(
+  presentations: CodingToolPresentationRegistry = new CodingToolPresentationRegistry(),
+) {
   const writes: string[] = [];
   const logs: string[] = [];
   const renderer = new CliHarnessRenderer(
     { write: (text) => writes.push(text), log: (text) => logs.push(text) },
-    tools,
+    presentations,
   );
   return { renderer, writes, logs };
 }
@@ -38,14 +40,14 @@ test("run lifecycle events are no-output", () => {
   assert.deepEqual(logs, []);
 });
 
-test("tool events are delegated to the Tool Registry", () => {
-  const registry = new CliToolRendererRegistry(() => undefined);
-  registry.register("todo_write", {
+test("tool events are delegated to the presentation registry", () => {
+  const presentations = new CodingToolPresentationRegistry();
+  presentations.register("todo_write", {
     renderStart: () => "todo start",
     renderEnd: () => "todo end",
     renderRejected: () => "todo rejected",
   });
-  const { renderer, logs } = rendererWith(registry);
+  const { renderer, logs } = rendererWith(presentations);
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "todo_write", arguments: {},
   };
@@ -98,20 +100,18 @@ test("agent_end emits the final tool-count summary", () => {
   assert.deepEqual(logs, ["session used 2 tool calls"]);
 });
 
-test("rendering failures never throw back through the renderer", () => {
-  const registry = new CliToolRendererRegistry((message) => {
-    throw new Error(`onError: ${message}`);
-  });
-  registry.register("todo_write", {
+test("throwing presentations are isolated and never throw through the renderer", () => {
+  const presentations = new CodingToolPresentationRegistry();
+  presentations.register("todo_write", {
     renderStart: () => { throw new Error("crash"); },
     renderEnd: () => "end",
   });
-  const { renderer, logs } = rendererWith(registry);
+  const { renderer, logs } = rendererWith(presentations);
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "todo_write", arguments: {},
   };
 
   renderer.render({ type: "tool_start", call, ...context });
 
-  assert.match(logs.join("\n"), /\[ui error\] onError: crash/);
+  assert.deepEqual(logs, ["\n\x1b[33m[exec] todo_write: {}\x1b[0m"]);
 });

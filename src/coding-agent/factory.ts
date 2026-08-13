@@ -6,8 +6,11 @@ import { createDefaultToolDefinitions } from "./tools/factory.js";
 import { toAgentTool } from "./tools/wrapper.js";
 import { createCodingHookRegistry } from "./hooks/factory.js";
 import { NO_INTERACTIONS } from "./ui/interactions.js";
+import { CodingToolPresentationRegistry } from "./ui/presentation-registry.js";
+import type { CodingToolContext } from "./tools/definition.js";
+import type { CodingAgentRuntime } from "./runtime.js";
 import type { SystemPromptBuilder } from "../harness/types.js";
-import type { CreateHarnessConfig } from "./types.js";
+import type { CreateCodingAgentConfig } from "./types.js";
 
 function resolveSystemPrompt(
   prompt: string | SystemPromptBuilder | undefined,
@@ -16,30 +19,51 @@ function resolveSystemPrompt(
   return defaultSystemPrompt(prompt ?? CODING_SYSTEM_PROMPT);
 }
 
-export async function createHarness(
-  config: CreateHarnessConfig,
-): Promise<AgentHarness> {
+export async function createCodingAgent(
+  config: CreateCodingAgentConfig,
+): Promise<CodingAgentRuntime> {
   if (!config.session) throw new Error("session is required");
-  const session = config.session;
 
-  const context = { cwd: config.project.workDir };
+  const context: CodingToolContext = { cwd: config.project.workDir };
+  const interactions = config.interactions ?? NO_INTERACTIONS;
+  const definitions = createDefaultToolDefinitions();
   const tools = new AgentToolRegistry();
-  for (const definition of createDefaultToolDefinitions()) {
+  const presentations = new CodingToolPresentationRegistry(
+    (message) => {
+      try {
+        void Promise.resolve(interactions.notify({
+          source: "tool-presentation",
+          level: "error",
+          message,
+        })).catch(() => undefined);
+      } catch {
+        // Presentation diagnostics must not re-enter execution.
+      }
+    },
+  );
+
+  for (const definition of definitions) {
     tools.register(toAgentTool(definition, context));
+    if (definition.presentation !== undefined) {
+      presentations.register(definition.name, definition.presentation);
+    }
   }
 
   const hooks = createCodingHookRegistry({
     cwd: context.cwd,
-    interactions: config.interactions ?? NO_INTERACTIONS,
+    interactions,
   });
-
-  return new AgentHarness({
-    session,
+  const harness = new AgentHarness({
+    session: config.session,
     model: config.model,
     streamFn: config.streamFn,
     toolRegistry: tools,
     systemPrompt: resolveSystemPrompt(config.systemPrompt),
     cwd: context.cwd,
     hooks,
+    ...(config.onEventListenerError !== undefined
+      ? { onEventListenerError: config.onEventListenerError }
+      : {}),
   });
+  return { harness, presentations };
 }

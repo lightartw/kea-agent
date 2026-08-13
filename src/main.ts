@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { config as loadDotenv } from "dotenv";
 
 import { CliFrontend } from "./ui/frontend.js";
-import { createHarness } from "./coding-agent/factory.js";
+import { createCodingAgent } from "./coding-agent/factory.js";
 import { Session } from "./harness/session/session.js";
 import { createStreamFn } from "./ai/factory.js";
 
@@ -22,14 +22,14 @@ export async function asyncMain(): Promise<void> {
     const { stream, defaultModel } = createStreamFn();
     const project = resolveProject(process.cwd());
     const session = await Session.create(project.storageDir);
-    const harness = await createHarness({
+    const runtime = await createCodingAgent({
       project,
       streamFn: stream,
       model: defaultModel,
       session,
-      ui: cli,
+      interactions: cli,
     });
-    await cli.run(harness);
+    await cli.run(runtime);
   } finally {
     cli.close();
   }
