@@ -45,6 +45,9 @@ import type {
   CodingToolPresentation,
   CreateCodingAgentConfig,
 } from "../src/coding-agent/index.js";
+import type {
+  CodingAgentRuntime as CodingAgentRuntimeFromTypes,
+} from "../src/coding-agent/types.js";
 
 void [
   runAgentLoop,
@@ -78,6 +81,7 @@ type PublicHarnessTypes = [
 
 type PublicCodingAgentTypes = [
   CodingAgentRuntime,
+  CodingAgentRuntimeFromTypes,
   CreateCodingAgentConfig,
   CodingAgentInteractions,
   CodingToolDefinition,

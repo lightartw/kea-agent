@@ -12,8 +12,10 @@ export {
   CodingToolPresentationRegistry,
 } from "./ui/presentation/registry.js";
 
-export type { CodingAgentRuntime } from "./runtime.js";
-export type { CreateCodingAgentConfig } from "./types.js";
+export type {
+  CodingAgentRuntime,
+  CreateCodingAgentConfig,
+} from "./types.js";
 export type { CodingHookContext } from "./hooks/types.js";
 export type {
   CodingAgentInteractions,

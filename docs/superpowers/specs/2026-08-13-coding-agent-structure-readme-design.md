@@ -31,8 +31,7 @@ TodoWrite 是这一规则的示例。每次调用接收完整列表并返回 `co
 ```text
 src/coding-agent/
   factory.ts
-  runtime.ts
-  types.ts
+  types.ts                    # factory input and output types
   coding-system-prompt.ts
   README.md
 

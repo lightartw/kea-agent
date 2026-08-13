@@ -156,8 +156,7 @@ tool counts are passive display concerns, so they come from Harness Events rathe
 ```text
 src/coding-agent/
   factory.ts                 # createCodingAgent composition root
-  runtime.ts                 # CodingAgentRuntime
-  types.ts                   # factory configuration
+  types.ts                   # createCodingAgent input and output types
   coding-system-prompt.ts
   tools/
     definition.ts            # shared tool contract

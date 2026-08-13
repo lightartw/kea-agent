@@ -10,7 +10,7 @@ import { createDefaultCodingHookRegistry } from "./hooks/builtin/factory.js";
 import { NO_INTERACTIONS } from "./ui/interactions/unavailable.js";
 import { CodingToolPresentationRegistry } from "./ui/presentation/registry.js";
 import type { CodingToolContext } from "./tools/definition.js";
-import type { CodingAgentRuntime } from "./runtime.js";
+import type { CodingAgentRuntime } from "./types.js";
 import type { SystemPromptBuilder } from "../harness/types.js";
 import type { CreateCodingAgentConfig } from "./types.js";
 
