@@ -2,31 +2,12 @@
 
 **更新：** 2026-08-13
 
-> 本文描述当前已实现的代码架构。Hook 输入使用 `Call` 命名，passive listener/observer
-> 已删除，被动展示统一走 Harness `subscribe`，具体 CLI UI 位于 `src/ui`。
+本文描述当前代码的所有权与边界。依赖方向是 `ui -> coding-agent -> harness -> agent -> ai`；
+`main.ts` 是连接具体 UI、Coding Agent 和 AI provider 的组合根。
 
-依赖从底层往上，每层只依赖它的下层。源码箭头始终向下：
+## 1. AI：LLM 流式协议
 
-```text
-main.ts
-  ├── UI (CliFrontend, CliHarnessRenderer, CliInteractions)
-  ├── Coding Agent (createCodingAgent, 默认 permission Hook, Bash 策略, Todo 投影)
-  ├── Agent Harness (AgentHarness, Session, SessionManager)
-  ├── Agent (runAgentLoop, HookRegistry, AgentToolRegistry)
-  └── AI (StreamFn, ModelConfig, Message, Adapter)
-```
-
-```text
-ui -> coding-agent -> harness -> agent -> ai
-```
-
----
-
-## 1. AI — LLM 客户端抽象
-
-位于 `src/ai/`。统一 Anthropic / OpenAI / Gemini 的流式协议。不保存会话，不执行工具。
-
-### 核心类型
+`src/ai/` 统一 Anthropic、OpenAI 和 Gemini 的流式协议，不保存会话，也不执行工具。
 
 ```ts
 type StreamFn = (
@@ -39,261 +20,69 @@ interface ModelConfig {
   readonly provider: string;
   readonly model: string;
 }
-
-interface Context {
-  readonly systemPrompt?: string;
-  readonly messages: readonly Message[];
-  readonly tools?: readonly Tool[];
-}
-
-type Message = UserMessage | AssistantMessage | ToolResultMessage;
-
-interface Tool {
-  readonly name: string;
-  readonly description: string;
-  readonly parameters: TObject;
-}
-
-type AssistantMessageEvent =
-  | { type: "text_delta"; text: string }
-  | { type: "thinking_delta"; thinking: string }
-  | { type: "toolcall_start"; id: string; name: string }
-  | { type: "toolcall_delta"; id: string; argumentsDelta: string }
-  | { type: "toolcall_end"; toolCall: ToolCall }
-  | { type: "done"; message: AssistantMessage }
-  | { type: "error"; message: AssistantMessage };
 ```
 
-### 核心函数
+`createStreamFn()` 返回 `stream` 和 `defaultModel`。Provider adapter 在流第一次迭代时动态加载。
+`ToolResultMessage.content` 是模型可见文本；`details` 是 Session、Agent 和 UI 使用的结构化数据，
+不会被 provider adapter 发到模型服务。
+
+## 2. Agent：Tool 循环与 Hook 控制
+
+`src/agent/` 用 `runAgentLoop()` 执行一次多 Turn Agent Run。它接收消息、
+`AgentToolRegistry`、模型、`StreamFn` 和收窄的 `AgentHookTrigger`，并产生 `AgentEvent`。
+
+每个 Tool Call 先经过 `tool_call` Hook，再由 Registry 完成 lookup 和参数验证。只有准备成功的
+调用才发布 `tool_start` 并执行；被 Hook 阻止、参数无效、工具未知或中止的调用都会生成一条
+synthetic Tool Result，并以 `tool_rejected` 结束。成功开始的调用以 `tool_end` 结束。
+
+### Hook 边界
+
+`HookRegistry<TContext>` 是配置和组合 Hook 的完整接口；Agent Loop 与 Harness 只依赖
+`AgentHookTrigger.trigger()`。五类 Hook Call 分别控制：
+
+| Call | 作用 |
+| ---- | ---- |
+| `user_prompt` | 提交 user message 前允许或阻止 |
+| `context` | 每次 LLM 请求前转换消息快照 |
+| `tool_call` | Tool 验证和执行前修改参数或阻止 |
+| `tool_result` | Tool Result 提交前修改结果 |
+| `stop` | Agent 停止前请求继续 |
+
+Hook 是控制通道，可以改变尚未提交的行为。它不是被动 listener；已经发生的运行事实由 Harness
+Event 报告。
+
+### Tool 边界
+
+`AgentTool` 定义 schema 和执行，`AgentToolRegistry` 负责注册、准备、timeout 与异常归一化。
+Agent Tool 不依赖 Coding Agent 或 UI，也不携带展示逻辑。
+
+## 3. Harness：一份 Session 的运行器
+
+`src/harness/` 提供 Session 数据、Repository 和 Session 运行能力。
+
+### Session 与 SessionRepository
+
+`Session` 保存消息、模型变更和 Session ID。持久化格式是
+`<storageDir>/sessions/<sessionId>.jsonl` 的树形 entry；`buildContext()` 沿当前叶节点的父链恢复
+消息和最后选择的模型。
 
 ```ts
-function createStreamFn(options?: {
-  providers?: ProviderConfig[];
-  env?: Environment;
-}): { stream: StreamFn; defaultModel: ModelConfig };
-```
-
-`createStreamFn` 只检查 API key 环境变量，不根据模型名猜测。provider adapter 首次被迭代时才动态 `import()`，之后复用。
-
-### `ToolResultMessage` 的 `content` / `details` 分层
-
-```ts
-interface ToolResultMessage<TDetails = unknown> {
-  readonly role: "tool";
-  readonly toolCallId: string;
-  readonly name: string;
-  readonly content: string;
-  readonly details?: TDetails;
-  readonly isError?: boolean;
+class SessionRepository {
+  constructor(readonly storageDir: string);
+  create(): Promise<Session>;
+  open(sessionId: string): Promise<Session>;
+  list(): Promise<readonly string[]>;
 }
 ```
 
-`content` 是模型可见文本；`details` 是程序可见的结构化数据。Provider adapter 只投影
-对应 Provider 需要的字段，`details` 永远不进网络请求：
+`SessionRepository` 是 Harness 层唯一管理多份 Session 的实体。它在一个 `storageDir` 中创建、
+打开和列举 Session；`list()` 按文件最近修改时间从新到旧返回 ID。Repository 不创建 Harness，
+也不保存“当前 Session”。
 
-```text
-content  -> Provider wire payload
-details  -> Session / Agent / UI 内存消息
-```
+### AgentHarness
 
----
-
-## 2. Agent — 多 Turn 工具循环 + Hook 控制通道
-
-位于 `src/agent/`。依赖 AI 层的 `StreamFn`、`ModelConfig`、`Message`。
-
-### 2.1 runAgentLoop
-
-纯函数，不持有实例状态，但原地修改 `context.messages`。
-
-```ts
-function runAgentLoop(
-  input: string,
-  context: AgentContext,
-  config: AgentLoopConfig,
-  streamFn: StreamFn,
-  signal?: AbortSignal,
-): AsyncIterable<AgentEvent>;
-
-interface AgentContext {
-  readonly systemPrompt: string;
-  messages: AgentMessage[];
-  readonly tools: AgentToolRegistry;
-}
-
-interface AgentLoopConfig {
-  readonly model: ModelConfig;
-  readonly convertToLlm: (messages: AgentMessage[]) => Message[];
-  readonly hooks: AgentHookTrigger;   // 窄触发接口，看不到 register/context/lifecycle
-}
-```
-
-**执行顺序：**
-
-1. `user_prompt` hook → 未 block 则写入 user message
-2. 每 turn 复制消息 → `context` hook 变换请求消息（只影响本次 LLM 请求）
-3. 调用 `StreamFn`，转发 text/thinking/tool-call 增量
-4. 无 tool call → `stop` hook（可 `continueWith` 续跑）→ 结束
-5. 有 tool call → 逐个按下方生命周期处理
-
-### 工具调用生命周期
-
-每个来自最终 assistant message 的 `AgentToolCall` 恰好产生一个终态：
-
-```text
-BeforeToolCall -> prepare -> tool_start -> execute -> AfterToolCall
-               -> ToolResultMessage -> tool_end
-
-BeforeToolCall/prepare 被拒绝 -> ToolResultMessage -> tool_rejected
-```
-
-- 原始 call 的 `arguments` 先 `structuredClone` 成工作副本，再交给 `BeforeToolCall` 修改。
-- `prepare()` 完成 lookup 和最终参数验证；只有 `ready` 才发射 `tool_start` 并执行。
-- 被 block、参数无效、工具不存在或已 Abort 的调用合成 synthetic `ToolResultMessage` 并
-  发射恰好一个 `tool_rejected`，不会静默丢失。
-- 批处理中途 Abort：已开始的调用照常 `tool_end`，其余调用各得一个 `aborted` 的 `tool_rejected`。
-- `AfterToolCallResult` 修改 `details` 时必须同时返回完整 `content`。
-
-### 2.2 AgentEvent
-
-观察通道。Harness 的 `subscribe()` 发布这些事件，返回值被忽略。
-
-```ts
-type ToolRejectedReason = "blocked" | "invalid" | "unknown" | "aborted";
-
-interface ToolRejectedEvent {
-  readonly type: "tool_rejected";
-  readonly call: AgentToolCall;                          // 模型原始请求
-  readonly effectiveArguments?: Readonly<Record<string, unknown>>;
-  readonly result: AgentToolResult;
-  readonly reason: ToolRejectedReason;
-}
-
-type AgentEvent =
-  | { type: "agent_start" }
-  | { type: "agent_end"; messages: readonly AgentMessage[] }
-  | { type: "turn_start" }
-  | { type: "turn_end"; message: AgentMessage }
-  | { type: "text_delta"; text: string }
-  | { type: "thinking_delta"; thinking: string }
-  | { type: "toolcall_start"; id: string; name: string }
-  | { type: "toolcall_delta"; id: string; argumentsDelta: string }
-  | { type: "toolcall_end"; toolCall: AgentToolCall }
-  | { type: "tool_start"; call: AgentToolCall }
-  | { type: "tool_end"; call: AgentToolCall; result: AgentToolResult }
-  | ToolRejectedEvent;
-```
-
-### 2.3 HookRegistry — 控制通道
-
-位于 `src/agent/hooks/`。与 `AgentEvent` 互补：Hook 在动作提交**前**触发，可阻止/变换/修补/续跑。没有 passive listener/observer。
-
-```ts
-class HookRegistry<TContext> {
-  constructor(context: TContext);
-  get context(): TContext;
-  setContext(context: TContext): void;
-
-  register<TType extends AgentHookCall["type"]>(
-    type: TType,
-    handler: HookHandler<Extract<AgentHookCall, { type: TType }>, TContext>,
-  ): Unregister;
-
-  trigger<T extends AgentHookCall>(
-    call: T,
-    signal?: AbortSignal,
-  ): Promise<ResultOf<T> | undefined>;
-
-  addCleanup(cleanup: Cleanup): Unregister;
-  clear(): Promise<void>;    // 逆序执行 cleanup，可复用
-  dispose(): Promise<void>;  // 永久销毁，不可复用
-}
-```
-
-**五种 Agent Hook Call：**
-
-| Call | 类型 | Handler 组合规则 | 结果类型 |
-| ---- | ---- | ---------------- | -------- |
-| `user_prompt` | `BeforeUserPromptCall` | 顺序；首个 `block: true` 提前结束 | `{ block?; reason? }` |
-| `context` | `TransformContextCall` | 顺序应用 `messages`；后一个看到前一个结果 | `{ messages? }` |
-| `tool_call` | `BeforeToolCall` | 顺序共享可变 `input`；首个 `block: true` 提前结束 | `{ block?; reason? }` |
-| `tool_result` | `AfterToolCall` | 顺序应用 Result；后一个看到前一个结果 | `AfterToolCallResult` |
-| `stop` | `BeforeStopCall` | 首个 `continueWith` 提前结束 | `{ continueWith? }` |
-
-**语义：** 每次 `trigger()` 进入时快照 context/handler 列表；触发期间注册/注销只影响下次 trigger；`Unregister` 幂等；Handler 错误原样穿透。
-
-### 2.4 AgentHookTrigger — 接口收窄
-
-`HookRegistry` 提供完整配置面，但运行时（Loop / Harness）只需要触发能力，因此用
-`AgentHookTrigger` 收窄到只暴露 `trigger`：
-
-```ts
-interface AgentHookTrigger {
-  trigger<TCall extends AgentHookCall>(
-    call: TCall,
-    signal?: AbortSignal,
-  ): Promise<ResultOf<TCall> | undefined>;
-}
-```
-
-### 2.5 工具系统
-
-```ts
-abstract class AgentTool<
-  TParameters extends TObject = TObject,
-  TDetails = unknown,
-> implements Tool {
-  protected constructor(name: string, description: string, parameters: TParameters);
-  validate(arguments_: unknown): string | undefined;
-  abstract execute(
-    args: Static<TParameters>,
-    timeoutSignal: AbortSignal,
-  ): Promise<AgentToolResult<TDetails>>;
-}
-
-class AgentToolRegistry {
-  constructor(timeout?: number);  // 默认 120s
-  register(tool: AgentTool): void;
-  unregister(name: string): void;
-  schemas(): Tool[];
-  all(): AgentTool[];
-  prepare(call: AgentToolCall): ToolPreparation;
-  execute(prepared: PreparedAgentToolCall, signal?: AbortSignal): Promise<AgentToolResult<unknown>>;
-}
-
-interface AgentToolResult<TDetails = unknown> {
-  readonly content: string;
-  readonly details?: TDetails;
-  readonly isError: boolean;
-}
-```
-
-Registry 拆成两阶段：`prepare(call)` 返回 `ready`（携带 `prepared`）或 `rejected`
-（携带 `reason: "unknown" | "invalid"` 与 synthetic result）。`execute(prepared)` 只负责
-timeout 和异常归一化，不重复 lookup 或 validate。`ToolPreparation` 与
-`PreparedAgentToolCall` 是模块内部类型，不从公开入口导出。
-
-### 典型用法
-
-```ts
-const hooks = new HookRegistry<MyContext>(ctx);
-hooks.register("tool_call", async (call, ctx) => {
-  if (dangerous) return { block: true, reason: "not allowed" };
-});
-
-const loop = runAgentLoop(input, context, { model, convertToLlm, hooks }, streamFn);
-for await (const event of loop) { /* render */ }
-```
-
----
-
-## 3. Agent Harness — 有状态运行时
-
-位于 `src/harness/`。依赖 Agent 层的 `runAgentLoop`、`AgentHookTrigger`、`AgentToolRegistry`。
-
-### 3.1 AgentHarness
-
-核心类。持有消息、模型、Session；调用 `runAgentLoop()`；管理运行状态与 AbortController；在发布事件前持久化消息。
+一个 `AgentHarness` 在构造时绑定恰好一份 Session，之后不切换。它公开 `sessionId`，但不暴露
+可写 Session 或 Repository。
 
 ```ts
 class AgentHarness {
@@ -304,280 +93,130 @@ class AgentHarness {
   switchModel(model: ModelConfig): Promise<void>;
   registerTool(tool: AgentTool): void;
   unregisterTool(name: string): void;
+  get sessionId(): string;
   get messages(): readonly AgentMessage[];
   get model(): ModelConfig;
   get isRunning(): boolean;
 }
-
-interface HarnessConfig {
-  readonly session: Session;
-  readonly model: ModelConfig;
-  readonly streamFn: StreamFn;
-  readonly toolRegistry: AgentToolRegistry;
-  readonly systemPrompt: SystemPromptBuilder;
-  readonly cwd: string;
-  readonly hooks?: AgentHookTrigger;  // 未传入时使用空 Registry
-}
 ```
 
-`switchModel`、`registerTool`、`unregisterTool` 仅在 idle 时可用。
+Harness 为这份 Session 持有消息视图、当前模型、Tool Registry、Hook Trigger、Event Bus、
+AbortController 和 run 状态。同一个 Harness 同时只运行一个 `prompt()`；运行时切换模型或修改
+Tool 会抛错。Harness 在发布对应 Event 前把新增消息写回 Session。
 
-`prompt()` 在发布每个事件前先 `persistNewMessages()`，因此 `subscribe` 观察到的
-`tool_end` / `tool_rejected` 时，对应的 `ToolResultMessage` 已经在 Session 里。
+### Harness Event 边界
 
-### 3.2 System Prompt
+`subscribe()` 接收带 `runId` 和 `lane` 的 `HarnessEvent`。Harness 发布 `run_start`、`run_end`，
+并把 Agent Event 提升为 Harness Event。Listener 观察已经发生的事实，返回值不会改变运行；
+listener 错误被 Event Bus 隔离，并交给可选的 `onEventListenerError`。
 
-```ts
-type SystemPromptBuilder = (ctx: SystemPromptContext) => string | Promise<string>;
+## 4. Coding Agent：Project 级所有者
 
-interface SystemPromptContext {
-  readonly model: ModelConfig;
-  readonly tools: readonly AgentTool[];
-  readonly cwd: string;
-  readonly date: Date;
-}
-
-function formatSystemPrompt(content: string, options?: { cwd?: string; date?: Date }): string;
-function defaultSystemPrompt(template: string): SystemPromptBuilder;
-```
-
-### 3.3 Session — 树形 JSONL 持久化
-
-基于 `id` / `parentId` 的 entry tree，延迟首次写入。
+`src/coding-agent/` 管理代码 Project，并为每份打开的 Session 建立 coding Harness。
 
 ```ts
-class Session {
-  static create(storageDir: string): Promise<Session>;
-  static open(storageDir: string, sessionId: string): Promise<Session>;
-  static inMemory(): Session;                           // 测试用
-
-  appendMessage(message: AgentMessage): Promise<void>;
-  appendModelChange(model: ModelConfig): Promise<void>;
-  buildContext(): SessionContext;                       // 按 leaf 父链恢复 { messages, model }
+interface CodingProject {
+  readonly workDir: string;
+  readonly storageDir: string;
 }
 
-class SessionError extends Error {
-  readonly code: "not_found" | "invalid_session" | "invalid_entry" | "storage";
+interface CodingAgent {
+  listSessions(): Promise<readonly string[]>;
+  createSession(): Promise<AgentHarness>;
+  openSession(sessionId: string): Promise<AgentHarness>;
+  continueRecent(): Promise<AgentHarness>;
+  renderToolEvent(event: HarnessToolEvent): string;
 }
-```
 
-- 第一条 assistant message 前只在内存缓冲，首次 flush 用 `writeFile(…, "wx")` 原子创建文件
-- 后续追加用追加写
-- `open()` 校验 JSON、entry 结构、重复 ID、父引用、根数量、消息字段（含 `details` 的 JSON-safe 校验）
-- 写入失败回滚内存 entry 和 leaf
-- 内部序列化追加（`enqueue`）
-
-### 3.4 SessionManager
-
-管理一个 project 下的多个 Session 文件（列出、恢复最近会话）。
-
-```ts
-class SessionManager {
-  constructor(project: HarnessProject);
-  continueRecent(): Promise<Session>;    // 最新或新建
-  listSessions(): Promise<string[]>;     // 按 mtime 倒序
-}
-```
-
----
-
-## 4. Coding Agent — 默认能力组合
-
-位于 `src/coding-agent/`。依赖 Harness 层和 Agent 层。是 `coding-agent` → 下层的唯一组合点。
-
-### 4.1 `createCodingAgent`
-
-```ts
 interface CreateCodingAgentConfig {
-  readonly project: HarnessProject;
+  readonly project: CodingProject;
   readonly streamFn: StreamFn;
   readonly model: ModelConfig;
-  readonly session: Session;
-  readonly systemPrompt?: string | SystemPromptBuilder;  // 默认 CODING_SYSTEM_PROMPT
-  readonly interactions?: CodingAgentInteractions;      // 默认 NO_INTERACTIONS（fail-closed）
+  readonly systemPrompt?: string | SystemPromptBuilder;
+  readonly interactions?: CodingAgentInteractions;
   readonly onEventListenerError?: HarnessListenerErrorHandler;
 }
 
-interface CodingAgentRuntime {
-  readonly harness: AgentHarness;
-  readonly renderToolEvent: (event: HarnessToolEvent) => string;
-}
-
-function createCodingAgent(
-  config: CreateCodingAgentConfig,
-): Promise<CodingAgentRuntime>;
+function createCodingAgent(config: CreateCodingAgentConfig): Promise<CodingAgent>;
 ```
 
-组装：创建内置 Tool Definition → 投影为 `AgentTool` 并注册 → 保存各 Tool 的可选
-presentation → 创建 Permission HookRegistry（注入 `interactions`）→ `new AgentHarness(…)` →
-返回 Harness 和只读的工具事件渲染函数。
+`CodingAgent` 用 Project 的 `storageDir` 建立 `SessionRepository`，并拥有 Session 的列举和选择。
+`continueRecent()` 打开最近的 Session；没有历史时创建 Session。四个 Session 方法中的三个会
+返回 `AgentHarness`，调用方直接使用该 Harness。
 
-### 4.2 `CodingAgentInteractions` — UI 注入端口
+每次 `createSession()`、`openSession()` 或 `continueRecent()` 分配 Harness 时，Coding Agent 都
+新建 Tool Registry、所有 Tool 实例、permission Hook Registry 和 AgentHarness；Harness 又建立
+自己的 Event Bus、模型与 run 状态。因此多份打开的 Session 之间没有共享的可变 Tool、Hook、
+Event、模型或运行状态。
 
-Coding Agent 定义此接口，UI 实现。coding-agent 永不导入 UI 代码。
+### 默认 Coding 能力
 
-```ts
-interface CodingAgentInteractions {
-  confirm(request: ConfirmationRequest, signal?: AbortSignal): Promise<boolean>;
-  notify(notification: Notification): void | Promise<void>;
-}
+Coding Agent 提供 coding system prompt，以及 Bash、read、write、edit、Glob 和无状态 Todo。
+Bash permission 策略分为 allow、ask、deny；ask 通过 `CodingAgentInteractions.confirm()` 请求
+具体 UI，deny 同时由 Hook 和 Bash Tool 防守。未提供 interactions 时，`NO_INTERACTIONS`
+默认拒绝确认请求。
 
-interface ConfirmationRequest {
-  readonly source: string;
-  readonly title: string;
-  readonly message: string;
-}
+Todo 每次接收完整列表，同时返回模型可见的 `content` 和结构化的 `details.todos`。Harness 将
+Tool Result 写入 Session，因此恢复状态属于 Session，而不是 Todo Tool 实例。
 
-interface Notification {
-  readonly source: string;
-  readonly level: "info" | "warning" | "error";
-  readonly message: string;
-}
-```
+### 展示边界
 
-### 4.3 默认 Hook：只有 permission
+`CodingToolDefinition` 可以在执行定义旁提供 `CodingToolPresentation`。Coding Agent 向下把
+定义转换成 `AgentTool`，向上保留 Project 级的 `renderToolEvent()`。专用展示缺失、返回
+`undefined` 或抛错时使用通用 fallback；展示失败只通过 `interactions.notify()` 报告，不改变
+Tool 执行结果。
 
-Coding Agent 在组合根创建只含 permission 的 HookRegistry。被动的 log、large-output、summary
-不是 Hook，而是 UI 层针对 Harness `subscribe` 事件的渲染/展示行为。
+## 5. UI：具体适配器
 
-| Hook | 事件 | 行为 |
-| ---- | ---- | ---- |
-| Permission | `tool_call` | Bash 的 allow/ask/deny；ask 时调 `interactions.confirm()` |
-
-### 4.4 Bash 安全策略
-
-位于 `tools/builtin/bash-policy.ts`，是 Permission Hook 与 Bash Tool Definition 的**单一共享来源**。
-
-```ts
-function classifyBashCommand(command: string): BashDecision;
-function hardDeniedBashReason(command: string): string | undefined;
-```
-
-**三级策略：**
-
-| 级别 | 示例 | 行为 |
-| ---- | ---- | ---- |
-| 硬拒绝 | `sudo`、`mkfs`、`dd if=`、`> /dev/`、`rm -rf /` | Hook 和 Bash Tool Definition 均阻止，不询问 UI |
-| 询问 | `rm`、`> /etc/`、`chmod 777` | Hook 调用 `interactions.confirm()`；无交互 Adapter 时 fail-closed |
-| 允许 | `pwd`、`git status` | 直接放行 |
-
-### 4.5 Todo 状态
-
-`todo_write` 无实例状态，每次接收完整列表，并把它同时写入模型可见的 `content` 与程序可读的
-`details.todos`。Harness 将 Tool Result 写入 Session，因此 Todo 的可恢复状态属于 Session。
-当前没有常驻 Todo UI，不预先提供状态查询接口。
-
-### 组装用法
-
-```ts
-const runtime = await createCodingAgent({
-  project: { workDir, storageDir },
-  streamFn: stream,
-  model: defaultModel,
-  session,
-  interactions: myInteractions,   // 实现 CodingAgentInteractions
-});
-await runtime.harness.prompt("list files");
-```
-
----
-
-## 5. UI — 具体前端
-
-位于 `src/ui/`。依赖 Harness 层（`AgentHarness`）和 Coding Agent（`CodingAgentRuntime`、
-`CodingAgentInteractions`）。
-`agent`、`harness`、`coding-agent` 不 import `src/ui`。
-
-```text
-src/ui/
-  cli-frontend.ts          # CliFrontend、输入循环、装配
-  cli-interactions.ts      # CodingAgentInteractions 的 readline Adapter
-  cli-harness-renderer.ts  # Harness Event 展示；调用 runtime.renderToolEvent
-```
-
-### 5.1 CLI Adapter
-
-`CliInteractions` 实现 `CodingAgentInteractions`；`CliFrontend` 通过
-`runtime.harness.subscribe()` 消费 `HarnessEvent`，并交给 `CliHarnessRenderer`。
+`src/ui/` 实现 CLI，core 模块不导入它。`CliInteractions` 实现 `confirm()` 和 `notify()`；
+`CliHarnessRenderer` 消费 Harness Event，并调用 Coding Agent 的工具展示入口。
 
 ```ts
 class CliFrontend {
   constructor(options?: CliFrontendOptions);
-
   get interactions(): CodingAgentInteractions;
-  run(runtime: CodingAgentRuntime): Promise<void>;
+  run(codingAgent: CodingAgent, harness: AgentHarness): Promise<void>;
   close(): void;
 }
 ```
 
-**行为：**
+`run(codingAgent, harness)` 订阅传入 Harness；文本流和运行统计由 CLI 展示，Tool Event 交给
+`codingAgent.renderToolEvent()`。ESC 调用当前 Harness 的 `abort()`。`confirm()` 显示 `[y/N]`，
+空输入或 ESC 都拒绝；外部 `AbortSignal` 与 ESC 信号合并。
 
-- `>>` 提示符输入，`q`/`exit`/空行退出
-- ESC 中止流式响应（`runtime.harness.abort()`）
-- `CliInteractions.confirm()` 期间暂停 ESC 监听器，展示 `[y/N]` 提示（空输入默认拒绝）；ESC 等同于 N
-- `CliInteractions.confirm()` 支持外部 `AbortSignal`，与内部 ESC 通过 `AbortSignal.any()` 合并
-- `run()` 创建 `CliHarnessRenderer`，并订阅 `runtime.harness`
+## 6. main.ts：组合根
 
-### 5.2 Tool presentation 边界
+启动顺序如下：
 
-`AgentTool` 不依赖 UI、不携带 presentation。每个 Coding Tool Definition 可选地携带
-`CodingToolPresentation`；`createCodingAgent()` 将它们保存在包内。UI 把 `HarnessToolEvent`
-交给 `runtime.renderToolEvent()`：
+1. 加载环境变量并创建 `StreamFn` 与默认模型；
+2. 从当前工作目录解析 `CodingProject`；
+3. 创建 `CliFrontend`，把 `cli.interactions` 注入 `createCodingAgent()`；
+4. 调用 `codingAgent.continueRecent()` 选择 Session 并取得 Harness；
+5. 调用 `cli.run(codingAgent, harness)`。
 
-```ts
-interface CodingToolPresentation<TArguments, TDetails> {
-  renderStart(call: ToolPresentationCall<TArguments>): string | undefined;
-  renderEnd(
-    call: ToolPresentationCall<TArguments>,
-    result: AgentToolResult<TDetails>,
-  ): string | undefined;
-  renderRejected?(event: ToolPresentationRejected<TArguments>): string | undefined;
-}
-```
+Session 的选择发生在 Coding Agent；CLI 只运行已选择的 Harness。
 
-行为：有专用 presentation 用专用展示；返回 `undefined` 或抛错时回退到 content fallback；
-presentation 错误只报告诊断，绝不影响 Agent 执行。
+## 7. 公共入口
 
-### 运行示例
+- `src/ai/index.ts`：AI 消息、模型、流和 provider 工厂；
+- `src/agent/index.ts`：`runAgentLoop`、Agent Event、Hook 和 Tool API；
+- `src/harness/index.ts`：`AgentHarness`、`Session`、`SessionRepository`、Session 错误、system
+  prompt 与 Harness Event API；
+- `src/coding-agent/index.ts`：`createCodingAgent`、`CodingAgent`、`CodingProject`、默认 prompt、
+  interactions、Coding Tool/presentation 和 Todo API；
+- `src/ui/index.ts`：`CliFrontend`、`CliInteractions`、`CliHarnessRenderer`；
+- `src/index.ts`：汇总以上入口和通用 timeout/workspace helpers。
 
-```ts
-const cli = new CliFrontend();
-const runtime = await createCodingAgent({ ..., interactions: cli.interactions });
-await cli.run(runtime);
-```
+具体内置 Tool/Hook 工厂、Bash policy、Coding Tool 到 Agent Tool 的转换、presentation registry、
+`PreparedAgentToolCall` 和 `ToolPreparation` 都是内部实现。
 
----
+## 8. 边界约束
 
-## 6. main.ts — 组合根
-
-`src/main.ts`。唯一的应用启动点，按顺序连接所有层。
-
-```text
-loadDotenv → createStreamFn → resolveProject → Session.create
-  → createCodingAgent({ ..., interactions: cli.interactions }) → cli.run(runtime)
-```
-
----
-
-## 公共导出
-
-| 入口 | 核心导出 |
-| ---- | -------- |
-| `src/index.ts` | 全部公共类型 + `createStreamFn` + `HookRegistry` |
-| `src/ai/index.ts` | `StreamFn`、`ModelConfig`、`Message`、`Context`、`Tool`、`ToolResultMessage`、`AssistantMessageEvent`、`createStreamFn` |
-| `src/agent/hooks/index.ts` | `HookRegistry`、`AgentHookTrigger`、`AgentHookCall` 及各 Call/Result 类型、`ResultOf`、`HookHandler` |
-| `src/agent/tools/index.ts` | `AgentTool`、`AgentToolRegistry`、`AgentToolCall`、`AgentToolResult` |
-| `src/harness/index.ts` | `AgentHarness`、`Session`、`SessionError`、`SessionManager`、`defaultSystemPrompt`、`HarnessConfig` |
-| `src/coding-agent/index.ts` | `createCodingAgent`、`CODING_SYSTEM_PROMPT`、`NO_INTERACTIONS` 及其公开配置、interaction、Tool/presentation、Todo 类型 |
-
-`PreparedAgentToolCall`、`ToolPreparation`、具体 CLI Adapter、内置 Tool/Hook 实现和 Bash policy helpers
-不作为 Coding Agent 根入口的稳定公共 API。
-
-## 边界约束
-
-- `ai` 不依赖 `agent`
-- `agent` 不依赖 `coding-agent` 或 `ui`
-- `coding-agent` 不依赖 `ui`（通过 `CodingAgentInteractions` port 依赖倒置）
-- `ui -> coding-agent -> harness -> agent -> ai`
-- UI 解耦用两种机制：Permission Hook 的包内 context 注入 interactions；Tool definition 的 `execute` 接收 `CodingToolContext`，presentation 留在 Coding Agent
-- `main.ts` 是唯一连接所有层的文件
+- `ai` 不依赖 `agent`；
+- `agent` 不依赖 `harness`、`coding-agent` 或 `ui`；
+- `harness` 不依赖具体 coding Tool 或 UI；
+- `coding-agent` 不依赖 `src/ui`，只定义 `CodingAgentInteractions` 端口；
+- `SessionRepository` 管理 Session 集合，`AgentHarness` 只绑定一份 Session；
+- `CodingAgent` 选择 Project 中的 Session，并直接返回独立 Harness；
+- Hook 负责提交前控制，Harness Event 负责事实通知，presentation 负责 UI 文本；
+- `main.ts` 是唯一连接 provider、Project 和具体 CLI 的应用入口。

@@ -1,138 +1,114 @@
-# Coding Agent — 让 Harness 能在代码项目中工作
+Coding Agent 管理一个代码 Project。一个 Project 包含工作目录和一组 Session；每个打开的
+Session 由独立的 AgentHarness 驱动。
 
-读到这里前，应先理解 Harness：Harness 管理 Session 和一次次 run，并通过
-`HarnessEvent` 报告运行事实。
-
-Coding Agent 不再建立一套运行系统。它只给 Harness 装上完成代码任务所需的默认能力：
+Coding Agent 给 Harness 提供完成代码任务所需的各种能力：
 
 - coding system prompt；
-- Bash、文件、Glob 和 Todo 工具；
-- Bash 权限 Hook；
-- 两个 UI 接口：向用户提问，以及把工具事件转换为展示文本。
+- Tools：Bash、文件、Glob 和 Todo；
+- Hooks：如 permission Hook；
+- UI 接口：confirm、notify 和工具展示。
 
-所以 Coding Agent 的核心可以概括为：**输入一个项目和 Harness 所需依赖，输出一个已经装好
-coding 能力的 Harness。**
-
-## 1. Project
-
-Coding Agent 围绕一个 `HarnessProject` 工作：
+## 1. CodingProject
 
 ```ts
-interface HarnessProject {
+interface CodingProject {
   readonly workDir: string;
   readonly storageDir: string;
 }
 ```
 
-- `workDir` 是工具操作的项目根目录。相对文件路径、Glob 和 Bash 都以它为起点。
-- `storageDir` 是这个项目的 Session 存储目录；创建或恢复 Session 时使用。
+- `workDir` 是代码工具的项目根目录。相对文件路径、Glob 和 Bash 都从这里开始。
+- `storageDir` 保存这个 Project 的全部 Session；`SessionRepository` 在其中创建、打开和列举
+  Session。
 
-Coding Agent 不负责选择 Session。调用者先创建或恢复 Session，再把它和 Project 一起传入。
+`createCodingAgent()` 会把两个目录解析成绝对路径。Project 是 Coding Agent 的核心单位：
+`CodingAgent` 在 Project 范围内选择 Session，Harness 只运行已经选中的一份 Session。
 
-## 2. 创建并运行
+## 2. 创建并继续最近的 Session
 
 ```ts
-import { createCodingAgent } from "./coding-agent/index.js";
-import { Session } from "./harness/index.js";
+import { createStreamFn } from "../ai/index.js";
+import { createCodingAgent } from "./index.js";
 
-const runtime = await createCodingAgent({
+const { stream, defaultModel } = createStreamFn();
+const codingAgent = await createCodingAgent({
   project: {
     workDir: process.cwd(),
     storageDir: ".kea",
   },
-  streamFn,
-  model,
-  session: Session.inMemory(),
-  interactions: myInteractions, // 可选
+  streamFn: stream,
+  model: defaultModel,
 });
 
-await runtime.harness.prompt("修复测试失败");
+const harness = await codingAgent.continueRecent();
+await harness.prompt("修复测试失败");
 ```
 
-`createCodingAgent()` 返回的 `CodingAgentRuntime` 只有两项能力：
+`createCodingAgent()` 建立 Project 级的 Session 入口和默认 coding 能力，但不会提前打开
+Session。`continueRecent()` 打开最近修改的 Session；如果 Project 尚无历史，则创建一份。
+它返回可以直接 `prompt()`、`subscribe()`、`abort()` 或 `switchModel()` 的 `AgentHarness`。
+
+## 3. 选择 Session
 
 ```ts
-interface CodingAgentRuntime {
-  readonly harness: AgentHarness;
-  readonly renderToolEvent: (event: HarnessToolEvent) => string;
+interface CodingAgent {
+  listSessions(): Promise<readonly string[]>;
+  createSession(): Promise<AgentHarness>;
+  openSession(sessionId: string): Promise<AgentHarness>;
+  continueRecent(): Promise<AgentHarness>;
+  renderToolEvent(event: HarnessToolEvent): string;
 }
 ```
 
-- `harness` 是唯一的运行入口：prompt、abort、切换模型、读取消息、订阅事件都在这里。
-- `renderToolEvent()` 把一个工具事件转换为可展示文本。UI 不会得到内部注册表，也不能修改
-  Coding Agent 已经组装好的展示规则。
+- `listSessions()` 返回按文件最近修改时间从新到旧排列的 Session ID；没有 Session 时返回空数组。
+- `createSession()` 创建 Session，并返回绑定它的新 Harness。
+- `openSession(sessionId)` 打开指定 Session，并返回绑定它的新 Harness；无效或损坏的 Session
+  错误会原样传播。
+- `continueRecent()` 打开列表中的第一份 Session；列表为空时创建 Session。
 
-## 3. 一次运行如何经过 Coding Agent
+`AgentHarness.sessionId` 是 Harness 所绑定 Session 的只读标识。Harness 不持有 Repository，
+也不负责切换 Session；再次选择 Session 会得到另一个 Harness，而不会改写已有 Harness。
 
-假设模型请求执行 `bash({ command: "rm old.txt" })`：
+## 4. 每份 Session 的 Harness 组装
 
-1. Harness 驱动 Agent Loop，Agent 收到模型产生的 Tool Call。
-2. Permission Hook 在执行前检查命令。`rm` 需要确认，因此通过 `interactions.confirm()` 询问
-   UI。
-3. 用户允许后，Agent 验证参数并执行 Bash Agent Tool。
-4. 工具返回 `AgentToolResult`；Agent 将结果写入消息，Harness 将消息持久化到 Session。
-5. Harness 发布 `tool_start` 和 `tool_end` 等事实。UI 订阅这些 Event。
-6. UI 把工具 Event 交给 `runtime.renderToolEvent()`，再决定输出到终端、TUI 或其他界面。
+`createSession()`、`openSession()` 和 `continueRecent()` 每次返回 Harness 时都会重新组装：
 
-这条链中，Hook 可以改变尚未提交的行为；Harness Event 只能报告已经发生的事实；UI 只在
-Coding Agent 以上出现。
+1. 为 Bash、read、write、edit、Glob 和 Todo 建立新的 `AgentToolRegistry` 与 Tool 实例；
+2. 为 permission Hook 建立新的 `HookRegistry`；
+3. 把选中的 Session、模型、stream、system prompt 和 `workDir` 交给新的 `AgentHarness`；
+4. Harness 自己建立 Event Bus、消息视图、当前模型、AbortController 和运行状态。
 
-## 4. 为什么有 `CodingToolDefinition`
+因此同时打开的 Session 拥有独立的可变 Tool、Hook、Event、模型和 run 状态。它们共享的是
+Project 配置、调用方依赖和工具展示规则，不共享当前 Harness 或当前 Session 状态。
 
-Agent 层只需要知道工具怎样验证和执行，因此定义 `AgentTool`。Coding Agent 还需要知道一个
-工具怎样展示，例如 Todo 结果适合显示成任务列表。
+## 5. Bash、文件与 Glob
 
-`CodingToolDefinition` 把同一个 coding 工具的两部分放在一起：
+### Bash
 
-```ts
-interface CodingToolDefinition<TParameters, TDetails> {
-  readonly name: string;
-  readonly description: string;
-  readonly parameters: TParameters;
+`bash` 接收 `{ command: string }`，每次在 `workDir` 中启动一个新的非交互 Bash 进程，并把
+标准输出和错误输出合并为文本结果。进程之间不保留 shell 变量或工作目录变更。
 
-  execute(arguments_, signal, context): Promise<AgentToolResult<TDetails>>;
-  readonly presentation?: CodingToolPresentation<
-    Static<TParameters>,
-    TDetails
-  >;
-}
+执行使用同一份三级策略：
 
-interface CodingToolContext {
-  readonly cwd: string;
-}
-```
+| 判断 | 例子 | 行为 |
+| ---- | ---- | ---- |
+| allow | `pwd`、`git status` | 直接执行 |
+| ask | `rm file.txt`、`chmod 777` | permission Hook 调用 `confirm()` |
+| deny | `sudo`、`mkfs`、`rm -rf /` | 直接拒绝，不询问 UI |
 
-创建 Runtime 时，Coding Agent 在包内完成一次翻译：
+Permission Hook 使用完整策略；Bash Tool 自身再次检查 deny 规则，避免绕过 Hook 后执行硬拒绝
+命令。Bash 失败和非零退出码会成为 `isError: true` 的 Tool Result。
 
-- schema 和 `execute()` 变成 `AgentTool`，向下交给 Agent；
-- 可选 `presentation` 留在 Coding Agent，向上供 UI 使用。
+### 文件与 Glob
 
-因此 Agent 和 Harness 都不会依赖 UI，同时一个具体工具的执行语义和展示语义仍能放在同一
-处维护。这是 Coding Agent 保留的主要翻译层。
+- `read_file` 读取相对路径，可用 `limit` 限制返回行数；
+- `write_file` 写入完整内容，并按需创建父目录；
+- `edit_file` 只替换第一次出现的精确文本，找不到时返回错误结果；
+- `glob` 从 `workDir` 匹配文件，统一使用 `/` 分隔输出，无结果时返回 `(no matches)`。
 
-## 5. Bash 工具
+文件路径经过 workspace 边界检查，不能用相对路径逃出 `workDir`。
 
-Bash 接收 `{ command: string }`，在 Project 的 `workDir` 中启动本地非交互 Bash，并将标准
-输出和错误输出合并为文本结果。每次调用都会启动新进程；上一次命令设置的 shell 变量不会
-成为下一次调用的隐藏状态。
-
-执行前使用三级策略：
-
-| 判断 | 例子 | 结果 |
-|------|------|------|
-| allow | `pwd`、`git status` | 直接执行。 |
-| ask | `rm file.txt`、`chmod 777` | Permission Hook 调用 `confirm()`。 |
-| deny | `sudo`、`mkfs`、`rm -rf /` | 直接拒绝，不询问 UI。 |
-
-共享策略独立放在 `bash-policy.ts`，因为它有两个真实调用者：
-
-- Permission Hook 用完整的 allow/ask/deny 规则决定是否询问用户；
-- Bash 工具自身再次检查 deny 规则，防止工具绕过 Hook 后执行绝不允许的命令。
-
-本地进程执行没有额外 backend interface。目前只有一种实现；真正出现 SSH 或容器执行时，
-再根据两个真实实现抽取接口。
-
-## 6. Todo 工具与状态
+## 6. 无状态 Todo 与 Session 持久化
 
 `todo_write` 每次接收完整任务列表：
 
@@ -141,113 +117,87 @@ interface TodoItem {
   readonly content: string;
   readonly status: "pending" | "in_progress" | "completed";
 }
-```
 
-它不会记住上一次调用，而是根据本次输入同时返回：
-
-```ts
-{
-  content: "Current tasks:\n1. [in_progress] 修复测试\nUpdated 1 tasks",
-  details: { todos: [...] },
-  isError: false,
+interface TodoDetails {
+  readonly todos: readonly TodoItem[];
 }
 ```
 
-- `content` 会进入下一次模型请求，所以模型在恢复 Session 或切换模型后仍能看到任务列表。
-- `details.todos` 保存在 Agent 消息和 Session 中，程序或 UI 可以读取结构化列表。
+Todo Tool 不保存上一次调用。它同时返回模型可见的 `content` 和程序可读的
+`details: { todos }`；Harness 把整个 Tool Result 写入 Session。这样，恢复 Session 后模型仍能
+从 `content` 看见列表，UI 或程序也能从 `details` 读取结构化数据。Todo 状态属于 Session，
+不属于 Tool 实例或单次 run。
 
-因此 Todo 的可恢复状态属于 **Session**，不属于一次 run，也不藏在 Todo Tool 实例里。
-当前没有常驻 Todo 面板，所以 Coding Agent 不预先提供状态查询类；出现真实 UI 消费者后，
-再在 Todo 模块中增加从当前 Session 分支读取列表的函数。
+## 7. Hook、Interactions、Harness Event 与展示
 
-## 7. Interactions 与工具展示
-
-这两种 UI 接口方向不同。
-
-### Interactions：Coding Agent 向 UI 请求动作
+Hook 是执行前的控制通道。默认 permission Hook 处理 Bash 的 allow/ask/deny；ask 时通过
+`CodingAgentInteractions.confirm()` 请求 UI 决策。没有传入 interactions 时使用
+`NO_INTERACTIONS`，其 `confirm()` 总是返回 `false`，所以需要确认的操作默认拒绝。
 
 ```ts
 interface CodingAgentInteractions {
-  confirm(request, signal?): Promise<boolean>;
-  notify(notification): void | Promise<void>;
+  confirm(request: ConfirmationRequest, signal?: AbortSignal): Promise<boolean>;
+  notify(notification: Notification): void | Promise<void>;
 }
 ```
 
-`confirm()` 会影响控制流，例如决定是否执行 `rm`。没有传入 interactions 时使用
-`NO_INTERACTIONS`，其 `confirm()` 始终返回 `false`，所以需要确认的命令默认拒绝。
+`notify()` 用于无需回复的诊断。目前工具展示规则抛错时，Coding Agent 通过它报告错误；通知
+失败不会重新进入 Tool 执行。
 
-`notify()` 用于不需要回复的通知和诊断。它不等于 Harness Event，也不能改变 Agent 行为。
-
-### Event 与 presentation：UI 消费已经发生的事实
-
-UI 调用 `runtime.harness.subscribe()` 接收全部 `HarnessEvent`。文本流、run 生命周期和统计由
-UI 自己展示；三个工具执行事件可以交给 `renderToolEvent()`：
+Harness Event 报告已经发生的事实。UI 订阅具体 Harness，自己处理文本流和 run 生命周期，
+并把 `tool_start`、`tool_end`、`tool_rejected` 交给 Project 级的展示入口：
 
 ```ts
-if (
-  event.type === "tool_start" ||
-  event.type === "tool_end" ||
-  event.type === "tool_rejected"
-) {
-  console.log(runtime.renderToolEvent(event));
-}
+const unsubscribe = harness.subscribe((event) => {
+  if (
+    event.type === "tool_start" ||
+    event.type === "tool_end" ||
+    event.type === "tool_rejected"
+  ) {
+    console.log(codingAgent.renderToolEvent(event));
+  }
+});
 ```
 
-具体工具可以提供 `CodingToolPresentation`；没有专用规则、规则返回 `undefined` 或展示代码抛错
-时，Coding Agent 使用通用文本。展示失败只产生诊断，不会改变工具执行结果。
+每个 `CodingToolDefinition` 可以提供 `CodingToolPresentation`。没有专用规则、规则返回
+`undefined` 或规则抛错时，Coding Agent 使用通用文本；展示失败不会改变 Tool Result。
+Hook 可以阻止尚未执行的操作，Interactions 让 Coding Agent 请求 UI 动作，Harness Event 和
+presentation 只负责观察与展示。
 
 ## 8. 源码结构
 
-```text
-src/coding-agent/
-  factory.ts                 createCodingAgent；默认能力清单和组装
-  types.ts                   工厂输入与 Runtime 输出
-  coding-system-prompt.ts    默认 coding system prompt
-  hooks/
-    permission.ts            Bash Permission Hook
-  tools/
-    definition.ts            CodingToolDefinition 及到 AgentTool 的内部翻译
-    builtin/
-      bash.ts                Bash schema 与本地执行
-      bash-policy.ts         两个调用者共享的安全策略
-      files.ts               read、write、edit、glob
-      todo.ts                Todo 类型、执行与 presentation
-  ui/
-    interactions.ts          confirm、notify 与无 UI 默认实现
-    presentation.ts          展示契约与内部选择/fallback
-```
+- `factory.ts`：Project 级 `CodingAgent`、Session 选择和每个 Harness 的默认能力组装；
+- `types.ts`：`CodingProject`、工厂配置和 `CodingAgent`；
+- `coding-system-prompt.ts`：默认 coding system prompt；
+- `hooks/permission.ts`：Bash permission Hook；
+- `tools/definition.ts`：Coding Tool 定义及到 `AgentTool` 的内部转换；
+- `tools/builtin/bash.ts`、`bash-policy.ts`：本地 Bash 与共享安全策略；
+- `tools/builtin/files.ts`：read、write、edit 和 Glob；
+- `tools/builtin/todo.ts`：Todo 类型、执行和展示；
+- `ui/interactions.ts`：confirm、notify 与无 UI 默认实现；
+- `ui/presentation.ts`：工具展示契约、选择和 fallback。
 
-依赖方向是：具体 UI 使用 Coding Agent；Coding Agent 组装 Harness 和 Agent 能力；Harness 驱动
-Agent；Agent 使用 AI。Agent 和 Harness 都不知道 Coding Agent 的 Project 默认能力或 UI。
+具体 UI 依赖 Coding Agent；Coding Agent 组装 Harness 和 Agent 能力；Harness 驱动 Agent；Agent
+使用 AI。Coding Agent 不导入 `src/ui`。
 
 ## 9. 完整公共 API
 
-普通消费者从 `src/coding-agent/index.ts` 导入以下内容。
+以下清单与 `src/coding-agent/index.ts` 一致。
 
 ### 值
 
-- `createCodingAgent`
-- `CODING_SYSTEM_PROMPT`
-- `NO_INTERACTIONS`
+- `createCodingAgent`：创建 Project 级 `CodingAgent`；
+- `CODING_SYSTEM_PROMPT`：默认 coding system prompt；
+- `NO_INTERACTIONS`：fail-closed 的无 UI interactions。
 
-### 创建与 UI 类型
+### 类型
 
-- `CreateCodingAgentConfig`
-- `CodingAgentRuntime`
-- `CodingAgentInteractions`
-- `ConfirmationRequest`
-- `Notification`
+- Project 与创建：`CodingAgent`、`CodingProject`、`CreateCodingAgentConfig`；
+- UI 交互：`CodingAgentInteractions`、`ConfirmationRequest`、`Notification`；
+- Tool 展示：`CodingToolPresentation`、`ToolPresentationCall`、
+  `ToolPresentationRejected`；
+- Tool 定义：`CodingToolContext`、`CodingToolDefinition`；
+- Todo：`TodoItem`、`TodoDetails`。
 
-### 自定义工具类型
-
-- `CodingToolDefinition`
-- `CodingToolContext`
-- `CodingToolPresentation`
-- `ToolPresentationCall`
-- `ToolPresentationRejected`
-- `TodoItem`
-- `TodoDetails`
-
-默认 Tool/Hook 工厂、AgentTool 翻译函数、Bash policy 和 presentation registry 都是包内实现，
-不是稳定公共接口。普通使用者只需创建 Runtime，再通过其中的 Harness 和
-`renderToolEvent()` 工作。
+内置 Tool/Hook 工厂、`toAgentTool()`、Bash policy 和 presentation registry 是包内实现，不是
+稳定公共接口。
