@@ -22,6 +22,10 @@ ui -> coding-agent -> harness -> agent -> ai
 
 > 行为由哪一层实现，对应的 Hook Call 和 Event 就由哪一层定义。
 
+对上层运行者，Harness 是 Agent 的超集：它提供完整的运行控制、状态和扁平事实流。上层不需要访问内部 Agent，也不需要订阅第二条 Agent Event 流。
+
+“超集”只描述运行接口，不改变模块所有权。Agent Hook、Agent Tool 仍属于 Agent；Tool Presentation 仍属于 Coding Agent。Harness 负责组合和提升这些能力，不重新定义没有语义差异的平行类型。
+
 ## 2. Hook 与 Event
 
 Hook 和 Event 都会调用已注册代码，但权限不同。
@@ -83,11 +87,11 @@ BeforeToolCall
 | --- | --- | --- |
 | `ai` | 模型消息、Tool schema、模型流事件 | Agent、Harness、UI |
 | `agent` | Agent Loop、Agent Tool、Agent Hook、Agent Event | Harness、Coding Agent、UI |
-| `harness` | run/session/lane、Harness Hook、Harness Event | Coding Agent、UI |
+| `harness` | Agent 运行能力的上层超集、run/session/lane、Harness Hook、Harness Event | Coding Agent、UI |
 | `coding-agent` | Coding ToolDefinition、Coding Hook 实现、UI seam、组合工厂 | 具体 CLI/TUI 实现 |
 | `ui` | CLI/TUI Adapter 与输出生命周期 | Agent/Harness 的内部装配 |
 
-依赖关系是单向的。Coding Agent 是组合根，因此在构造阶段可以直接实现 Agent 的 Tool 与 Hook 接口；构造完成后的产品运行只通过 Harness。
+依赖关系是单向的。Coding Agent 是组合根，因此在构造阶段可以直接实现 Agent 的 Tool 与 Hook 接口；构造完成后的产品运行只通过 Harness。Harness 不公开内部 Agent 实例。
 
 ## 4. Hook 模块
 
@@ -147,25 +151,73 @@ toolcall_start / toolcall_delta / toolcall_end
 tool_start / tool_end / tool_rejected
 ```
 
-`HarnessEvent` 描述 run、lane、session、compaction 和 navigation。Harness 向上转发 Agent 事实时增加运行上下文，但不复制 Agent Event：
+`HarnessEvent` 是上层唯一的运行事实流。它包含 Agent 事实，并增加 run、lane、session、compaction 和 navigation 等 Harness 事实。
+
+Harness 使用类型提升生成 Agent 部分，不手写复制每个事件：
 
 ```ts
+interface HarnessEventContext {
+  readonly lane: string;
+  readonly runId: string;
+}
+
+type LiftAgentEvent<E extends AgentEvent = AgentEvent> =
+  E extends AgentEvent
+    ? E & HarnessEventContext
+    : never;
+
 type HarnessEvent =
-  | HarnessOwnedEvent
-  | {
-      readonly type: "agent_event";
-      readonly lane: string;
-      readonly runId: string;
-      readonly event: AgentEvent;
-    };
+  | LiftAgentEvent
+  | HarnessOwnedEvent;
+
+function liftAgentEvent(
+  event: AgentEvent,
+  context: HarnessEventContext,
+): LiftAgentEvent {
+  return { ...event, ...context } as LiftAgentEvent;
+}
 ```
 
-使用 envelope 的理由：
+上层直接处理扁平事件：
 
-- Agent 继续拥有自己的事实类型；
-- Harness 可以补充 `lane` 和 `runId`；
-- 上层只订阅一个 Harness 观察流；
-- Agent 与 Harness 的同名概念不会被扁平联合混在一起。
+```ts
+harness.subscribe((event) => {
+  switch (event.type) {
+    case "text_delta":
+      renderText(event.text);
+      break;
+    case "tool_end":
+      renderTool(event);
+      break;
+    case "compaction_end":
+      renderCompaction(event);
+      break;
+  }
+});
+```
+
+这种提升同时满足：
+
+- Agent 继续拥有低层事实的原始定义；
+- Harness 为每个 Agent 事实增加 `lane` 和 `runId`；
+- UI 只 import `HarnessEvent`，不理解内部 Agent/Harness 嵌套；
+- 新增 Agent Event 会自动进入 Harness 类型，不产生一份需要同步维护的副本。
+
+Harness 对 Agent Event 使用统一的 `liftAgentEvent()`，不按事件类型逐个映射。这样 Agent 新增 Event 时，类型和运行转发同时生效；Harness 只有在创造了新的上层事实时才定义 Harness-owned Event。
+
+Harness 自己定义的事件名不得与提升的 Agent Event 冲突。两个层次的事实语义不同就使用不同名称。例如：
+
+```text
+run_start
+  -> agent_start
+  -> ...
+  -> agent_end
+  -> run_end
+```
+
+一次 run 可能因重试或压缩包含多次 Agent 执行，所以 `run_*` 和 `agent_*` 都有独立意义，不能互相覆盖。
+
+Harness 在发布提升后的 Agent Event 前，先完成该事件要求的状态更新和持久化动作。Listener 收到事件时，读取 Harness 状态应当与事件一致。流式 delta 没有 durable 写入要求，仍可直接发布。
 
 Event 是否持久化由具体类型决定。`entry_added` 是提交后的 durable fact，流式 `text_delta` 是 transient fact。
 
@@ -269,6 +321,21 @@ interface CodingToolPresentation<TArguments, TDetails> {
 
 Presentation 只解释已确定的工具事实，不能执行工具或改变结果。第一版返回 `string`；出现第二种真实前端后，再根据共同需求决定是否引入前端中立的展示模型。
 
+Registry 对 UI 暴露的渲染入口接收从 `HarnessEvent` 提取出的扁平工具事件：
+
+```ts
+type HarnessToolEvent = Extract<
+  HarnessEvent,
+  { type: "tool_start" | "tool_end" | "tool_rejected" }
+>;
+
+interface CodingToolPresentationRegistry {
+  render(event: HarnessToolEvent): string;
+}
+```
+
+Registry 内部根据 tool name 找到强类型 Presentation。UI 不 import `AgentEvent`、`AgentToolCall` 或 `AgentToolResult`，也不负责在 Agent/Harness 两套事件之间转换。
+
 ### 7.2 CodingAgentInteractions
 
 ```ts
@@ -319,8 +386,10 @@ interface CodingAgentRuntime {
 运行阶段，UI 只 import Coding Agent 接口：
 
 - 通过 `runtime.harness` 发送输入、停止运行和订阅 `HarnessEvent`；
-- 通过 `runtime.presentations` 渲染 envelope 中的工具事实；
+- 将扁平 `HarnessToolEvent` 交给 `runtime.presentations.render()`；
 - 不直接访问 Agent Loop、Tool Registry 或 Hook Registry。
+
+`CodingAgentRuntime` 是产品装配结果，不是第二个运行时。Harness 仍然是唯一的运行状态与事件来源；Runtime 只附带 Coding Agent 的展示策略。
 
 ## 9. 目标目录
 
@@ -366,7 +435,7 @@ Agent 与 Harness 是不同层，因此最终成为同级目录。目录迁移�
 本次实现：
 
 - 保留现有 Agent Hook 行为，调整所有权和装配；
-- Harness 增加自己的 Event 类型，并使用 `agent_event` envelope；
+- Harness 增加扁平的 Event 超集，类型提升 Agent Event 并补充 `lane/runId`；
 - 增加 `CodingToolDefinition` 和 `toAgentTool()`；
 - 将 Tool Presentation 与 Registry 放入 Coding Agent；
 - 将 `CodingHookUI` 收敛为 `CodingAgentInteractions`；
@@ -387,9 +456,14 @@ Agent 与 Harness 是不同层，因此最终成为同级目录。目录迁移�
 2. Agent 不 import Harness；Harness 不 import Coding Agent；核心层不 import UI。
 3. Agent Hook 与 Harness Hook 分别由行为所有者定义和触发。
 4. Hook Handler 可以按契约影响决策；Event Listener 永远不能影响执行。
-5. UI 只订阅 Harness 观察流；Agent Event 通过 envelope 向上提供。
+5. UI 只订阅扁平的 Harness 观察流，不 import 或订阅 Agent Event。
 6. 每个 Coding Tool 在一个 `CodingToolDefinition` 中声明执行和可选 Presentation。
 7. `toAgentTool()` 的结果不包含 Presentation 或 UI 类型。
 8. Presentation 失败只触发 fallback，不改变 Agent 或 Harness 状态。
 9. Hook 只通过 `CodingAgentInteractions` 请求用户交互。
 10. `content` 与 `details` 保持同源和一致。
+11. Harness 不公开内部 Agent 实例，也不存在第二条上层 Agent Event 通道。
+12. 提升后的 Agent Event 都包含 `lane/runId`，Harness 自有事件名不与其冲突。
+13. 发布 Event 时，Harness 的可观察状态已经与该事实一致。
+14. Presentation Registry 只接收 `HarnessToolEvent`，UI 不处理 Agent 工具类型。
+15. Agent Event 通过一个通用提升函数转发，不维护逐事件映射表。
