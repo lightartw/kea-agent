@@ -1,59 +1,237 @@
-# Harness — Agent 运行时
+# Harness — 管理 Agent 的一次次运行
 
-Harness 是拥有 Agent 生命周期的单线程运行时核心。它在内部消费 `AgentEvent`，把每个事件
-提升为 `HarnessEvent`（附 `lane` 与 `runId`），将稳定消息持久化到树形 `Session` 中，
-并通过唯一的事件流发布给订阅者。它是运行时对外唯一的观察与控制面。
+Agent 负责完成一项任务：接收消息、请求模型、执行工具，直到本次任务结束。
+
+真正的应用还需要记住历史、切换模型、中止运行，并把运行过程交给 UI 或日志系统。`harness`
+包负责这些工作。它在 Agent 外面增加了**运行管理、会话保存和事件通知**，但不知道 Bash、
+TodoWrite 等具体 coding 工具，也不包含 UI。
+
+可以先记住这组关系：
+
+- Agent 决定一次任务怎样执行；
+- Harness 管理任务何时开始和结束，并保存结果；
+- 上层应用订阅 Harness 事件，再决定怎样展示结果。
 
 ## 最小用法
 
+下面创建一个只保存在内存中的 Harness，监听文本输出，然后运行一次任务：
+
 ```ts
 import { createStreamFn } from "../ai/factory.js";
-import { createCodingAgent } from "../coding-agent/factory.js";
-import { Session } from "./session/session.js";
+import { AgentToolRegistry } from "../agent/tools/registry.js";
+import {
+  AgentHarness,
+  Session,
+  defaultSystemPrompt,
+} from "./index.js";
 
 const { stream, defaultModel } = createStreamFn();
-const project = { workDir: process.cwd(), storageDir: ".kea/sessions" };
-const session = await Session.create(project.storageDir);
 
-const runtime = await createCodingAgent({
-  project,
-  streamFn: stream,
+const harness = new AgentHarness({
+  session: Session.inMemory(),
   model: defaultModel,
-  session,
+  streamFn: stream,
+  toolRegistry: new AgentToolRegistry(),
+  systemPrompt: defaultSystemPrompt("You are a helpful assistant."),
+  cwd: process.cwd(),
 });
 
-runtime.harness.subscribe((event) => {
-  // 渲染 HarnessEvent（text_delta、tool_start、run_end 等）
+const unsubscribe = harness.subscribe((event) => {
+  if (event.type === "text_delta") {
+    process.stdout.write(event.text);
+  }
 });
 
-await runtime.harness.prompt("Write a hello-world program.");
+await harness.prompt("Explain what an event is.");
+unsubscribe();
 ```
 
-## 概念
+通常，Coding Agent 不会手动完成这些组装工作，而是调用 `createCodingAgent()` 获得已经配置好
+工具、Hook 和 system prompt 的 Harness。但无论怎样创建，运行和订阅方式都相同。
 
-Harness 分为三层：
+## 一次 `prompt()` 发生了什么
 
-- **Session 管理层**（`SessionManager`）：管理一个 project 下多个 `Session` 文件的生命周期。负责 session 的列出和恢复；创建/打开单个 session 由 `Session.create()`/`Session.open()` 负责。
-- **通用运行时**（`AgentHarness`）：持有 Agent、Session 和事件总线。消费 Agent 事件、持久化消息并发布给订阅者。绝不导入具体 coding 工具或 coding system prompt。
-- **Coding 组合**（`createCodingAgent`）：将 `AgentHarness` 与 coding 工具定义、coding system prompt、Hook 和 presentation 组装在一起的工厂函数，返回 `CodingAgentRuntime`。`session` 和 `model` 由调用方传入。
-
-## 事件流
-
-`AgentHarness` 对外只发布**一个平坦的 `HarnessEvent` 流**，不暴露内部 Agent 或第二套 Agent 事件订阅：
+调用：
 
 ```ts
-type HarnessEvent =
-  | LiftAgentEvent          // 每个 AgentEvent 提升后附 lane/runId
-  | HarnessOwnedEvent       // run_start / run_end（completed|aborted|error）
+await harness.prompt("Create hello.txt");
 ```
 
-- 每次 `prompt()` 生成一个 `runId`，当前唯一 lane 为 `main`（`MAIN_LANE`）。
-- 订阅者读到 `tool_end` / `tool_rejected` 时，对应的 `ToolResultMessage` 已经在 Session 里（先持久化、后发布）。
-- 事件监听器失败被隔离：单个监听器抛错不会拒绝 `prompt()`，也不会阻止后续监听器收到 `run_end`。诊断通过 `HarnessConfig.onEventListenerError` 上报。
+Harness 会按以下顺序工作：
 
-## `AgentHarness`
+1. 根据当前模型、工具、工作目录和日期生成 system prompt。
+2. 创建本次运行的 `runId`，发布 `run_start`。
+3. 启动 Agent。Agent 产生文本、工具调用和工具结果等事件。
+4. Agent 产生的新消息先写入 Session，然后 Harness 再向订阅者发布对应事件。
+5. 运行完成、中止或失败后，Harness 发布一个 `run_end`。
 
-核心类。通过 `HarnessConfig` 构造：
+所以 `prompt()` 不只是“问一次模型”。一次运行中可能包含多个模型请求和多个工具调用。
+`prompt()` 在整个运行结束后才会完成。`run_start` 发布后发生的失败会产生
+`run_end: error`，随后由 `prompt()` 抛出；如果 system prompt 生成失败，运行尚未开始，
+因此不会产生这对运行事件。
+
+## Event Bus：把运行事实通知给上层
+
+Event Bus 可以译为“事件总线”。这里的“总线”不是特殊线程，它只是保存一组 listener，
+并在新事件出现时依次调用它们。
+
+理解它只需要四个概念：
+
+| 概念 | 含义 |
+|------|------|
+| Event | 描述已经发生之事的普通对象，例如 `{ type: "run_start" }`。 |
+| Listener | 接收 Event 的函数，常用于更新 UI 或写日志。 |
+| `subscribe()` | 把 Listener 登记到 Event Bus。 |
+| `publish()` | 把一个 Event 依次交给所有 Listener。 |
+
+`AgentHarness` 内部拥有一个 `HarnessEventBus`。使用 Harness 时通常只需要调用
+`harness.subscribe()`，不需要自己调用 `publish()`：
+
+```ts
+const unsubscribe = harness.subscribe(async (event) => {
+  console.log(event.type, event.runId);
+});
+
+await harness.prompt("Hello");
+unsubscribe(); // 此后不再接收事件
+```
+
+一次简单运行可能让 Listener 依次收到：
+
+```text
+run_start
+agent_start
+turn_start
+text_delta
+turn_end
+agent_end
+run_end
+```
+
+如果模型调用工具，中间还会出现 `toolcall_*`、`tool_start`、`tool_end` 或
+`tool_rejected`。
+
+### Event Bus 的行为约定
+
+- 一个 Harness 只有一条 `HarnessEvent` 流。
+- Listener 按注册顺序执行；异步 Listener 也会被等待。
+- `subscribe()` 返回的 `unsubscribe()` 可以安全地重复调用。
+- 发布一个 Event 时使用当时的 Listener 快照；订阅变化从下一个 Event 开始生效。
+- Listener 的返回值会被忽略，因此 Listener 不能改变 Agent 的决定。
+- 某个 Listener 抛错不会中断运行，也不会阻止其他 Listener。错误交给
+  `HarnessConfig.onEventListenerError`。
+
+这些约定让 UI 或日志代码出错时，不会破坏 Agent 的主要运行流程。
+
+## `HarnessEvent` 包含什么
+
+`HarnessEvent` 是 Harness 对外发布的唯一事件类型，由两部分组成：
+
+1. Harness 自己产生的 `run_start` 和 `run_end`；
+2. Agent 产生的 `AgentEvent`，由 Harness 加上 `runId` 和 `lane` 后继续发布。
+
+主要事件如下：
+
+| 阶段 | Event `type` | 表示的事实 |
+|------|--------------|------------|
+| Harness 运行 | `run_start`、`run_end` | 一次 `prompt()` 开始或结束。 |
+| Agent 运行 | `agent_start`、`agent_end` | Agent Loop 开始或结束。 |
+| 模型请求 | `turn_start`、`turn_end` | 一次模型请求开始或结束。 |
+| 流式内容 | `text_delta`、`thinking_delta` | 模型刚产生一段文本或思考内容。 |
+| 工具调用生成 | `toolcall_start`、`toolcall_delta`、`toolcall_end` | 模型正在生成一个工具调用。 |
+| 工具执行 | `tool_start`、`tool_end`、`tool_rejected` | 工具开始、结束，或在执行前被拒绝。 |
+
+`run_end.reason` 为 `completed`、`aborted` 或 `error`。发生错误时，事件还包含
+`errorMessage`。
+
+`HarnessToolEvent` 只是从 `HarnessEvent` 中提取三个工具执行事件得到的 TypeScript
+类型，方便工具展示代码限制自己的输入。它不是第二条事件流，也没有独立的 Event Bus。
+
+## `runId` 和 `lane`
+
+每个 `HarnessEvent` 都有：
+
+```ts
+interface HarnessEventContext {
+  readonly runId: string;
+  readonly lane: string;
+}
+```
+
+`runId` 是一次 `prompt()` 的唯一编号。同一次运行产生的所有事件拥有相同的 `runId`；
+下一次 `prompt()` 会得到新编号。UI 和日志可以据此把事件归入正确的一次运行。
+
+`lane` 表示事件属于哪个运行通道。当前 Harness 只实现一个通道，值始终为 `main`
+（常量 `MAIN_LANE`）。它现在不表示并发能力；消费者只需保存或读取这个字段，不应假设
+已经存在后台通道。
+
+## Event 和 Hook 为什么不能互相替代
+
+Event 用来报告事实，Hook 用来影响尚未完成的动作：
+
+| | Event / `subscribe()` | Hook / `trigger()` |
+|---|---|---|
+| 发生时间 | 动作已经发生后 | 动作提交前或可转换的阶段 |
+| 返回值 | 忽略 | 按 Hook 契约处理 |
+| 典型用途 | UI、日志、统计 | 权限判断、修改上下文、调整工具结果 |
+| 出错影响 | Listener 错误被隔离 | Hook 错误可能阻止或改变运行 |
+
+当前 Harness 通过 `HarnessConfig.hooks` 接收 Agent 层的 `AgentHookTrigger`，再将它用于
+Agent 运行。Harness 目前没有自己的 Hook Call 类型或第二个 Hook Registry。
+
+## Session：保存消息和模型选择
+
+Session 是 Harness 的持久状态。没有 Session，下一次运行就不知道此前说过什么、使用的是
+哪个模型。
+
+Harness 创建时读取：
+
+```ts
+interface SessionContext {
+  readonly messages: AgentMessage[];
+  readonly model: ModelConfig | null;
+}
+```
+
+运行期间产生的新消息和模型切换会继续写回同一个 Session。
+
+### 创建和恢复
+
+| 方法 | 用途 |
+|------|------|
+| `Session.create(storageDir)` | 创建一个会写入磁盘的新 Session。 |
+| `Session.open(storageDir, sessionId)` | 从磁盘恢复指定 Session。 |
+| `Session.inMemory()` | 创建不写入磁盘的 Session，适合测试。 |
+
+Session 在磁盘上使用 JSONL 树结构保存记录，目前消息沿一条直线追加。磁盘文件在出现第一条
+assistant message 时创建；写入失败时，对应的内存记录也会回滚。
+
+### Session API
+
+| 方法 | 用途 |
+|------|------|
+| `appendMessage(message)` | 追加一条 Agent 消息。 |
+| `appendModelChange(model)` | 记录一次模型切换。 |
+| `buildContext()` | 沿当前分支生成新的消息数组和最新模型。 |
+
+`SessionError.code` 可以是 `not_found`、`invalid_session`、`invalid_entry` 或 `storage`。
+
+### 管理一个项目中的多个 Session
+
+`SessionManager` 根据项目配置列出和恢复 Session：
+
+```ts
+interface HarnessProject {
+  readonly workDir: string;
+  readonly storageDir: string;
+}
+
+const manager = new SessionManager(project);
+const ids = await manager.listSessions();    // 按最近修改时间排序
+const session = await manager.continueRecent(); // 没有历史时自动创建
+```
+
+## 创建 `AgentHarness`
 
 ```ts
 interface HarnessConfig {
@@ -68,112 +246,109 @@ interface HarnessConfig {
 }
 ```
 
-### 两条通道
-
-| 通道 | 接口 | 用途 |
+| 字段 | 来源 | 作用 |
 |------|------|------|
-| 观察 | `subscribe(listener)` → `HarnessEvent` | 渲染、日志；返回值被忽略 |
-| 控制 | `HarnessConfig.hooks` → `AgentHookTrigger` | 阻止/转换/修补/续跑 |
+| `session` | harness | 保存消息和模型变化；其中已有模型优先于 `model`。 |
+| `model` | ai | Session 没有保存模型时使用的初始模型。 |
+| `streamFn` | ai | 向指定 provider/model 发起一次流式请求。 |
+| `toolRegistry` | agent | 保存 Agent 当前可以执行的工具。 |
+| `systemPrompt` | harness | 每次运行前生成 system prompt。 |
+| `cwd` | 应用传入 | 提供给 system prompt 的工作目录。 |
+| `hooks` | agent，可选 | 控制 Agent 行为；未提供时使用空 Registry。 |
+| `onEventListenerError` | harness，可选 | 接收被 Event Bus 隔离的 Listener 错误。 |
 
-二者不是两套同义回调——`subscribe` 的返回值被忽略，只能观察运行事实；Hook 在动作提交前触发，只有调用定义的结果可以阻止、转换、修补或续跑。Harness 没有 `HarnessUI` 反向接口——UI 通过 `subscribe` 消费事实，Hook 通过 `HarnessConfig.hooks` 向下注入以控制 Agent，两条方向互不经过对方。
+### System prompt
 
-### 方法
+`SystemPromptBuilder` 每次运行前接收当前环境，因此模型或工具变化会反映到下一次运行：
 
-| 方法 | 描述 |
+```ts
+type SystemPromptBuilder = (
+  context: {
+    model: ModelConfig;
+    tools: readonly AgentTool[];
+    cwd: string;
+    date: Date;
+  },
+) => string | Promise<string>;
+```
+
+`defaultSystemPrompt(template)` 将普通模板包装为 Builder；`formatSystemPrompt()` 可以替换
+模板中的 `{{cwd}}` 和 `{{date}}`。
+
+## `AgentHarness` 的方法和状态
+
+| 成员 | 作用 |
 |------|------|
-| `prompt(input: string): Promise<void>` | 运行一次 agent 轮次，发布 `run_start` → 提升的 `AgentEvent` → `run_end`。轮次完成后 resolve。 |
-| `subscribe(listener: HarnessListener): Unsubscribe` | 注册一个监听器。返回用于移除该监听器的函数。 |
-| `abort(): void` | 请求中止正在运行的 prompt。空闲时无操作。 |
-| `switchModel(model: ModelConfig): Promise<void>` | 持久化模型变更并更新当前模型。仅空闲时允许调用。 |
-| `registerTool(tool: AgentTool): void` | 为下一次运行注册工具。仅空闲时允许调用。 |
-| `unregisterTool(name: string): void` | 移除工具。仅空闲时允许调用。 |
+| `prompt(input): Promise<void>` | 开始一次完整运行。 |
+| `subscribe(listener): Unsubscribe` | 订阅 `HarnessEvent`。 |
+| `abort(): void` | 请求中止当前运行；空闲时无操作。 |
+| `switchModel(model): Promise<void>` | 保存并切换模型。 |
+| `registerTool(tool): void` | 注册下一次运行可用的工具。 |
+| `unregisterTool(name): void` | 移除工具。 |
+| `messages` | 当前 Session 分支的只读消息列表。 |
+| `model` | 当前模型。 |
+| `isRunning` | 是否正在处理一次 `prompt()`。 |
 
-### Getter 与空闲期约束
+Harness 同一时间只运行一个 `prompt()`。运行期间再次调用 `prompt()`、切换模型或修改工具，
+都会抛出 `AgentHarness is busy`。`abort()` 是运行期间允许使用的控制操作。
 
-- `messages: readonly AgentMessage[]`、`model: ModelConfig`、`isRunning: boolean`。
-- 当 `isRunning` 为 `true` 时，`switchModel()`、`registerTool()` 和 `unregisterTool()` 会抛出异常。
+## 包边界
 
-## `SessionManager`
+Harness 使用下层提供的定义，但不重新定义它们：
 
-管理一个 project（`cwd` → `storageDir` 映射）下所有 session JSONL 文件的生命周期。
+| 概念 | 定义它的包 | Harness 如何使用 |
+|------|------------|------------------|
+| `ModelConfig`、`StreamFn` | ai | 选择模型并请求 provider。 |
+| `AgentMessage`、`AgentEvent` | agent | 保存 Agent 消息并提升 Agent 事件。 |
+| `AgentTool`、`AgentToolRegistry` | agent | 提供 Agent 可以执行的工具。 |
+| `AgentHookTrigger` | agent | 将控制能力交给 Agent Loop。 |
+| Session、运行身份、`HarnessEvent` | harness | 管理跨运行状态并对外发布事实。 |
 
-```ts
-class SessionManager {
-  constructor(project: HarnessProject);
-  continueRecent(): Promise<Session>;
-  listSessions(): Promise<string[]>;
-}
-```
+Coding Agent 位于 Harness 之上，负责组装 coding 工具、Hook 和展示定义。UI 接收组装后的
+`CodingAgentRuntime`：从 `runtime.harness` 订阅运行事件，需要定制工具输出时再使用
+`runtime.presentations`。Harness 本身不依赖 Coding Agent 或 UI。
 
-- `listSessions()` 只识别匹配 `^[A-Za-z0-9_-]+\.jsonl$` 的文件，忽略隐藏文件和非法文件名；当 `sessions/` 目录尚不存在时返回 `[]`。
-- `continueRecent()` 内部调用 `listSessions()` 取最新，空目录时 fallback 到 `Session.create()`。
+## 完整公开 API
 
-## Session
+`src/harness/index.ts` 导出以下内容。
 
-基于树的 JSONL 持久化，延迟首次写入。
+### 类
 
-### 工厂方法
+- `AgentHarness`：有状态 Agent 运行时。
+- `HarnessEventBus`：`HarnessEvent` 的订阅和发布实现。
+- `Session`：单个会话的内存状态与持久化。
+- `SessionManager`：列出或恢复一个项目中的 Session。
+- `SessionError`：带 `SessionErrorCode` 的 Session 错误。
 
-| 工厂方法 | 描述 |
-|----------|------|
-| `Session.create(storageDir: string): Promise<Session>` | 创建具有随机 ID 的新 session。 |
-| `Session.open(storageDir: string, sessionId: string): Promise<Session>` | 从磁盘重新打开 session。 |
-| `Session.inMemory(): Session` | 用于测试的临时 session。 |
+### 函数和常量
 
-### API 与持久化
+- `defaultSystemPrompt`、`formatSystemPrompt`：构建和格式化 system prompt。
+- `liftAgentEvent`：给一个 `AgentEvent` 增加 Harness 运行身份。
+- `MAIN_LANE`：当前唯一 lane 的值 `main`。
 
-- `appendMessage(message: AgentMessage): Promise<void>`：追加到树中，内部序列化。
-- `appendModelChange(model: ModelConfig): Promise<void>`：记录模型变更条目。
-- `buildContext(): SessionContext`：按当前叶节点父链返回 `{ messages, model }`，返回全新副本。
-- 消息在内存缓冲直到第一条 assistant message；首次 flush 用 `writeFile(…, "wx")` 原子创建，后续追加写；写入失败回滚内存 entry 和 leaf。
-- `open()` 校验 JSON、entry 结构、重复 ID、父引用、根数量、消息字段（含 `details` 的 JSON-safe 校验）。
+### 配置和 Session 类型
 
-### SessionContext / SessionError
-
-```ts
-interface SessionContext {
-  readonly messages: AgentMessage[];
-  readonly model: ModelConfig | null;
-}
-
-type SessionErrorCode = "not_found" | "invalid_session" | "invalid_entry" | "storage";
-class SessionError extends Error { readonly code: SessionErrorCode; }
-```
-
-## System Prompt
-
-```ts
-type SystemPromptBuilder = (ctx: SystemPromptContext) => string | Promise<string>;
-interface SystemPromptContext {
-  readonly model: ModelConfig;
-  readonly tools: readonly AgentTool[];
-  readonly cwd: string;
-  readonly date: Date;
-}
-```
-
-辅助函数：`formatSystemPrompt(content, options?)` 替换 `{{cwd}}`/`{{date}}`；`defaultSystemPrompt(template)` 包装模板为 `SystemPromptBuilder`。
-
-## 完整公开导出
-
-从 `src/harness/index.ts`：
-
-- `AgentHarness`、`Session`、`SessionError`、`SessionManager`
-- `defaultSystemPrompt`、`formatSystemPrompt`
-- `HarnessConfig`、`HarnessProject`、`SystemPromptBuilder`、`SystemPromptContext`
+- `HarnessConfig`、`HarnessProject`
+- `SystemPromptBuilder`、`SystemPromptContext`
 - `SessionContext`、`SessionErrorCode`
-- `HarnessEvent`、`HarnessToolEvent`、`HarnessListener`、`HarnessListenerErrorHandler`
-- `HarnessEventBus`、`MAIN_LANE`、`liftAgentEvent`、`Unsubscribe`
 
-## 明确不提供的功能
+### Event 类型
 
-Harness 明确**不**提供：
+- `HarnessEvent`：唯一的完整事件联合类型。
+- `HarnessEventContext`：公共的 `runId` 和 `lane`。
+- `HarnessOwnedEvent`：Harness 自己产生的运行事件子集。
+- `HarnessRunEndEvent`：`run_end` 的三种结果。
+- `LiftAgentEvent`：增加运行身份后的 Agent Event 类型。
+- `HarnessToolEvent`：工具执行事件子集，不是独立事件流。
+- `HarnessListener`、`HarnessListenerErrorHandler`、`Unsubscribe`
 
-- Harness 专属 Hook 事件 — Hook 事件由 Agent 层定义，Harness 只透传 `AgentHookTrigger`。
-- 第二个 Hook dispatcher 或 ExtensionHost。
-- 非 `main` 的 lane（当前唯一实现 lane 为 `main`；不声称支持 background/parallel lanes）。
-- 重试、压缩、分支 API、snapshot/watch。
-- 除 `SystemPromptBuilder` 之外的 skills 或 prompt 模板。
-- 队列 — session 追加操作内部序列化但不对外暴露。
+## 当前没有实现的能力
 
-`CreateCodingAgentConfig` 属于 `coding-agent`，不属于通用 Harness。Harness 运行时文件（`agent-harness.ts`、`types.ts`、`system-prompt.ts`、`events/`、`session/`）绝不导入具体 coding 工具或 `CODING_SYSTEM_PROMPT`。仅 `coding-agent/factory.ts` 组合这些默认值。
+当前 Harness 有意保持较小，只提供单 Session、单运行通道所需的核心能力。它还没有：
+
+- 非 `main` 的 lane 或并行运行；
+- Harness 自己的 Hook Call；
+- retry、compaction、队列或公开的会话分支操作；
+- snapshot/watch、skills 管理或 UI API。
+
+这些能力以后应根据实际需求加入，不能从现有字段推断为已经支持。
