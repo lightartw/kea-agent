@@ -633,3 +633,57 @@ test("todo state recovers from a restored Session after a model switch", async (
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── Task 5: Project event sharing and isolation ──
+
+test("one Project shares one Events instance across all Sessions", async () => {
+  const keaHome = await tempDir();
+  const dir = await tempDir();
+  try {
+    const project = await createProjectAt(keaHome, dir);
+    const first = await project.createSession();
+    const second = await project.createSession();
+
+    const facts: string[] = [];
+    project.events.on("agent/turn-start", (input) => {
+      facts.push(input.sessionId);
+    });
+
+    await first.prompt("one");
+    await second.prompt("two");
+
+    assert.deepEqual(facts, [first.sessionId, second.sessionId]);
+  } finally {
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a second Project's listeners receive none of the first Project's facts", async () => {
+  const keaHomeA = await tempDir();
+  const keaHomeB = await tempDir();
+  const dirA = await tempDir();
+  const dirB = await tempDir();
+  try {
+    const projectA = await createProjectAt(keaHomeA, dirA);
+    const projectB = await createProjectAt(keaHomeB, dirB);
+    const harnessA = await projectA.createSession();
+    const harnessB = await projectB.createSession();
+
+    const bFacts: string[] = [];
+    projectB.events.on("agent/turn-start", (input) => {
+      bFacts.push(input.sessionId);
+    });
+
+    await harnessA.prompt("one");
+    assert.deepEqual(bFacts, []);
+
+    await harnessB.prompt("two");
+    assert.deepEqual(bFacts, [harnessB.sessionId]);
+  } finally {
+    await rm(keaHomeA, { recursive: true, force: true });
+    await rm(keaHomeB, { recursive: true, force: true });
+    await rm(dirA, { recursive: true, force: true });
+    await rm(dirB, { recursive: true, force: true });
+  }
+});

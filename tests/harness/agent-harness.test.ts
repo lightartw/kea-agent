@@ -407,6 +407,117 @@ test("abort during Agent streaming settles the Harness run", async () => {
   );
 });
 
+// ── Task 5: run boundaries ──
+
+test("exactly one run-end follows every observed run-start", async () => {
+  const boundaryHarness = (options: {
+    session?: Session;
+    streamFn?: StreamFn;
+  } = {}) => {
+    const { harness, events } = makeHarness(options);
+    const boundaries: string[] = [];
+    events.on("harness/run-start", (input) => {
+      if (input.sessionId === harness.sessionId) boundaries.push("run_start");
+    });
+    events.on("harness/run-end", (input) => {
+      if (input.sessionId === harness.sessionId) boundaries.push(`run_end:${input.reason}`);
+    });
+    return { harness, boundaries };
+  };
+
+  {
+    const { harness, boundaries } = boundaryHarness();
+    await harness.prompt("hello");
+    assert.equal(boundaries.filter((entry) => entry === "run_start").length, 1, "completed");
+    assert.equal(boundaries.filter((entry) => entry.startsWith("run_end:")).length, 1, "completed");
+  }
+
+  {
+    const started = deferred();
+    const release = deferred();
+    const { harness, boundaries } = boundaryHarness({
+      streamFn: async function* () {
+        started.resolve();
+        await release.promise;
+        yield { type: "done", message: assistant };
+      },
+    });
+    const run = harness.prompt("hello");
+    await started.promise;
+    harness.abort();
+    release.resolve();
+    await run;
+    assert.equal(boundaries.filter((entry) => entry === "run_start").length, 1, "aborted");
+    assert.equal(boundaries.filter((entry) => entry.startsWith("run_end:")).length, 1, "aborted");
+  }
+
+  {
+    const session = memorySession();
+    session.appendMessage = async () => { throw new Error("storage failed"); };
+    const { harness, boundaries } = boundaryHarness({ session });
+    await assert.rejects(harness.prompt("hello"), /storage failed/);
+    assert.equal(boundaries.filter((entry) => entry === "run_start").length, 1, "error");
+    assert.equal(boundaries.filter((entry) => entry.startsWith("run_end:")).length, 1, "error");
+  }
+});
+
+test("an AbortSignal fired while Permission awaits confirmation wins over the answer", async () => {
+  const { harness, events } = makeHarness({
+    streamFn: streamFnWithToolCall(),
+  });
+  const signal: AbortSignal[] = [];
+  let resolvePermission: (value: boolean) => void = () => undefined;
+  const permissionGate = new Promise<boolean>((resolve) => { resolvePermission = resolve; });
+  events.on("agent/tool-call", (decision, next, abortSignal) => {
+    signal.push(abortSignal!);
+    return permissionGate.then((allowed) => {
+      if (allowed) return next(decision);
+      return {
+        ...decision,
+        kind: "reject" as const,
+        call: decision.call,
+        reason: "permission denied by user",
+      };
+    });
+  });
+  const reasons: string[] = [];
+  events.on("agent/tool-rejected", (input) => {
+    if (input.sessionId === harness.sessionId) reasons.push(input.reason);
+  });
+
+  const run = harness.prompt("run tool");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  harness.abort();
+  resolvePermission(false);
+  await run;
+
+  assert.equal(signal.length, 1);
+  assert.equal(reasons.length, 1);
+  assert.equal(reasons[0], "aborted");
+});
+
+function streamFnWithToolCall(): StreamFn {
+  const tc = { type: "toolCall" as const, id: "c1", name: "echo", arguments: {} };
+  const toolTurn: AssistantMessage = {
+    role: "assistant",
+    content: [tc],
+    model: "model-a",
+    stopReason: "toolUse",
+    latencyMs: 0,
+  };
+  let turn = 0;
+  return async function* () {
+    turn += 1;
+    if (turn === 1) {
+      yield { type: "toolcall_start", id: "c1", name: "echo" };
+      yield { type: "toolcall_end", toolCall: tc };
+      yield { type: "done", message: toolTurn };
+    } else {
+      yield { type: "done", message: assistant };
+    }
+  };
+}
+
 // ── Task 4: Harness control-event pass-through tests ──
 
 test("Harness shares one Events instance with Agent Loop", async () => {

@@ -127,3 +127,17 @@ test("unregister is idempotent", async () => {
   await events.emit("test/fact", { value: 1 });
   assert.deepEqual(calls, []);
 });
+
+test("emit continues after a throwing listener and still completes", async () => {
+  const events = new Events();
+  const calls: string[] = [];
+  events.on("test/fact", () => {
+    calls.push("first");
+    throw new Error("boom");
+  });
+  events.on("test/fact", () => { calls.push("second"); });
+
+  await events.emit("test/fact", { value: 1 });
+
+  assert.deepEqual(calls, ["first", "second"]);
+});

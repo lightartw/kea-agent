@@ -1154,3 +1154,120 @@ test("run abort wins over a permission confirm returning false", async () => {
   assert.equal(rejected.length, 1);
   assert.equal(rejected[0]?.reason, "aborted");
 });
+
+// ── Task 5: failure matrix ──
+
+test("an emit listener can throw while the next listener still runs and the Run completes", async () => {
+  const events = new Events();
+  const calls: string[] = [];
+  events.on("agent/text-delta", (input) => {
+    if (input.sessionId !== "session-1") return;
+    calls.push("first");
+    throw new Error("listener failed");
+  });
+  events.on("agent/text-delta", (input) => {
+    if (input.sessionId === "session-1") calls.push("second");
+  });
+
+  await runAgentLoop(
+    "hi",
+    memoryContext(),
+    makeConfig({ events }),
+    streamFnWithEvents([[
+      { type: "text_delta", text: "hel" },
+      { type: "done", message: assistantMsg("hello") },
+    ]]),
+  );
+
+  assert.deepEqual(calls, ["first", "second"]);
+});
+
+test("user-prompt, context, and stop listener failures reject the Run", async () => {
+  const cases: Array<{
+    name: "agent/user-prompt" | "agent/context" | "agent/stop";
+    register: (events: Events) => void;
+  }> = [
+    {
+      name: "agent/user-prompt",
+      register: (events) => { events.on("agent/user-prompt", () => { throw new Error("agent/user-prompt failed"); }); },
+    },
+    {
+      name: "agent/context",
+      register: (events) => { events.on("agent/context", () => { throw new Error("agent/context failed"); }); },
+    },
+    {
+      name: "agent/stop",
+      register: (events) => { events.on("agent/stop", () => { throw new Error("agent/stop failed"); }); },
+    },
+  ];
+  for (const { name, register } of cases) {
+    const events = new Events();
+    register(events);
+    await assert.rejects(
+      runAgentLoop("start", memoryContext(), makeConfig({ events }), streamFnWithEvents([[{ type: "done", message: assistantMsg("") }]])),
+      new RegExp(`${name} failed`),
+    );
+  }
+});
+
+test("tool-call listener failure never executes the Tool and persists a rejected result", async () => {
+  const tool = new NoopTool();
+  const tools = new AgentToolRegistry();
+  tools.register(tool);
+  const history: AgentMessage[] = [];
+  const context: AgentContext = {
+    systemPrompt: "",
+    messages: history,
+    tools,
+    appendMessage: async (message) => { history.push(message); },
+  };
+  const call: AgentToolCall = {
+    type: "toolCall", id: "c1", name: "noop", arguments: {},
+  };
+  const events = new Events();
+  events.on("agent/tool-call", () => { throw new Error("crashed"); });
+  const rejected: Array<{ reason: string }> = [];
+  events.on("agent/tool-rejected", (input) => {
+    if (input.sessionId === "session-1") rejected.push({ reason: input.reason });
+  });
+
+  await runAgentLoop("run", context, makeConfig({ events }), streamForToolCall(call));
+
+  assert.equal(tool.ran, false);
+  assert.equal(rejected.length, 1);
+  assert.equal(rejected[0]?.reason, "blocked");
+  const persisted = history.find((message) =>
+    message.role === "tool" && message.toolCallId === "c1",
+  );
+  assert.match(persisted?.role === "tool" ? persisted.content : "", /crashed/);
+});
+
+test("tool-result listener failure persists and emits an error Tool Result", async () => {
+  const tool = new NoopTool();
+  const tools = new AgentToolRegistry();
+  tools.register(tool);
+  const history: AgentMessage[] = [];
+  const context: AgentContext = {
+    systemPrompt: "",
+    messages: history,
+    tools,
+    appendMessage: async (message) => { history.push(message); },
+  };
+  const call: AgentToolCall = {
+    type: "toolCall", id: "c1", name: "noop", arguments: {},
+  };
+  const events = new Events();
+  events.on("agent/tool-result", () => { throw new Error("post crashed"); });
+  const toolEnds: Array<{ isError: boolean }> = [];
+  events.on("agent/tool-end", (input) => {
+    if (input.sessionId === "session-1") toolEnds.push({ isError: input.result.isError });
+  });
+
+  await runAgentLoop("run", context, makeConfig({ events }), streamForToolCall(call));
+
+  assert.deepEqual(toolEnds, [{ isError: true }]);
+  const persisted = history.find((message) =>
+    message.role === "tool" && message.toolCallId === "c1",
+  );
+  assert.equal(persisted?.role === "tool" ? persisted.isError : undefined, true);
+});
