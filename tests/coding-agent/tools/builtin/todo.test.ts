@@ -7,7 +7,7 @@ function signal(): AbortSignal {
   return new AbortController().signal;
 }
 
-const context = { cwd: process.cwd() };
+const context = { cwd: process.cwd(), directories: [process.cwd()] };
 
 test("todo_write returns the complete list in content and details", async () => {
   const definition = createTodoWriteToolDefinition();

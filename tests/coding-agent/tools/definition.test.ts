@@ -27,7 +27,7 @@ test("toAgentTool strips presentation and projects execution with context", asyn
     },
   };
 
-  const tool = toAgentTool(definition, { cwd: "C:/work" });
+  const tool = toAgentTool(definition, { cwd: "C:/work", directories: ["C:/work"] });
   assert.equal(Object.hasOwn(tool, "presentation"), false);
   assert.deepEqual(
     await tool.execute({ value: 2 }, new AbortController().signal),
@@ -44,7 +44,7 @@ test("toAgentTool exposes the tool metadata", () => {
       return { content: "ok", isError: false };
     },
   };
-  const tool = toAgentTool(definition, { cwd: "C:/work" });
+  const tool = toAgentTool(definition, { cwd: "C:/work", directories: ["C:/work"] });
   assert.equal(tool.name, "sample");
   assert.equal(tool.description, "Sample tool");
   assert.equal(tool.parameters, parameters);

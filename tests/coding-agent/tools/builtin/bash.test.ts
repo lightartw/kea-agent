@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createBashToolDefinition } from "../../../../src/coding-agent/tools/builtin/bash.js";
+import { createBashToolDefinition } from "../../../../src/coding-agent/tools/builtin/bash/bash.js";
 
 class RecordingBashExecution {
   calls: string[] = [];
@@ -16,7 +16,7 @@ function signal(): AbortSignal {
   return new AbortController().signal;
 }
 
-const context = { cwd: process.cwd() };
+const context = { cwd: process.cwd(), directories: [process.cwd()] };
 
 test("bash tool captures output", async () => {
   const definition = createBashToolDefinition();

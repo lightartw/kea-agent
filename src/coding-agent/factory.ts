@@ -73,9 +73,11 @@ function createHarness(
   definitions: readonly CodingToolDefinition[],
   interactions: CodingAgentInteractions,
   systemPrompt: SystemPromptBuilder,
+  directories: readonly string[],
 ): AgentHarness {
   const toolContext: CodingToolContext = {
     cwd: resolve(session.info.directory, session.info.cwd),
+    directories,
   };
   return new AgentHarness({
     session,
@@ -131,6 +133,7 @@ export async function createProject(config: CreateProjectConfig): Promise<Projec
     definitions,
     interactions,
     systemPrompt,
+    current.directories,
   );
 
   const createSessionCwd = (options?: CreateSessionOptions): string => {

@@ -50,7 +50,7 @@ export function createReadFileToolDefinition(): CodingToolDefinition<typeof read
     parameters: readParameters,
     async execute(arguments_: Static<typeof readParameters>, _signal, context) {
       const lines = (
-        await readFile(safePath(context.cwd, arguments_.path), "utf8")
+        await readFile(safePath(context.cwd, context.directories, arguments_.path), "utf8")
       ).split(/\r?\n/);
       const content = arguments_.limit !== undefined && arguments_.limit < lines.length
         ? [...lines.slice(0, arguments_.limit), `... (${lines.length - arguments_.limit} more lines)`].join("\n")
@@ -66,7 +66,7 @@ export function createWriteFileToolDefinition(): CodingToolDefinition<typeof wri
     description: "Write content to a file.",
     parameters: writeParameters,
     async execute(arguments_: Static<typeof writeParameters>, _signal, context) {
-      const path = safePath(context.cwd, arguments_.path);
+      const path = safePath(context.cwd, context.directories, arguments_.path);
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, arguments_.content, "utf8");
       return { content: `Wrote ${Buffer.byteLength(arguments_.content, "utf8")} bytes to ${arguments_.path}`, isError: false };
@@ -80,7 +80,7 @@ export function createEditFileToolDefinition(): CodingToolDefinition<typeof edit
     description: "Replace exact text in a file once.",
     parameters: editParameters,
     async execute(arguments_: Static<typeof editParameters>, _signal, context) {
-      const path = safePath(context.cwd, arguments_.path);
+      const path = safePath(context.cwd, context.directories, arguments_.path);
       const content = await readFile(path, "utf8");
       const index = content.indexOf(arguments_.old_text);
       if (index === -1) return { content: `Error: text not found in ${arguments_.path}`, isError: true };
@@ -104,7 +104,7 @@ export function createGlobToolDefinition(): CodingToolDefinition<typeof globPara
     async execute(arguments_: Static<typeof globParameters>, _signal, context) {
       const matches: string[] = [];
       for await (const match of glob(arguments_.pattern, { cwd: context.cwd })) {
-        safePath(context.cwd, match);
+        safePath(context.cwd, context.directories, match);
         matches.push(match.split(sep).join("/"));
       }
       return {

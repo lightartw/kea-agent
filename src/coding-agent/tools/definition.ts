@@ -4,6 +4,7 @@ import type { CodingToolPresentation } from "../ui/presentation.js";
 
 export interface CodingToolContext {
   readonly cwd: string;
+  readonly directories: readonly string[];
 }
 
 export interface CodingToolDefinition<
