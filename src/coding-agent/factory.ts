@@ -7,6 +7,7 @@ import type { Session } from "../harness/session/session.js";
 import type { SessionInfo } from "../harness/session/types.js";
 import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
 import { defaultSystemPrompt } from "../harness/system-prompt.js";
+import { createSessionTitleGenerator } from "./title-generator.js";
 import {
   createAgentToolRegistry,
   createBuiltinToolDefinitions,
@@ -28,7 +29,7 @@ import type {
   ProjectInfo,
   UpdateProjectInput,
 } from "./project/types.js";
-import type { SystemPromptBuilder } from "../harness/types.js";
+import type { SystemPromptBuilder, SessionTitleGenerator } from "../harness/types.js";
 import type { CreateProjectConfig } from "./types.js";
 import type { CodingAgentInteractions } from "./ui/interactions.js";
 
@@ -73,6 +74,7 @@ function createHarness(
   definitions: readonly CodingToolDefinition[],
   interactions: CodingAgentInteractions,
   systemPrompt: SystemPromptBuilder,
+  titleGenerator: SessionTitleGenerator,
   directories: readonly string[],
 ): AgentHarness {
   const toolContext: CodingToolContext = {
@@ -87,6 +89,7 @@ function createHarness(
     systemPrompt,
     cwd: toolContext.cwd,
     hooks: createCodingHooks(interactions),
+    titleGenerator,
     ...(config.onEventListenerError !== undefined
       ? { onEventListenerError: config.onEventListenerError }
       : {}),
@@ -124,6 +127,7 @@ export async function createProject(config: CreateProjectConfig): Promise<Projec
   }
 
   const systemPrompt = resolveSystemPrompt(config.systemPrompt);
+  const titleGenerator = createSessionTitleGenerator(config.streamFn);
   let current: ProjectInfo = opened.info;
   const initialCwd = opened.initialCwd;
 
@@ -133,6 +137,7 @@ export async function createProject(config: CreateProjectConfig): Promise<Projec
     definitions,
     interactions,
     systemPrompt,
+    titleGenerator,
     current.directories,
   );
 

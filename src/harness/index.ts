@@ -11,6 +11,7 @@ export * from "./events/index.js";
 
 export type {
   HarnessConfig,
+  SessionTitleGenerator,
   SystemPromptBuilder,
   SystemPromptContext,
 } from "./types.js";

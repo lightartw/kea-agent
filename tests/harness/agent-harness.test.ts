@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import { AgentHarness } from "../../src/harness/agent-harness.js";
 import { Session } from "../../src/harness/session/session.js";
@@ -9,7 +13,7 @@ import { AgentTool } from "../../src/agent/tools/types.js";
 import type { AgentEvent } from "../../src/agent/types.js";
 import { HookRegistry } from "../../src/agent/hooks/registry.js";
 import type { AgentHookTrigger } from "../../src/agent/hooks/types.js";
-import type { HarnessConfig } from "../../src/harness/types.js";
+import type { HarnessConfig, SessionTitleGenerator } from "../../src/harness/types.js";
 import type {
   AssistantMessage,
   ModelConfig,
@@ -51,6 +55,7 @@ function makeHarness(options: {
   streamFn?: StreamFn;
   systemPrompt?: () => string | Promise<string>;
   hooks?: AgentHookTrigger;
+  titleGenerator?: SessionTitleGenerator;
 } = {}): AgentHarness {
   const base: Omit<HarnessConfig, "hooks"> = {
     session: options.session ?? memorySession(),
@@ -61,9 +66,16 @@ function makeHarness(options: {
     cwd: process.cwd(),
   };
   if (options.hooks !== undefined) {
-    return new AgentHarness({ ...base, hooks: options.hooks });
+    return new AgentHarness({
+      ...base,
+      hooks: options.hooks,
+      ...(options.titleGenerator !== undefined ? { titleGenerator: options.titleGenerator } : {}),
+    });
   }
-  return new AgentHarness(base);
+  return new AgentHarness({
+    ...base,
+    ...(options.titleGenerator !== undefined ? { titleGenerator: options.titleGenerator } : {}),
+  });
 }
 
 test("sessionId exposes the bound Session identity", () => {
@@ -566,4 +578,175 @@ test("tool_rejected subscriber sees the persisted synthetic message", async () =
 
   await harness.prompt("run");
   assert.deepEqual(observed, [{ type: "tool_rejected", matches: true }]);
+});
+
+// ── Task 4: automatic title timing ──
+
+async function eventually(assertion: () => void): Promise<void> {
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    try {
+      assertion();
+      return;
+    } catch {
+      if (Date.now() > deadline) throw new Error("eventually timed out");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+}
+
+test("first persisted user message starts title generation beside the response", async () => {
+  const titleStarted = deferred();
+  const releaseTitle = deferred();
+  const modelStarted = deferred();
+  const session = memorySession();
+  const harness = makeHarness({
+    session,
+    titleGenerator: async (prompt, titleModel) => {
+      assert.equal(prompt, "design sessions");
+      assert.deepEqual(titleModel, modelA);
+      assert.equal(session.buildContext().messages[0]?.role, "user");
+      titleStarted.resolve();
+      await releaseTitle.promise;
+      return "Session design";
+    },
+    streamFn: async function* () {
+      modelStarted.resolve();
+      yield { type: "done", message: assistant };
+    },
+  });
+
+  const run = harness.prompt("design sessions");
+  await Promise.all([titleStarted.promise, modelStarted.promise]);
+  releaseTitle.resolve();
+  await run;
+  await eventually(() => assert.equal(harness.title, "Session design"));
+});
+
+test("blocked first prompts do not start title generation", async () => {
+  const session = memorySession();
+  let titleCalls = 0;
+  const hooks = new HookRegistry<Record<string, never>>({});
+  hooks.register("user_prompt", () => ({ block: true, reason: "blocked" }));
+  const harness = makeHarness({
+    session,
+    hooks,
+    titleGenerator: async () => {
+      titleCalls++;
+      return "should not run";
+    },
+  });
+
+  await harness.prompt("hello");
+  assert.equal(session.buildContext().messages.filter((message) => message.role === "user").length, 0);
+  assert.equal(titleCalls, 0);
+  assert.equal(harness.title, "unknown");
+});
+
+test("title generator failure never rejects the run or changes run_end", async () => {
+  const session = memorySession();
+  const harness = makeHarness({
+    session,
+    titleGenerator: async () => {
+      throw new Error("title model failed");
+    },
+  });
+
+  const events: string[] = [];
+  harness.subscribe((event) => { events.push(event.type); });
+  await harness.prompt("hello");
+  assert.deepEqual(events, [
+    "run_start", "agent_start", "turn_start", "text_delta", "turn_end", "agent_end", "run_end",
+  ]);
+  assert.equal(harness.title, "unknown");
+});
+
+test("generator output is trimmed to one line and capped", async () => {
+  const session = memorySession();
+  const harness = makeHarness({
+    session,
+    titleGenerator: async () => `${"x".repeat(120)}\nignored line`,
+  });
+
+  await harness.prompt("hello");
+  await eventually(() => assert.equal(harness.title, `${"x".repeat(97)}...`));
+});
+
+test("manual rename racing with generated output is never overwritten", async () => {
+  const releaseTitle = deferred();
+  const session = memorySession();
+  const harness = makeHarness({
+    session,
+    titleGenerator: async () => {
+      await releaseTitle.promise;
+      return "Generated";
+    },
+  });
+
+  const run = harness.prompt("hello");
+  await harness.setTitle("Manual");
+  releaseTitle.resolve();
+  await run;
+  await eventually(() => assert.equal(harness.title, "Manual"));
+});
+
+test("reopened unknown-title Session with an existing user message is not regenerated", async () => {
+  const storageDir = join(tmpdir(), `kea-harness-title-${randomUUID()}`);
+  await mkdir(storageDir, { recursive: true });
+  try {
+    const first = await Session.create(storageDir, sessionInput());
+    const firstHarness = makeHarness({
+      session: first,
+      titleGenerator: async () => "First title",
+    });
+    await firstHarness.prompt("hello");
+    await eventually(() => assert.equal(firstHarness.title, "First title"));
+
+    const reopened = await Session.open(storageDir, first.id);
+    let titleCalls = 0;
+    const reopenedHarness = makeHarness({
+      session: reopened,
+      titleGenerator: async () => {
+        titleCalls++;
+        return "regenerated";
+      },
+    });
+    await reopenedHarness.prompt("again");
+    assert.equal(titleCalls, 0);
+    assert.equal(reopenedHarness.title, "First title");
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
+test("a later turn after first-attempt failure does not restart title generation", async () => {
+  const session = memorySession();
+  let calls = 0;
+  const harness = makeHarness({
+    session,
+    titleGenerator: async () => {
+      calls++;
+      throw new Error("failed");
+    },
+  });
+
+  await harness.prompt("hello");
+  await harness.prompt("world");
+  assert.equal(calls, 1);
+});
+
+test("model switched before the first prompt applies to title generation", async () => {
+  const session = memorySession();
+  let titleModel: ModelConfig | undefined;
+  const harness = makeHarness({
+    session,
+    titleGenerator: async (_prompt, model) => {
+      titleModel = model;
+      return "titled";
+    },
+  });
+
+  await harness.switchModel(modelB);
+  await harness.prompt("hello");
+  await eventually(() => assert.deepEqual(titleModel, modelB));
 });

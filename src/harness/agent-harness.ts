@@ -20,6 +20,7 @@ import {
 } from "./events/types.js";
 import type {
   HarnessConfig,
+  SessionTitleGenerator,
   SystemPromptBuilder,
 } from "./types.js";
 
@@ -56,6 +57,11 @@ export class AgentHarness {
   private running = false;
   private abortRequested = false;
 
+  // Automatic title state
+  private readonly titleGenerator: SessionTitleGenerator | undefined;
+  private titleEligible = false;
+  private titleRequested = false;
+
   constructor(config: HarnessConfig) {
     const context = config.session.buildContext();
     this.session = config.session;
@@ -69,6 +75,10 @@ export class AgentHarness {
     this.hooks = config.hooks ??
       new HookRegistry<Record<string, never>>({});
     this.events = new HarnessEventBus(config.onEventListenerError);
+    this.titleGenerator = config.titleGenerator;
+    this.titleEligible = config.titleGenerator !== undefined &&
+      this.session.info.title === "unknown" &&
+      !context.messages.some((message) => message.role === "user");
   }
 
   // ── Private helpers ──
@@ -91,6 +101,34 @@ export class AgentHarness {
       const message = this.messages[this.persistedMessageCount]!;
       await this.session.appendMessage(message);
       this.persistedMessageCount++;
+    }
+  }
+
+  /** Launch a detached title task after the first eligible user message is persisted. */
+  private maybeStartTitle(): void {
+    if (!this.titleEligible || this.titleRequested) return;
+    if (!this._messages.some((message) => message.role === "user")) return;
+    this.titleEligible = false;
+    this.titleRequested = true;
+    const prompt = this._messages.find((message) => message.role === "user")!.content;
+    const generator = this.titleGenerator!;
+    const model = this.currentModel;
+    void this.runTitleTask(prompt, model, generator);
+  }
+
+  private async runTitleTask(
+    prompt: string,
+    model: ModelConfig,
+    generator: SessionTitleGenerator,
+  ): Promise<void> {
+    try {
+      const raw = await generator(prompt, model);
+      const firstLine = raw.split(/\r?\n/).find((line) => line.trim() !== "") ?? "";
+      const trimmed = firstLine.trim();
+      const capped = trimmed.length <= 97 ? trimmed : `${trimmed.slice(0, 97)}...`;
+      await this.session.setTitleIfUnknown(capped);
+    } catch {
+      // Title generation never fails or blocks the Agent Run.
     }
   }
 
@@ -151,6 +189,7 @@ export class AgentHarness {
       if (!this.abortRequested) {
         for await (const event of this.runPrompt(input)) {
           await this.persistNewMessages();
+          this.maybeStartTitle();
           await this.events.publish(liftAgentEvent(event, eventContext));
         }
       }
@@ -214,6 +253,14 @@ export class AgentHarness {
 
   get sessionId(): string {
     return this.session.id;
+  }
+
+  get title(): string {
+    return this.session.info.title;
+  }
+
+  setTitle(title: string): Promise<void> {
+    return this.session.setTitle(title);
   }
 
   get messages(): readonly AgentMessage[] {

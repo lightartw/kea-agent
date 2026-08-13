@@ -5,6 +5,11 @@ import type { ModelConfig, StreamFn } from "../ai/types.js";
 import type { HarnessListenerErrorHandler } from "./events/types.js";
 import type { Session } from "./session/session.js";
 
+export type SessionTitleGenerator = (
+  prompt: string,
+  model: ModelConfig,
+) => Promise<string>;
+
 export interface SystemPromptContext {
   readonly model: ModelConfig;
   readonly tools: readonly AgentTool[];
@@ -25,4 +30,5 @@ export interface HarnessConfig {
   readonly cwd: string;
   readonly hooks?: AgentHookTrigger;
   readonly onEventListenerError?: HarnessListenerErrorHandler;
+  readonly titleGenerator?: SessionTitleGenerator;
 }
