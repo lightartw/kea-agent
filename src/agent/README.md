@@ -328,7 +328,7 @@ agent 层（以及其上的 coding-agent 层）从不 import 任何 UI/CLI 类�
 `AgentTool.execute(args, timeoutSignal)` **没有** context/UI 参数。工具由 coding-agent 的
 具体 `CodingToolDefinition` 在 `createCodingAgent()` 中经包内翻译成为 `AgentTool`；组合根捕获依赖。
 
-### 关键原则：策略属于 Hook，不属于工具
+### 关键原则：交互策略属于 Hook，安全底线由工具再次保证
 
 「用户确认」这类 UI 交互不是工具职责，而是**策略**职责。Permission Hook（context 就是
 `CodingAgentInteractions`）在工具执行前执行 allow/ask 策略，也拒绝 hard-deny 命令；Bash Tool
