@@ -157,7 +157,10 @@ export async function* runAgentLoop(
       } else if (signal?.aborted) {
         result = { content: "Error: aborted", isError: true };
       } else {
-        result = await context.tools.execute(call);
+        const preparation = context.tools.prepare(call);
+        result = preparation.kind === "ready"
+          ? await context.tools.execute(preparation.prepared)
+          : preparation.result;
       }
 
       // ── tool_result hook (before history + tool_end) ──

@@ -29,6 +29,7 @@ export function mergeSignals(
 export async function runWithTimeout<T>(
   timeoutSeconds: number,
   operation: (signal: AbortSignal) => Promise<T>,
+  callerSignal?: AbortSignal,
 ): Promise<T> {
   const controller = new AbortController();
   const timeoutError = new TimeoutError("Operation timed out");
@@ -37,18 +38,22 @@ export async function runWithTimeout<T>(
     timeoutMilliseconds(timeoutSeconds),
   );
 
+  const mergedSignal = callerSignal === undefined
+    ? controller.signal
+    : AbortSignal.any([controller.signal, callerSignal]);
+
   let onAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = (): void => reject(controller.signal.reason);
-    controller.signal.addEventListener("abort", onAbort, { once: true });
+    onAbort = (): void => reject(mergedSignal.reason);
+    mergedSignal.addEventListener("abort", onAbort, { once: true });
   });
 
   try {
-    return await Promise.race([operation(controller.signal), aborted]);
+    return await Promise.race([operation(mergedSignal), aborted]);
   } finally {
     clearTimeout(timer);
     if (onAbort !== undefined) {
-      controller.signal.removeEventListener("abort", onAbort);
+      mergedSignal.removeEventListener("abort", onAbort);
     }
   }
 }

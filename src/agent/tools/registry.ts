@@ -4,6 +4,19 @@ import type { Tool } from "../../ai/types.js";
 
 const ERROR_PREFIX = "Error: ";
 
+interface PreparedAgentToolCall {
+  readonly call: AgentToolCall;
+  readonly tool: AgentTool;
+}
+
+type ToolPreparation =
+  | { readonly kind: "ready"; readonly prepared: PreparedAgentToolCall }
+  | {
+      readonly kind: "rejected";
+      readonly reason: "unknown" | "invalid";
+      readonly result: AgentToolResult<unknown>;
+    };
+
 /** Validates and executes tool calls. Does not know about hooks. */
 export class AgentToolRegistry {
   private readonly tools = new Map<string, AgentTool>();
@@ -34,23 +47,31 @@ export class AgentToolRegistry {
     return { content: message.startsWith(ERROR_PREFIX) ? message : `${ERROR_PREFIX}${message}`, isError: true };
   }
 
-  /** Validate and execute a tool call. Hooks are handled by the caller. */
-  async execute(call: AgentToolCall): Promise<AgentToolResult> {
+  /** Look up and validate a call without executing it. */
+  prepare(call: AgentToolCall): ToolPreparation {
     const tool = this.tools.get(call.name);
     if (tool === undefined) {
-      return this.error(`Unknown tool '${call.name}'`);
+      return { kind: "rejected", reason: "unknown", result: this.error(`Unknown tool '${call.name}'`) };
     }
     const validationError = tool.validate(call.arguments);
     if (validationError !== undefined) {
-      return this.error(
-        `Invalid arguments for tool '${call.name}': ${validationError}`,
-      );
+      return {
+        kind: "rejected",
+        reason: "invalid",
+        result: this.error(`Invalid arguments for tool '${call.name}': ${validationError}`),
+      };
     }
+    return { kind: "ready", prepared: { call, tool } };
+  }
 
+  /** Execute a previously prepared call. Hooks are handled by the caller. */
+  async execute(
+    prepared: PreparedAgentToolCall,
+    signal?: AbortSignal,
+  ): Promise<AgentToolResult<unknown>> {
     try {
       return await runWithTimeout(this.timeout, (timeoutSignal) =>
-        tool.execute(call.arguments, timeoutSignal),
-      );
+        prepared.tool.execute(prepared.call.arguments, timeoutSignal), signal);
     } catch (error) {
       return this.error(error instanceof Error ? error.message : String(error));
     }

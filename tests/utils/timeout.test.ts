@@ -34,3 +34,14 @@ test("runWithTimeout rejects when an operation does not settle", async () => {
     TimeoutError,
   );
 });
+
+test("runWithTimeout rejects a hanging operation when the caller aborts", async () => {
+  const controller = new AbortController();
+  const operation = runWithTimeout(
+    10,
+    () => new Promise<never>(() => undefined),
+    controller.signal,
+  );
+  controller.abort();
+  await assert.rejects(operation);
+});
