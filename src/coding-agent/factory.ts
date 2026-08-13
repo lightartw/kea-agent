@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 
 import { AgentHarness } from "../harness/agent-harness.js";
+import { SessionRepository } from "../harness/session/repository.js";
 import { AgentToolRegistry } from "../agent/tools/registry.js";
 import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
 import { defaultSystemPrompt } from "../harness/system-prompt.js";
@@ -20,7 +21,8 @@ import type {
   CodingToolContext,
   CodingToolDefinition,
 } from "./tools/definition.js";
-import type { CodingAgentRuntime } from "./types.js";
+import type { Session } from "../harness/session/session.js";
+import type { CodingAgent, CodingProject } from "./types.js";
 import type { SystemPromptBuilder } from "../harness/types.js";
 import type { CreateCodingAgentConfig } from "./types.js";
 
@@ -33,10 +35,13 @@ function resolveSystemPrompt(
 
 export async function createCodingAgent(
   config: CreateCodingAgentConfig,
-): Promise<CodingAgentRuntime> {
-  if (!config.session) throw new Error("session is required");
-
-  const context: CodingToolContext = { cwd: resolve(config.project.workDir) };
+): Promise<CodingAgent> {
+  const project: CodingProject = {
+    workDir: resolve(config.project.workDir),
+    storageDir: resolve(config.project.storageDir),
+  };
+  const repository = new SessionRepository(project.storageDir);
+  const context: CodingToolContext = { cwd: project.workDir };
   const interactions = config.interactions ?? NO_INTERACTIONS;
   const definitions: readonly CodingToolDefinition[] = [
     createBashToolDefinition(),
@@ -46,7 +51,6 @@ export async function createCodingAgent(
     createGlobToolDefinition(),
     createTodoWriteToolDefinition(),
   ];
-  const tools = new AgentToolRegistry();
   const presentations = new CodingToolPresentationRegistry(
     (message) => {
       try {
@@ -62,27 +66,43 @@ export async function createCodingAgent(
   );
 
   for (const definition of definitions) {
-    tools.register(toAgentTool(definition, context));
     if (definition.presentation !== undefined) {
       presentations.register(definition.name, definition.presentation);
     }
   }
 
-  const hooks = createPermissionHooks(interactions);
-  const harness = new AgentHarness({
-    session: config.session,
-    model: config.model,
-    streamFn: config.streamFn,
-    toolRegistry: tools,
-    systemPrompt: resolveSystemPrompt(config.systemPrompt),
-    cwd: context.cwd,
-    hooks,
-    ...(config.onEventListenerError !== undefined
-      ? { onEventListenerError: config.onEventListenerError }
-      : {}),
-  });
+  const systemPrompt = resolveSystemPrompt(config.systemPrompt);
+
+  function createHarness(session: Session): AgentHarness {
+    const tools = new AgentToolRegistry();
+    for (const definition of definitions) {
+      tools.register(toAgentTool(definition, context));
+    }
+
+    return new AgentHarness({
+      session,
+      model: config.model,
+      streamFn: config.streamFn,
+      toolRegistry: tools,
+      systemPrompt,
+      cwd: project.workDir,
+      hooks: createPermissionHooks(interactions),
+      ...(config.onEventListenerError !== undefined
+        ? { onEventListenerError: config.onEventListenerError }
+        : {}),
+    });
+  }
+
   return {
-    harness,
+    listSessions: () => repository.list(),
+    createSession: async () => createHarness(await repository.create()),
+    openSession: async (sessionId) => createHarness(await repository.open(sessionId)),
+    continueRecent: async () => {
+      const [sessionId] = await repository.list();
+      return sessionId === undefined
+        ? createHarness(await repository.create())
+        : createHarness(await repository.open(sessionId));
+    },
     renderToolEvent: (event) => presentations.render(event),
   };
 }

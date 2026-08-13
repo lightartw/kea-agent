@@ -11,7 +11,6 @@ export * from "./events/index.js";
 
 export type {
   HarnessConfig,
-  HarnessProject,
   SystemPromptBuilder,
   SystemPromptContext,
 } from "./types.js";

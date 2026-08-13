@@ -1,9 +1,10 @@
 import { createInterface, type Interface } from "node:readline/promises";
 
 import type {
+  CodingAgent,
   CodingAgentInteractions,
-  CodingAgentRuntime,
 } from "../coding-agent/index.js";
+import type { AgentHarness } from "../harness/index.js";
 import { CliHarnessRenderer } from "./cli-harness-renderer.js";
 import { CliInteractions } from "./cli-interactions.js";
 
@@ -43,12 +44,12 @@ export class CliFrontend {
   }
 
   /** Keep accepting user turns while AgentHarness owns conversation state. */
-  async run(runtime: CodingAgentRuntime): Promise<void> {
+  async run(codingAgent: CodingAgent, harness: AgentHarness): Promise<void> {
     const renderer = new CliHarnessRenderer(
       { write: this.writeFn, log: this.logFn },
-      runtime.renderToolEvent,
+      (event) => codingAgent.renderToolEvent(event),
     );
-    const unsubscribe = runtime.harness.subscribe((event) => {
+    const unsubscribe = harness.subscribe((event) => {
       renderer.render(event);
     });
 
@@ -65,9 +66,9 @@ export class CliFrontend {
         }
         if (["q", "exit", ""].includes(query.trim().toLowerCase())) break;
 
-        const unbind = this.cliInteractions.bindRunAbort(() => runtime.harness.abort());
+        const unbind = this.cliInteractions.bindRunAbort(() => harness.abort());
         try {
-          await runtime.harness.prompt(query);
+          await harness.prompt(query);
         } finally {
           unbind();
         }

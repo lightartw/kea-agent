@@ -6,7 +6,6 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { createCodingAgent } from "../../src/coding-agent/factory.js";
-import { Session } from "../../src/harness/session/session.js";
 import type {
   AssistantMessage,
   ModelConfig,
@@ -32,42 +31,48 @@ const assistant: AssistantMessage = {
   latencyMs: 0,
 };
 
+const oneTurnStream: StreamFn = async function* () {
+  yield { type: "done", message: assistant };
+};
+
 test("factory composes workDir, default tools, and string prompt", async () => {
-  let seenPrompt = "";
-  let seenTools: string[] = [];
-  const stream: StreamFn = async function* (_model, context) {
-    seenPrompt = context.systemPrompt ?? "";
-    seenTools = context.tools?.map((tool) => tool.name) ?? [];
-    yield { type: "done", message: assistant };
-  };
+  const storageDir = await tempStorage();
+  try {
+    let seenPrompt = "";
+    let seenTools: string[] = [];
+    const stream: StreamFn = async function* (_model, context) {
+      seenPrompt = context.systemPrompt ?? "";
+      seenTools = context.tools?.map((tool) => tool.name) ?? [];
+      yield { type: "done", message: assistant };
+    };
 
-  const runtime = await createCodingAgent({
-    project: {
-      workDir: "C:/workspace/project",
-      storageDir: "unused-because-session-is-in-memory",
-    },
-    streamFn: stream,
-    model,
-    session: Session.inMemory(),
-    systemPrompt: "cwd={{cwd}} date={{date}}",
-  });
+    const codingAgent = await createCodingAgent({
+      project: { workDir: "C:/workspace/project", storageDir },
+      streamFn: stream,
+      model,
+      systemPrompt: "cwd={{cwd}} date={{date}}",
+    });
+    const harness = await codingAgent.createSession();
 
-  await runtime.harness.prompt("hello");
-  assert.equal(
-    seenPrompt,
-    `cwd=${resolve("C:/workspace/project")} date=${new Date().toISOString().slice(0, 10)}`,
-  );
-  assert.deepEqual(seenTools, [
-    "bash",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "glob",
-    "todo_write",
-  ]);
+    await harness.prompt("hello");
+    assert.equal(
+      seenPrompt,
+      `cwd=${resolve("C:/workspace/project")} date=${new Date().toISOString().slice(0, 10)}`,
+    );
+    assert.deepEqual(seenTools, [
+      "bash",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "glob",
+      "todo_write",
+    ]);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
 });
 
-test("factory resolves a relative workDir once", async () => {
+test("factory resolves relative Project paths once", async () => {
   const originalCwd = process.cwd();
   const storageDir = await tempStorage();
   const firstDir = join(storageDir, "first");
@@ -78,45 +83,119 @@ test("factory resolves a relative workDir once", async () => {
 
   try {
     process.chdir(storageDir);
-    const runtime = await createCodingAgent({
-      project: { workDir: "first", storageDir: "unused" },
+    const codingAgent = await createCodingAgent({
+      project: { workDir: "first", storageDir: "history" },
       streamFn: async function* (_model, context) {
         seenPrompt = context.systemPrompt ?? "";
         yield { type: "done", message: assistant };
       },
       model,
-      session: Session.inMemory(),
       systemPrompt: "cwd={{cwd}}",
     });
 
     process.chdir(secondDir);
-    await runtime.harness.prompt("hello");
+    const harness = await codingAgent.createSession();
+    await harness.prompt("hello");
 
     assert.equal(seenPrompt, `cwd=${firstDir}`);
+    assert.deepEqual(await codingAgent.listSessions(), [harness.sessionId]);
   } finally {
     process.chdir(originalCwd);
     await rm(storageDir, { recursive: true, force: true });
   }
 });
 
-test("factory restores the supplied Session", async () => {
-  const session = Session.inMemory();
-  await session.appendMessage({ role: "user", content: "old" });
-  await session.appendMessage(assistant);
+test("factory restores a Session opened through the CodingAgent", async () => {
+  const storageDir = await tempStorage();
+  try {
+    const seenRoles: string[][] = [];
+    const codingAgent = await createCodingAgent({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: async function* (_model, context) {
+        seenRoles.push(context.messages.map((message) => message.role));
+        yield { type: "done", message: assistant };
+      },
+      model,
+    });
 
-  let seenRoles: string[] = [];
-  const runtime = await createCodingAgent({
-    project: { workDir: process.cwd(), storageDir: "unused" },
-    streamFn: async function* (_model, context) {
-      seenRoles = context.messages.map((message) => message.role);
-      yield { type: "done", message: assistant };
-    },
-    model,
-    session,
-  });
+    const first = await codingAgent.createSession();
+    await first.prompt("old");
+    const restored = await codingAgent.openSession(first.sessionId);
+    await restored.prompt("new");
 
-  await runtime.harness.prompt("new");
-  assert.deepEqual(seenRoles, ["user", "assistant", "user"]);
+    assert.deepEqual(seenRoles, [
+      ["user"],
+      ["user", "assistant", "user"],
+    ]);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
+test("CodingAgent lists, creates, opens, and continues project Sessions", async () => {
+  const storageDir = await tempStorage();
+  try {
+    const codingAgent = await createCodingAgent({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: oneTurnStream,
+      model,
+    });
+
+    assert.deepEqual(await codingAgent.listSessions(), []);
+
+    const created = await codingAgent.createSession();
+    await created.prompt("persist me");
+    assert.deepEqual(await codingAgent.listSessions(), [created.sessionId]);
+
+    const opened = await codingAgent.openSession(created.sessionId);
+    assert.equal(opened.sessionId, created.sessionId);
+    assert.deepEqual(opened.messages.map((message) => message.role), ["user", "assistant"]);
+
+    const continued = await codingAgent.continueRecent();
+    assert.equal(continued.sessionId, created.sessionId);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
+test("continueRecent creates a Session when the project has no history", async () => {
+  const storageDir = await tempStorage();
+  try {
+    const codingAgent = await createCodingAgent({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: oneTurnStream,
+      model,
+    });
+    const harness = await codingAgent.continueRecent();
+    assert.ok(harness.sessionId.length > 0);
+    assert.deepEqual(harness.messages, []);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
+test("Harnesses created for one Project do not share mutable state", async () => {
+  const storageDir = await tempStorage();
+  try {
+    const codingAgent = await createCodingAgent({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: oneTurnStream,
+      model,
+    });
+    const first = await codingAgent.createSession();
+    const second = await codingAgent.createSession();
+
+    await first.switchModel({ provider: "test", model: "other" });
+    assert.deepEqual(second.model, model);
+
+    const secondEvents: string[] = [];
+    second.subscribe((event) => { secondEvents.push(event.type); });
+    await first.prompt("only first");
+    assert.deepEqual(secondEvents, []);
+    assert.deepEqual(second.messages, []);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
 });
 
 function recordingInteractions(): {
@@ -132,10 +211,6 @@ function recordingInteractions(): {
     },
   };
 }
-
-const oneTurnStream: StreamFn = async function* () {
-  yield { type: "done", message: assistant };
-};
 
 function twoTurnBashStream(command: string): StreamFn {
   let turn = 0;
@@ -165,30 +240,40 @@ function twoTurnBashStream(command: string): StreamFn {
 }
 
 test("factory assembles the default built-in Hook registry with supplied interactions", async () => {
-  const { interactions, notifications } = recordingInteractions();
-  const runtime = await createCodingAgent({
-    project: { workDir: process.cwd(), storageDir: "unused" },
-    streamFn: oneTurnStream,
-    model,
-    session: Session.inMemory(),
-    interactions,
-  });
+  const storageDir = await tempStorage();
+  try {
+    const { interactions, notifications } = recordingInteractions();
+    const codingAgent = await createCodingAgent({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: oneTurnStream,
+      model,
+      interactions,
+    });
+    const harness = await codingAgent.createSession();
 
-  await runtime.harness.prompt("hello");
-  assert.deepEqual(notifications, []);
+    await harness.prompt("hello");
+    assert.deepEqual(notifications, []);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
 });
 
 test("factory defaults to fail-closed interactions for ask commands", async () => {
-  const runtime = await createCodingAgent({
-    project: { workDir: process.cwd(), storageDir: "unused" },
-    streamFn: twoTurnBashStream("rm file.txt"),
-    model,
-    session: Session.inMemory(),
-  });
-  await runtime.harness.prompt("remove file");
-  const toolMessage = runtime.harness.messages.find((message) => message.role === "tool");
-  assert.equal(toolMessage?.role, "tool");
-  assert.match(toolMessage?.content ?? "", /permission denied by user/);
+  const storageDir = await tempStorage();
+  try {
+    const codingAgent = await createCodingAgent({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: twoTurnBashStream("rm file.txt"),
+      model,
+    });
+    const harness = await codingAgent.createSession();
+    await harness.prompt("remove file");
+    const toolMessage = harness.messages.find((message) => message.role === "tool");
+    assert.equal(toolMessage?.role, "tool");
+    assert.match(toolMessage?.content ?? "", /permission denied by user/);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
 });
 
 function denyingInteractions(confirmations: string[]): CodingAgentInteractions {
@@ -201,77 +286,93 @@ function denyingInteractions(confirmations: string[]): CodingAgentInteractions {
   };
 }
 
-test("factory returns distinct harnesses and tool render functions per call", async () => {
-  const firstConfirmations: string[] = [];
-  const secondConfirmations: string[] = [];
-  const first = await createCodingAgent({
-    project: { workDir: "C:/first", storageDir: "unused" },
-    streamFn: twoTurnBashStream("rm file.txt"),
-    model,
-    session: Session.inMemory(),
-    interactions: denyingInteractions(firstConfirmations),
-  });
-  const second = await createCodingAgent({
-    project: { workDir: "C:/second", storageDir: "unused" },
-    streamFn: twoTurnBashStream("rm file.txt"),
-    model,
-    session: Session.inMemory(),
-    interactions: denyingInteractions(secondConfirmations),
-  });
+test("factory returns distinct Coding Agents and tool render functions per call", async () => {
+  const firstStorageDir = await tempStorage();
+  const secondStorageDir = await tempStorage();
+  try {
+    const firstConfirmations: string[] = [];
+    const secondConfirmations: string[] = [];
+    const first = await createCodingAgent({
+      project: { workDir: "C:/first", storageDir: firstStorageDir },
+      streamFn: twoTurnBashStream("rm file.txt"),
+      model,
+      interactions: denyingInteractions(firstConfirmations),
+    });
+    const second = await createCodingAgent({
+      project: { workDir: "C:/second", storageDir: secondStorageDir },
+      streamFn: twoTurnBashStream("rm file.txt"),
+      model,
+      interactions: denyingInteractions(secondConfirmations),
+    });
+    const firstHarness = await first.createSession();
+    const secondHarness = await second.createSession();
 
-  assert.notEqual(first.harness, second.harness);
-  assert.notEqual(first.renderToolEvent, second.renderToolEvent);
+    assert.notEqual(first, second);
+    assert.notEqual(first.renderToolEvent, second.renderToolEvent);
 
-  await first.harness.prompt("one");
-  await second.harness.prompt("two");
-  assert.deepEqual(firstConfirmations, ["permission"]);
-  assert.deepEqual(secondConfirmations, ["permission"]);
+    await firstHarness.prompt("one");
+    await secondHarness.prompt("two");
+    assert.deepEqual(firstConfirmations, ["permission"]);
+    assert.deepEqual(secondConfirmations, ["permission"]);
+  } finally {
+    await rm(firstStorageDir, { recursive: true, force: true });
+    await rm(secondStorageDir, { recursive: true, force: true });
+  }
 });
 
-test("runtime presentations render todo details from the Coding Tool definition", async () => {
-  const runtime = await createCodingAgent({
-    project: { workDir: process.cwd(), storageDir: "unused" },
-    streamFn: oneTurnStream,
-    model,
-    session: Session.inMemory(),
-  });
+test("CodingAgent presentations render todo details from the Coding Tool definition", async () => {
+  const storageDir = await tempStorage();
+  try {
+    const codingAgent = await createCodingAgent({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: oneTurnStream,
+      model,
+    });
 
-  const todoEndEvent: HarnessToolEvent = {
-    type: "tool_end",
-    lane: "main",
-    runId: "run-1",
-    call: {
-      type: "toolCall",
-      id: "c1",
-      name: "todo_write",
-      arguments: { todos: [{ content: "Design UI", status: "in_progress" }] },
-    },
-    result: {
-      content: "Current tasks:\n1. [in_progress] Design UI\nUpdated 1 tasks",
-      details: { todos: [{ content: "Design UI", status: "in_progress" }] },
-      isError: false,
-    },
-  };
-  assert.equal(
-    runtime.renderToolEvent(todoEndEvent),
-    "1. [in_progress] Design UI",
-  );
+    const todoEndEvent: HarnessToolEvent = {
+      type: "tool_end",
+      lane: "main",
+      runId: "run-1",
+      call: {
+        type: "toolCall",
+        id: "c1",
+        name: "todo_write",
+        arguments: { todos: [{ content: "Design UI", status: "in_progress" }] },
+      },
+      result: {
+        content: "Current tasks:\n1. [in_progress] Design UI\nUpdated 1 tasks",
+        details: { todos: [{ content: "Design UI", status: "in_progress" }] },
+        isError: false,
+      },
+    };
+    assert.equal(
+      codingAgent.renderToolEvent(todoEndEvent),
+      "1. [in_progress] Design UI",
+    );
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
 });
 
 test("default Harness system prompt contains the coding agent opening text", async () => {
-  let seenPrompt = "";
-  const runtime = await createCodingAgent({
-    project: { workDir: process.cwd(), storageDir: "unused" },
-    streamFn: async function* (_model, context) {
-      seenPrompt = context.systemPrompt ?? "";
-      yield { type: "done", message: assistant };
-    },
-    model,
-    session: Session.inMemory(),
-  });
+  const storageDir = await tempStorage();
+  try {
+    let seenPrompt = "";
+    const codingAgent = await createCodingAgent({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: async function* (_model, context) {
+        seenPrompt = context.systemPrompt ?? "";
+        yield { type: "done", message: assistant };
+      },
+      model,
+    });
+    const harness = await codingAgent.createSession();
 
-  await runtime.harness.prompt("hello");
-  assert.match(seenPrompt, /You are Kea, a coding agent that runs inside a terminal/);
+    await harness.prompt("hello");
+    assert.match(seenPrompt, /You are Kea, a coding agent that runs inside a terminal/);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
 });
 
 function todoTurnStream(todos: readonly TodoItem[]): StreamFn {
@@ -302,28 +403,32 @@ function todoTurnStream(todos: readonly TodoItem[]): StreamFn {
 }
 
 test("todo content is model-visible while details stay in the in-memory message", async () => {
-  const todos: TodoItem[] = [
-    { content: "Read code", status: "completed" },
-    { content: "Design UI", status: "in_progress" },
-  ];
-  const session = Session.inMemory();
-  const runtime = await createCodingAgent({
-    project: { workDir: process.cwd(), storageDir: "unused" },
-    streamFn: todoTurnStream(todos),
-    model,
-    session,
-  });
+  const storageDir = await tempStorage();
+  try {
+    const todos: TodoItem[] = [
+      { content: "Read code", status: "completed" },
+      { content: "Design UI", status: "in_progress" },
+    ];
+    const codingAgent = await createCodingAgent({
+      project: { workDir: process.cwd(), storageDir },
+      streamFn: todoTurnStream(todos),
+      model,
+    });
+    const harness = await codingAgent.createSession();
 
-  await runtime.harness.prompt("plan");
+    await harness.prompt("plan");
 
-  const toolMessage = runtime.harness.messages.find((message) => message.role === "tool");
-  assert.equal(toolMessage?.role, "tool");
-  if (toolMessage?.role !== "tool") return;
-  assert.match(toolMessage.content, /Read code/);
-  assert.match(toolMessage.content, /Design UI/);
-  assert.match(toolMessage.content, /completed/);
-  assert.match(toolMessage.content, /in_progress/);
-  assert.deepEqual(toolMessage.details, { todos });
+    const toolMessage = harness.messages.find((message) => message.role === "tool");
+    assert.equal(toolMessage?.role, "tool");
+    if (toolMessage?.role !== "tool") return;
+    assert.match(toolMessage.content, /Read code/);
+    assert.match(toolMessage.content, /Design UI/);
+    assert.match(toolMessage.content, /completed/);
+    assert.match(toolMessage.content, /in_progress/);
+    assert.deepEqual(toolMessage.details, { todos });
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
 });
 
 test("todo state recovers from a restored Session after a model switch", async () => {
@@ -333,16 +438,14 @@ test("todo state recovers from a restored Session after a model switch", async (
       { content: "Read code", status: "completed" },
       { content: "Design UI", status: "in_progress" },
     ];
-    const first = await Session.create(storageDir);
-    const firstRuntime = await createCodingAgent({
+    const firstAgent = await createCodingAgent({
       project: { workDir: process.cwd(), storageDir },
       streamFn: todoTurnStream(todos),
       model,
-      session: first,
     });
-    await firstRuntime.harness.prompt("plan");
+    const first = await firstAgent.createSession();
+    await first.prompt("plan");
 
-    const restored = await Session.open(storageDir, first.id);
     let recoveredContent = "";
     const recoveryStream: StreamFn = async function* (_model, context) {
       const toolMessage = [...context.messages].reverse().find(
@@ -351,13 +454,14 @@ test("todo state recovers from a restored Session after a model switch", async (
       recoveredContent = toolMessage?.role === "tool" ? toolMessage.content : "";
       yield { type: "done", message: assistant };
     };
-    const secondRuntime = await createCodingAgent({
+    const secondAgent = await createCodingAgent({
       project: { workDir: process.cwd(), storageDir },
       streamFn: recoveryStream,
       model: { provider: "test", model: "model-2" },
-      session: restored,
     });
-    await secondRuntime.harness.prompt("resume");
+    const restored = await secondAgent.openSession(first.sessionId);
+    await restored.switchModel({ provider: "test", model: "model-2" });
+    await restored.prompt("resume");
 
     assert.match(recoveredContent, /Read code/);
     assert.match(recoveredContent, /Design UI/);

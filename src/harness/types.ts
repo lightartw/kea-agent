@@ -26,8 +26,3 @@ export interface HarnessConfig {
   readonly hooks?: AgentHookTrigger;
   readonly onEventListenerError?: HarnessListenerErrorHandler;
 }
-
-export interface HarnessProject {
-  readonly workDir: string;
-  readonly storageDir: string;
-}

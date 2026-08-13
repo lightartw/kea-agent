@@ -39,8 +39,9 @@ import type {
 } from "../src/harness/index.js";
 
 import type {
+  CodingAgent,
   CodingAgentInteractions,
-  CodingAgentRuntime,
+  CodingProject,
   CodingToolContext,
   CodingToolDefinition,
   CodingToolPresentation,
@@ -52,9 +53,6 @@ import type {
   ToolPresentationCall,
   ToolPresentationRejected,
 } from "../src/coding-agent/index.js";
-import type {
-  CodingAgentRuntime as CodingAgentRuntimeFromTypes,
-} from "../src/coding-agent/types.js";
 
 void [
   runAgentLoop,
@@ -87,8 +85,8 @@ type PublicHarnessTypes = [
 ];
 
 type PublicCodingAgentTypes = [
-  CodingAgentRuntime,
-  CodingAgentRuntimeFromTypes,
+  CodingAgent,
+  CodingProject,
   CreateCodingAgentConfig,
   CodingAgentInteractions,
   CodingToolContext,

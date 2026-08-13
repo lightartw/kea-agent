@@ -7,7 +7,8 @@ export {
 } from "./ui/interactions.js";
 
 export type {
-  CodingAgentRuntime,
+  CodingAgent,
+  CodingProject,
   CreateCodingAgentConfig,
 } from "./types.js";
 export type {
