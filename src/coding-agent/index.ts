@@ -2,8 +2,7 @@ export { createCodingAgent } from "./factory.js";
 export {
   CODING_SYSTEM_PROMPT,
 } from "./coding-system-prompt.js";
-export { createDefaultToolDefinitions } from "./tools/builtin/factory.js";
-export { toAgentTool } from "./tools/wrapper.js";
+export { toAgentTool } from "./tools/definition.js";
 export {
   NO_INTERACTIONS,
 } from "./ui/interactions.js";

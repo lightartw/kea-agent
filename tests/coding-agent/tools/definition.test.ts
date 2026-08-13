@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Type, type Static } from "typebox";
 
-import { toAgentTool } from "../../../src/coding-agent/tools/wrapper.js";
-import type { CodingToolDefinition } from "../../../src/coding-agent/tools/definition.js";
+import {
+  toAgentTool,
+  type CodingToolDefinition,
+} from "../../../src/coding-agent/tools/definition.js";
 
 const parameters = Type.Object({ value: Type.Number() });
 
