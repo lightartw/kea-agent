@@ -41,10 +41,10 @@ import type {
 
 import type {
   CodingHookContext,
-  CodingHookUI,
+  CodingAgentInteractions,
   CreateHarnessConfig,
-  HookConfirmation,
-  HookNotification,
+  ConfirmationRequest,
+  Notification,
   TodoDetails,
   TodoItem,
 } from "../src/coding-agent/index.js";
@@ -115,9 +115,9 @@ type PublicAgentHookTypes = [
 
 type PublicCodingAgentTypes = [
   CodingHookContext,
-  CodingHookUI,
-  HookConfirmation,
-  HookNotification,
+  CodingAgentInteractions,
+  ConfirmationRequest,
+  Notification,
   TodoItem,
   TodoDetails,
   CreateHarnessConfig,

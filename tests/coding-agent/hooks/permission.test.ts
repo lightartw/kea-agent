@@ -4,9 +4,9 @@ import test from "node:test";
 import { HookRegistry } from "../../../src/agent/hooks/registry.js";
 import type {
   CodingHookContext,
-  CodingHookUI,
-  HookConfirmation,
-} from "../../../src/coding-agent/types.js";
+  CodingAgentInteractions,
+  ConfirmationRequest,
+} from "../../../src/coding-agent/index.js";
 import { registerPermissionHook } from "../../../src/coding-agent/hooks/permission.js";
 import { classifyBashCommand, hardDeniedBashReason } from "../../../src/coding-agent/tools/bash-policy.js";
 
@@ -47,8 +47,8 @@ test("Bash policy allows ordinary commands", () => {
 
 // ── Step 2: Permission Hook allow/ask/deny tests ──
 
-class RecordingUI implements CodingHookUI {
-  readonly confirmations: HookConfirmation[] = [];
+class RecordingUI implements CodingAgentInteractions {
+  readonly confirmations: ConfirmationRequest[] = [];
   readonly signals: (AbortSignal | undefined)[] = [];
 
   constructor(
@@ -57,10 +57,10 @@ class RecordingUI implements CodingHookUI {
   ) {}
 
   async confirm(
-    confirmation: HookConfirmation,
+    request: ConfirmationRequest,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    this.confirmations.push(confirmation);
+    this.confirmations.push(request);
     this.signals.push(signal);
     if (this.answer instanceof Error) throw this.answer;
     return this.answer;
@@ -71,10 +71,10 @@ class RecordingUI implements CodingHookUI {
 
 type CodingHookRegistry = HookRegistry<CodingHookContext>;
 
-function codingHooks(ui: CodingHookUI): CodingHookRegistry {
+function codingHooks(ui: CodingAgentInteractions): CodingHookRegistry {
   return new HookRegistry<CodingHookContext>({
     cwd: process.cwd(),
-    ui,
+    interactions: ui,
   });
 }
 

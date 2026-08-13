@@ -4,14 +4,17 @@ export {
   CODING_SYSTEM_PROMPT,
 } from "./coding-system-prompt.js";
 export { createToolRegistry } from "./tools/factory.js";
+export {
+  NO_INTERACTIONS,
+} from "./ui/interactions.js";
 
 export type { CreateHarnessConfig } from "./types.js";
+export type { CodingHookContext } from "./hooks/types.js";
 export type {
-  CodingHookContext,
-  CodingHookUI,
-  HookConfirmation,
-  HookNotification,
-} from "./types.js";
+  CodingAgentInteractions,
+  ConfirmationRequest,
+  Notification,
+} from "./ui/interactions.js";
 export type {
   TodoItem,
   TodoDetails,

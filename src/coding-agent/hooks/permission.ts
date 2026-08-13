@@ -1,6 +1,7 @@
 import type { BeforeToolCall, BeforeToolCallResult } from "../../agent/hooks/types.js";
 import { classifyBashCommand } from "../tools/bash-policy.js";
-import type { CodingHookContext, CodingHookUI } from "../types.js";
+import type { CodingAgentInteractions } from "../ui/interactions.js";
+import type { CodingHookContext } from "../types.js";
 import type { CodingHookRegistry } from "./types.js";
 
 /**
@@ -28,12 +29,12 @@ export function registerPermissionHook(
     }
 
     // decision === "ask"
-    const ui: CodingHookUI = context.ui;
-    if (!ui.available) {
+    const interactions: CodingAgentInteractions = context.interactions;
+    if (!interactions.available) {
       return { block: true, reason: `${decision.reason}; no confirmation UI available` };
     }
     try {
-      const allowed = await ui.confirm({
+      const allowed = await interactions.confirm({
         source: "permission",
         title: "Allow Bash command?",
         message: `${decision.reason}\nTool: bash(${JSON.stringify(call.input)})`,

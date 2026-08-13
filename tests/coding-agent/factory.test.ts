@@ -13,9 +13,9 @@ import type {
   StreamFn,
 } from "../../src/ai/types.js";
 import type {
-  CodingHookUI,
-  HookNotification,
-} from "../../src/coding-agent/types.js";
+  CodingAgentInteractions,
+  Notification,
+} from "../../src/coding-agent/index.js";
 import type { TodoItem } from "../../src/coding-agent/tools/todo-state.js";
 
 async function tempStorage(): Promise<string> {
@@ -86,14 +86,14 @@ test("factory restores the supplied Session", async () => {
   assert.deepEqual(seenRoles, ["user", "assistant", "user"]);
 });
 
-function recordingUi(): {
-  ui: CodingHookUI;
-  notifications: HookNotification[];
+function recordingInteractions(): {
+  interactions: CodingAgentInteractions;
+  notifications: Notification[];
 } {
-  const notifications: HookNotification[] = [];
+  const notifications: Notification[] = [];
   return {
     notifications,
-    ui: {
+    interactions: {
       available: true,
       async confirm() { return true; },
       notify(notification) { notifications.push(notification); },
@@ -132,21 +132,21 @@ function twoTurnBashStream(command: string): StreamFn {
   };
 }
 
-test("factory assembles the default Hook registry with supplied UI", async () => {
-  const { ui, notifications } = recordingUi();
+test("factory assembles the default Hook registry with supplied interactions", async () => {
+  const { interactions, notifications } = recordingInteractions();
   const harness = await createHarness({
     project: { workDir: process.cwd(), storageDir: "unused" },
     streamFn: oneTurnStream,
     model,
     session: Session.inMemory(),
-    ui,
+    interactions,
   });
 
   await harness.prompt("hello");
   assert.deepEqual(notifications, []);
 });
 
-test("factory defaults to fail-closed NO_UI for ask commands", async () => {
+test("factory defaults to fail-closed interactions for ask commands", async () => {
   const harness = await createHarness({
     project: { workDir: process.cwd(), storageDir: "unused" },
     streamFn: twoTurnBashStream("rm file.txt"),
@@ -162,11 +162,11 @@ test("factory defaults to fail-closed NO_UI for ask commands", async () => {
 test("factory creates an independent permission Hook for each Harness", async () => {
   const firstConfirmations: string[] = [];
   const secondConfirmations: string[] = [];
-  function denyingUi(confirmations: string[]): CodingHookUI {
+  function denyingInteractions(confirmations: string[]): CodingAgentInteractions {
     return {
       available: true,
-      async confirm(confirmation) {
-        confirmations.push(confirmation.source);
+      async confirm(request) {
+        confirmations.push(request.source);
         return false;
       },
       notify() {},
@@ -177,14 +177,14 @@ test("factory creates an independent permission Hook for each Harness", async ()
     streamFn: twoTurnBashStream("rm file.txt"),
     model,
     session: Session.inMemory(),
-    ui: denyingUi(firstConfirmations),
+    interactions: denyingInteractions(firstConfirmations),
   });
   const second = await createHarness({
     project: { workDir: "C:/second", storageDir: "unused" },
     streamFn: twoTurnBashStream("rm file.txt"),
     model,
     session: Session.inMemory(),
-    ui: denyingUi(secondConfirmations),
+    interactions: denyingInteractions(secondConfirmations),
   });
   await first.prompt("one");
   await second.prompt("two");

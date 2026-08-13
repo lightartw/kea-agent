@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createCodingHookRegistry } from "../../../src/coding-agent/hooks/factory.js";
-import type { CodingHookUI } from "../../../src/coding-agent/types.js";
+import type { CodingAgentInteractions } from "../../../src/coding-agent/index.js";
 
-class RecordingUI implements CodingHookUI {
+class RecordingInteractions implements CodingAgentInteractions {
   readonly available = true;
   readonly confirmations: string[] = [];
   readonly notifications: string[] = [];
 
-  async confirm(confirmation: { source: string }): Promise<boolean> {
-    this.confirmations.push(confirmation.source);
+  async confirm(request: { source: string }): Promise<boolean> {
+    this.confirmations.push(request.source);
     return true;
   }
 
@@ -20,8 +20,11 @@ class RecordingUI implements CodingHookUI {
 }
 
 test("default registry registers only the permission Hook", async () => {
-  const ui = new RecordingUI();
-  const hooks = createCodingHookRegistry({ cwd: process.cwd(), ui });
+  const interactions = new RecordingInteractions();
+  const hooks = createCodingHookRegistry({
+    cwd: process.cwd(),
+    interactions,
+  });
 
   // Non-bash tool calls pass through without confirmation.
   await hooks.trigger({
@@ -30,7 +33,7 @@ test("default registry registers only the permission Hook", async () => {
     toolName: "write_file",
     input: { path: "inside.txt", content: "ok" },
   });
-  assert.deepEqual(ui.confirmations, []);
+  assert.deepEqual(interactions.confirmations, []);
 
   // Bash ask commands trigger a permission confirmation.
   await hooks.trigger({
@@ -39,12 +42,15 @@ test("default registry registers only the permission Hook", async () => {
     toolName: "bash",
     input: { command: "rm file.txt" },
   });
-  assert.deepEqual(ui.confirmations, ["permission"]);
+  assert.deepEqual(interactions.confirmations, ["permission"]);
 });
 
 test("default registry produces no passive notifications", async () => {
-  const ui = new RecordingUI();
-  const hooks = createCodingHookRegistry({ cwd: process.cwd(), ui });
+  const interactions = new RecordingInteractions();
+  const hooks = createCodingHookRegistry({
+    cwd: process.cwd(),
+    interactions,
+  });
 
   await hooks.trigger({ type: "user_prompt", prompt: "hello" });
   await hooks.trigger({
@@ -57,5 +63,5 @@ test("default registry produces no passive notifications", async () => {
   });
   await hooks.trigger({ type: "stop", messages: [] });
 
-  assert.deepEqual(ui.notifications, []);
+  assert.deepEqual(interactions.notifications, []);
 });

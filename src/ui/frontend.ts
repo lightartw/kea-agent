@@ -2,10 +2,10 @@ import { createInterface, type Interface } from "node:readline/promises";
 
 import type { AgentHarness } from "../harness/agent-harness.js";
 import type {
-  CodingHookUI,
-  HookConfirmation,
-  HookNotification,
-} from "../coding-agent/types.js";
+  CodingAgentInteractions,
+  ConfirmationRequest,
+  Notification,
+} from "../coding-agent/index.js";
 import { CliHarnessRenderer } from "./harness-renderer.js";
 import { createDefaultToolRenderers } from "./tool-renderers.js";
 
@@ -20,7 +20,7 @@ interface CliFrontendOptions {
 }
 
 /** The readline presentation adapter; core modules never import this class. */
-export class CliFrontend implements CodingHookUI {
+export class CliFrontend implements CodingAgentInteractions {
   readonly available = true;
   private readonly readline: Interface;
   private readonly inputStream: NodeJS.ReadStream;
@@ -41,10 +41,10 @@ export class CliFrontend implements CodingHookUI {
     });
   }
 
-  // ── CodingHookUI ──
+  // ── CodingAgentInteractions ──
 
   async confirm(
-    confirmation: HookConfirmation,
+    request: ConfirmationRequest,
     signal?: AbortSignal,
   ): Promise<boolean> {
     // Temporarily detach the run ESC listener
@@ -71,7 +71,7 @@ export class CliFrontend implements CodingHookUI {
         : confirmationController.signal;
 
       const answer = await this.readline.question(
-        `\n⚠ ${confirmation.title}\n   ${confirmation.message}\n   Allow? [y/N] `,
+        `\n⚠ ${request.title}\n   ${request.message}\n   Allow? [y/N] `,
         { signal: combinedSignal },
       );
       return ["y", "yes"].includes(answer.trim().toLowerCase());
@@ -93,7 +93,7 @@ export class CliFrontend implements CodingHookUI {
     }
   }
 
-  notify(notification: HookNotification): void {
+  notify(notification: Notification): void {
     this.logFn(notification.message);
   }
 

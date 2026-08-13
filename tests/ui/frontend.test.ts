@@ -4,7 +4,7 @@ import test from "node:test";
 import type { Interface } from "node:readline/promises";
 
 import { CliFrontend } from "../../src/ui/frontend.js";
-import type { HookConfirmation } from "../../src/coding-agent/types.js";
+import type { ConfirmationRequest } from "../../src/coding-agent/index.js";
 import type { AgentHarness } from "../../src/harness/agent-harness.js";
 
 type QuestionFn = (
@@ -22,7 +22,7 @@ class FakeInput extends EventEmitter {
   }
 }
 
-const confirmation: HookConfirmation = {
+const confirmation: ConfirmationRequest = {
   source: "permission",
   title: "Allow Bash command?",
   message: "file deletion requires approval\nTool: bash({\"command\":\"rm file.txt\"})",
