@@ -10,7 +10,6 @@ import type { ModelConfig } from "../../src/ai/types.js";
 import { Session } from "../../src/harness/session/session.js";
 import { SessionError } from "../../src/harness/session/types.js";
 import { detailedToolResult } from "../ai/fixtures.js";
-import { findLatestTodoDetails } from "../../src/coding-agent/tools/builtin/todo/projection.js";
 
 const modelA: ModelConfig = { provider: "test-a", model: "model-a" };
 const modelB: ModelConfig = { provider: "test-b", model: "model-b" };
@@ -409,71 +408,6 @@ test("JSONL session persists nested JSON-safe details and opens legacy tool mess
       content: "ok",
     });
     await rm(legacyStorage, { recursive: true, force: true });
-  } finally {
-    await rm(storageDir, { recursive: true, force: true });
-  }
-});
-
-test("findLatestTodoDetails scans from the end and skips malformed details", () => {
-  const messages: AgentMessage[] = [
-    {
-      role: "tool", toolCallId: "a", name: "todo_write", content: "old",
-      details: { todos: [{ content: "old", status: "completed" }] },
-    },
-    { role: "tool", toolCallId: "b", name: "bash", content: "unrelated" },
-    { role: "tool", toolCallId: "c", name: "todo_write", content: "malformed" },
-    {
-      role: "tool", toolCallId: "d", name: "todo_write", content: "broken",
-      details: { wrong: true },
-    },
-    {
-      role: "tool", toolCallId: "e", name: "todo_write", content: "latest",
-      details: { todos: [{ content: "latest valid", status: "in_progress" }] },
-    },
-  ];
-
-  assert.deepEqual(findLatestTodoDetails(messages), {
-    todos: [{ content: "latest valid", status: "in_progress" }],
-  });
-  assert.equal(findLatestTodoDetails([]), undefined);
-});
-
-test("findLatestTodoDetails follows the current Session branch", async () => {
-  const storageDir = await tempStorage();
-  const sessionsDir = join(storageDir, "sessions");
-  try {
-    await mkdir(sessionsDir, { recursive: true });
-    const entries = [
-      { type: "message", id: "root", parentId: null, message: user },
-      {
-        type: "message",
-        id: "abandoned",
-        parentId: "root",
-        message: {
-          role: "tool", toolCallId: "x", name: "todo_write", content: "abandoned",
-          details: { todos: [{ content: "abandoned", status: "pending" }] },
-        },
-      },
-      {
-        type: "message",
-        id: "current",
-        parentId: "root",
-        message: {
-          role: "tool", toolCallId: "y", name: "todo_write", content: "current",
-          details: { todos: [{ content: "current", status: "completed" }] },
-        },
-      },
-    ];
-    await writeFile(
-      join(sessionsDir, "todo-branch.jsonl"),
-      `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
-    );
-
-    const session = await Session.open(storageDir, "todo-branch");
-    assert.deepEqual(
-      findLatestTodoDetails(session.buildContext().messages),
-      { todos: [{ content: "current", status: "completed" }] },
-    );
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }

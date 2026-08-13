@@ -14,7 +14,7 @@ import type {
 } from "../../src/ai/types.js";
 import type { CodingAgentInteractions } from "../../src/coding-agent/index.js";
 import type { HarnessToolEvent } from "../../src/harness/events/types.js";
-import type { TodoItem } from "../../src/coding-agent/tools/builtin/todo/projection.js";
+import type { TodoItem } from "../../src/coding-agent/tools/builtin/todo.js";
 
 async function tempStorage(): Promise<string> {
   const path = join(tmpdir(), `kea-factory-${randomUUID()}`);

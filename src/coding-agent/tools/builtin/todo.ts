@@ -1,15 +1,16 @@
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import {
-  formatTodoContent,
-  isTodoDetails,
-  type TodoDetails,
-  type TodoItem,
-} from "./projection.js";
-import type { CodingToolDefinition } from "../../definition.js";
+import type { CodingToolDefinition } from "../definition.js";
 
-export type { TodoDetails, TodoItem } from "./projection.js";
+export interface TodoItem {
+  readonly content: string;
+  readonly status: "pending" | "in_progress" | "completed";
+}
+
+export interface TodoDetails {
+  readonly todos: readonly TodoItem[];
+}
 
 const parameters = Type.Object(
   {
@@ -28,7 +29,32 @@ const parameters = Type.Object(
   { additionalProperties: false },
 );
 
-export function createTodoWriteToolDefinition(): CodingToolDefinition<typeof parameters, TodoDetails> {
+function formatTodos(todos: readonly TodoItem[]): string {
+  return [
+    "Current tasks:",
+    ...todos.map((todo, index) =>
+      `${index + 1}. [${todo.status}] ${todo.content}`),
+    `Updated ${todos.length} tasks`,
+  ].join("\n");
+}
+
+function isTodoDetails(value: unknown): value is TodoDetails {
+  if (typeof value !== "object" || value === null) return false;
+  const todos = (value as { todos?: unknown }).todos;
+  return Array.isArray(todos) && todos.every((todo: unknown) => {
+    if (typeof todo !== "object" || todo === null) return false;
+    const item = todo as Record<string, unknown>;
+    return typeof item.content === "string" &&
+      (item.status === "pending" ||
+        item.status === "in_progress" ||
+        item.status === "completed");
+  });
+}
+
+export function createTodoWriteToolDefinition(): CodingToolDefinition<
+  typeof parameters,
+  TodoDetails
+> {
   return {
     name: "todo_write",
     description: "Create and manage a task list for the current session. " +
@@ -36,17 +62,13 @@ export function createTodoWriteToolDefinition(): CodingToolDefinition<typeof par
       "and keep one task in_progress at a time. Send the full list " +
       "each call — it replaces the previous one.",
     parameters,
-    async execute(
-      arguments_: Static<typeof parameters>,
-      _signal: AbortSignal,
-      _context,
-    ): Promise<{ content: string; details: TodoDetails; isError: false }> {
+    async execute(arguments_: Static<typeof parameters>) {
       const todos: readonly TodoItem[] = arguments_.todos.map((todo) => ({
         content: todo.content,
         status: todo.status,
       }));
       return {
-        content: formatTodoContent(todos),
+        content: formatTodos(todos),
         details: { todos },
         isError: false,
       };

@@ -31,4 +31,4 @@ export type {
 export type {
   TodoItem,
   TodoDetails,
-} from "./tools/builtin/todo/projection.js";
+} from "./tools/builtin/todo.js";

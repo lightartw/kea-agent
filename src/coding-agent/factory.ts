@@ -11,7 +11,7 @@ import {
   createWriteFileToolDefinition,
 } from "./tools/builtin/files.js";
 import { createBashToolDefinition } from "./tools/builtin/bash.js";
-import { createTodoWriteToolDefinition } from "./tools/builtin/todo/definition.js";
+import { createTodoWriteToolDefinition } from "./tools/builtin/todo.js";
 import { toAgentTool } from "./tools/definition.js";
 import { createPermissionHooks } from "./hooks/permission.js";
 import { NO_INTERACTIONS } from "./ui/interactions.js";

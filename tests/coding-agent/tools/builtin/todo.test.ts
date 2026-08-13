@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createTodoWriteToolDefinition } from "../../../../../src/coding-agent/tools/builtin/todo/definition.js";
+import { createTodoWriteToolDefinition } from "../../../../src/coding-agent/tools/builtin/todo.js";
 
 function signal(): AbortSignal {
   return new AbortController().signal;
