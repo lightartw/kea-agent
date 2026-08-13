@@ -1,7 +1,8 @@
 import type { Message, ModelConfig } from "../ai/types.js";
+import type { Events } from "../events/events.js";
+import type { AgentRunIdentity } from "./events.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
 import type { AgentToolRegistry } from "./tools/registry.js";
-import type { AgentHookTrigger } from "./hooks/types.js";
 
 /**
  * Agent-layer message type. Currently an alias for Message; will become
@@ -21,15 +22,17 @@ export interface AgentContext {
 
 /**
  * Configuration consumed by the agent loop.
- * Hooks replace the old per-event callbacks — the loop only calls
- * `hooks.trigger()` and delegates reducer semantics to the registry.
+ * Control flows through the shared `Events` dispatcher using ask()/transform();
+ * the loop never calls hooks directly.
  */
 export interface AgentLoopConfig {
   readonly model: ModelConfig;
   /** Convert agent messages to LLM-compatible messages before each stream call. */
   readonly convertToLlm: (messages: AgentMessage[]) => Message[];
-  /** Unified hook trigger for the five Agent Hook Calls. */
-  readonly hooks: AgentHookTrigger;
+  /** Shared event dispatcher; control listeners answer via ask()/transform(). */
+  readonly events: Events;
+  /** Identity of the current run, attached to every control event. */
+  readonly run: AgentRunIdentity;
 }
 
 /**
@@ -41,9 +44,9 @@ export type ToolRejectedReason = "blocked" | "invalid" | "unknown" | "aborted";
 
 export interface ToolRejectedEvent {
   readonly type: "tool_rejected";
-  /** The model's original request; arguments are never rewritten by Hooks. */
+  /** The model's original request; arguments are never rewritten by listeners. */
   readonly call: AgentToolCall;
-  /** Hook-processed arguments, when a working copy was formed before rejection. */
+  /** Listener-processed arguments, when a working copy was formed before rejection. */
   readonly effectiveArguments?: Readonly<Record<string, unknown>>;
   readonly result: AgentToolResult;
   readonly reason: ToolRejectedReason;

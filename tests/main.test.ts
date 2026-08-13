@@ -5,6 +5,7 @@ import { CliHarnessRenderer } from "../src/ui/cli-harness-renderer.js";
 import { AgentHarness } from "../src/harness/agent-harness.js";
 import { Session } from "../src/harness/session/session.js";
 import { AgentToolRegistry } from "../src/agent/tools/registry.js";
+import { Events } from "../src/events/events.js";
 import type { AssistantMessage, StreamFn } from "../src/ai/types.js";
 
 const message: AssistantMessage = {
@@ -34,6 +35,7 @@ test("Harness renders through one subscription while prompt returns a Promise", 
     toolRegistry: new AgentToolRegistry(),
     systemPrompt: () => "",
     cwd: process.cwd(),
+    events: new Events(),
   });
   const renderer = new CliHarnessRenderer(
     { write: (text) => rendered.push(text), log: (text) => logs.push(text) },

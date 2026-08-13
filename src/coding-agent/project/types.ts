@@ -1,5 +1,6 @@
 import type { AgentHarness } from "../../harness/agent-harness.js";
 import type { HarnessToolEvent } from "../../harness/events/types.js";
+import type { Events } from "../../events/events.js";
 import type { SessionInfo } from "../../harness/session/types.js";
 
 export interface ProjectInfo {
@@ -34,6 +35,7 @@ export interface CreateSessionOptions {
 }
 
 export interface Project extends ProjectInfo {
+  readonly events: Events;
   listSessions(): Promise<readonly SessionInfo[]>;
   createSession(options?: CreateSessionOptions): Promise<AgentHarness>;
   openSession(sessionId: string): Promise<AgentHarness>;

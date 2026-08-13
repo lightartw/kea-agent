@@ -1,8 +1,7 @@
 import type { AgentTool } from "../agent/tools/types.js";
 import type { AgentToolRegistry } from "../agent/tools/registry.js";
-import type { AgentHookTrigger } from "../agent/hooks/types.js";
+import type { Events } from "../events/events.js";
 import type { ModelConfig, StreamFn } from "../ai/types.js";
-import type { HarnessListenerErrorHandler } from "./events/types.js";
 import type { Session } from "./session/session.js";
 
 export type SessionTitleGenerator = (
@@ -28,7 +27,6 @@ export interface HarnessConfig {
   readonly toolRegistry: AgentToolRegistry;
   readonly systemPrompt: SystemPromptBuilder;
   readonly cwd: string;
-  readonly hooks?: AgentHookTrigger;
-  readonly onEventListenerError?: HarnessListenerErrorHandler;
+  readonly events: Events;
   readonly titleGenerator?: SessionTitleGenerator;
 }

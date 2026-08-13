@@ -11,8 +11,7 @@ import type { CreateSessionInput } from "../../src/harness/session/types.js";
 import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
 import { AgentTool } from "../../src/agent/tools/types.js";
 import type { AgentEvent } from "../../src/agent/types.js";
-import { HookRegistry } from "../../src/agent/hooks/registry.js";
-import type { AgentHookTrigger } from "../../src/agent/hooks/types.js";
+import { Events } from "../../src/events/events.js";
 import type { HarnessConfig, SessionTitleGenerator } from "../../src/harness/types.js";
 import type {
   AssistantMessage,
@@ -54,10 +53,10 @@ function makeHarness(options: {
   session?: Session;
   streamFn?: StreamFn;
   systemPrompt?: () => string | Promise<string>;
-  hooks?: AgentHookTrigger;
+  events?: Events;
   titleGenerator?: SessionTitleGenerator;
 } = {}): AgentHarness {
-  const base: Omit<HarnessConfig, "hooks"> = {
+  const base: Omit<HarnessConfig, "events"> = {
     session: options.session ?? memorySession(),
     model: modelA,
     streamFn: options.streamFn ?? stream,
@@ -65,15 +64,9 @@ function makeHarness(options: {
     systemPrompt: options.systemPrompt ?? (() => "system"),
     cwd: process.cwd(),
   };
-  if (options.hooks !== undefined) {
-    return new AgentHarness({
-      ...base,
-      hooks: options.hooks,
-      ...(options.titleGenerator !== undefined ? { titleGenerator: options.titleGenerator } : {}),
-    });
-  }
   return new AgentHarness({
     ...base,
+    events: options.events ?? new Events(),
     ...(options.titleGenerator !== undefined ? { titleGenerator: options.titleGenerator } : {}),
   });
 }
@@ -377,6 +370,7 @@ test("tool changes and async prompt builder affect the next run", async () => {
     systemPrompt: async ({ tools }) =>
       `tools=${tools.map((entry) => entry.name).join(",")}`,
     cwd: process.cwd(),
+    events: new Events(),
   });
 
   harness.registerTool(tool);
@@ -429,44 +423,45 @@ test("abort during Agent streaming settles the Harness run", async () => {
   );
 });
 
-// ── Task 4: Harness Hook pass-through tests ──
+// ── Task 4: Harness control-event pass-through tests ──
 
-test("Harness passes one Hook trigger to Agent Loop", async () => {
-  const hooks = new HookRegistry<{ calls: string[] }>({
-    calls: [],
+test("Harness shares one Events instance with Agent Loop", async () => {
+  const events = new Events();
+  const calls: string[] = [];
+  events.on("agent/user-prompt", () => { calls.push("user_prompt"); });
+  events.on("agent/context", (input, next) => {
+    calls.push("context");
+    return next(input);
   });
-  hooks.register("user_prompt", (_event, context) => {
-    context.calls.push("user_prompt");
-  });
-  hooks.register("context", (_event, context) => {
-    context.calls.push("context");
-  });
-  hooks.register("stop", (_event, context) => {
-    context.calls.push("stop");
-  });
+  events.on("agent/stop", () => { calls.push("stop"); });
 
-  const harness = makeHarness({ hooks });
+  const harness = makeHarness({ events });
   await harness.prompt("hello");
-  assert.deepEqual(hooks.context.calls, [
+  assert.deepEqual(calls, [
     "user_prompt", "context", "stop",
   ]);
 });
 
-test("user_prompt and context Hook failures reject prompt and restore idle", async () => {
-  for (const type of ["user_prompt", "context"] as const) {
-    const hooks = new HookRegistry<Record<string, never>>({});
-    hooks.register(type, () => { throw new Error(`${type} failed`); });
-    const harness = makeHarness({ hooks });
+test("agent/user-prompt and agent/context listener failures reject prompt and restore idle", async () => {
+  for (const type of ["agent/user-prompt", "agent/context"] as const) {
+    const events = new Events();
+    if (type === "agent/user-prompt") {
+      events.on("agent/user-prompt", () => { throw new Error("user_prompt failed"); });
+    } else {
+      events.on("agent/context", () => { throw new Error("context failed"); });
+    }
+    const harness = makeHarness({ events });
 
-    await assert.rejects(harness.prompt("hello"), new RegExp(`${type} failed`));
+    const label = type === "agent/user-prompt" ? "user_prompt" : "context";
+    await assert.rejects(harness.prompt("hello"), new RegExp(`${label} failed`));
     assert.equal(harness.isRunning, false);
   }
 });
 
-test("stop Hook failure keeps the completed assistant message and restores idle", async () => {
-  const hooks = new HookRegistry<Record<string, never>>({});
-  hooks.register("stop", () => { throw new Error("stop failed"); });
-  const harness = makeHarness({ hooks });
+test("agent/stop listener failure keeps the completed assistant message and restores idle", async () => {
+  const events = new Events();
+  events.on("agent/stop", () => { throw new Error("stop failed"); });
+  const harness = makeHarness({ events });
 
   await assert.rejects(harness.prompt("hello"), /stop failed/);
   assert.equal(harness.messages.at(-1)?.role, "assistant");
@@ -513,6 +508,7 @@ test("tool_end subscriber sees the persisted result message", async () => {
     toolRegistry: registry,
     systemPrompt: () => "system",
     cwd: process.cwd(),
+    events: new Events(),
   });
 
   const observed: Array<{ type: string; matches: boolean }> = [];
@@ -562,6 +558,7 @@ test("tool_rejected subscriber sees the persisted synthetic message", async () =
     toolRegistry: registry,
     systemPrompt: () => "system",
     cwd: process.cwd(),
+    events: new Events(),
   });
 
   const observed: Array<{ type: string; matches: boolean }> = [];
@@ -626,11 +623,11 @@ test("first persisted user message starts title generation beside the response",
 test("blocked first prompts do not start title generation", async () => {
   const session = memorySession();
   let titleCalls = 0;
-  const hooks = new HookRegistry<Record<string, never>>({});
-  hooks.register("user_prompt", () => ({ block: true, reason: "blocked" }));
+  const events = new Events();
+  events.on("agent/user-prompt", () => ({ block: true, reason: "blocked" }));
   const harness = makeHarness({
     session,
-    hooks,
+    events,
     titleGenerator: async () => {
       titleCalls++;
       return "should not run";

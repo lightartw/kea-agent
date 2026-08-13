@@ -10,7 +10,7 @@ import type {
   Unregister,
 } from "./types.js";
 
-type AnyListener = (input: never, extra: never, signal?: AbortSignal) => unknown;
+type AnyListener = (...args: never[]) => unknown;
 
 export class Events {
   readonly #listeners = new Map<string, Set<AnyListener>>();
@@ -46,7 +46,7 @@ export class Events {
     const snapshot = [...(this.#listeners.get(name) ?? [])];
     for (const listener of snapshot) {
       try {
-        await listener(input as never, undefined as never);
+        await listener(input as never);
       } catch (error) {
         this.#onListenerError?.(error, { name, input });
       }
@@ -61,7 +61,7 @@ export class Events {
     signal?.throwIfAborted();
     const snapshot = [...(this.#listeners.get(name) ?? [])];
     for (const listener of snapshot) {
-      const answer = await listener(input as never, undefined as never, signal);
+      const answer = await listener(input as never, signal as never);
       signal?.throwIfAborted();
       if (answer !== undefined) return answer as EventResult<TName>;
     }
@@ -93,7 +93,7 @@ export class Events {
       const returned = await listener(
         value as never,
         next as never,
-        signal,
+        signal as never,
       );
       signal?.throwIfAborted();
       if (continued) return (await chained) as EventResult<TName>;

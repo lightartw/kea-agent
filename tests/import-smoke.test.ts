@@ -5,7 +5,6 @@ import test from "node:test";
 import {
   AgentTool,
   AgentToolRegistry,
-  HookRegistry,
   runAgentLoop,
 } from "../src/agent/index.js";
 
@@ -25,9 +24,15 @@ import { CliFrontend } from "../src/ui/index.js";
 
 import type { StreamChunk } from "../src/ai/index.js";
 
+import { Events } from "../src/events/index.js";
+
+import type {
+  AgentRunIdentity,
+  ToolCallDecision,
+} from "../src/agent/index.js";
+
 import type {
   AgentEvent,
-  AgentHookCall,
   AgentToolCall,
   AgentToolResult,
 } from "../src/agent/index.js";
@@ -57,7 +62,7 @@ void [
   runAgentLoop,
   AgentTool,
   AgentToolRegistry,
-  HookRegistry,
+  Events,
   AgentHarness,
   Session,
   SessionRepository,
@@ -70,7 +75,8 @@ void [
 // Type-only assertions — keep imports from being tree-shaken
 type PublicAgentTypes = [
   AgentEvent,
-  AgentHookCall,
+  AgentRunIdentity,
+  ToolCallDecision,
   AgentToolCall,
   AgentToolResult,
 ];

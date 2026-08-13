@@ -5,6 +5,7 @@ import { AgentHarness } from "../harness/agent-harness.js";
 import { SessionRepository } from "../harness/session/repository.js";
 import type { Session } from "../harness/session/session.js";
 import type { SessionInfo } from "../harness/session/types.js";
+import { Events } from "../events/events.js";
 import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
 import { defaultSystemPrompt } from "../harness/system-prompt.js";
 import { createSessionTitleGenerator } from "./title-generator.js";
@@ -12,7 +13,7 @@ import {
   createAgentToolRegistry,
   createBuiltinToolDefinitions,
 } from "./tools/factory.js";
-import { createCodingHooks } from "./hooks/factory.js";
+import { registerCodingEvents } from "./events/factory.js";
 import { NO_INTERACTIONS } from "./ui/interactions.js";
 import { CodingToolPresentationRegistry } from "./ui/presentation.js";
 import {
@@ -72,10 +73,10 @@ function createHarness(
   session: Session,
   config: CreateProjectConfig,
   definitions: readonly CodingToolDefinition[],
-  interactions: CodingAgentInteractions,
   systemPrompt: SystemPromptBuilder,
   titleGenerator: SessionTitleGenerator,
   directories: readonly string[],
+  events: Events,
 ): AgentHarness {
   const toolContext: CodingToolContext = {
     cwd: resolve(session.info.directory, session.info.cwd),
@@ -88,11 +89,8 @@ function createHarness(
     toolRegistry: createAgentToolRegistry(definitions, toolContext),
     systemPrompt,
     cwd: toolContext.cwd,
-    hooks: createCodingHooks(interactions),
+    events,
     titleGenerator,
-    ...(config.onEventListenerError !== undefined
-      ? { onEventListenerError: config.onEventListenerError }
-      : {}),
   });
 }
 
@@ -105,6 +103,8 @@ export async function createProject(config: CreateProjectConfig): Promise<Projec
 
   const repository = new SessionRepository(opened.storageDir);
   const interactions = config.interactions ?? NO_INTERACTIONS;
+  const events = new Events(config.onEventListenerError);
+  registerCodingEvents(events, interactions);
   const definitions = createBuiltinToolDefinitions();
   const presentations = new CodingToolPresentationRegistry(
     (message) => {
@@ -135,10 +135,10 @@ export async function createProject(config: CreateProjectConfig): Promise<Projec
     session,
     config,
     definitions,
-    interactions,
     systemPrompt,
     titleGenerator,
     current.directories,
+    events,
   );
 
   const createSessionCwd = (options?: CreateSessionOptions): string => {
@@ -150,6 +150,7 @@ export async function createProject(config: CreateProjectConfig): Promise<Projec
 
   return {
     ...current,
+    events,
     listSessions: async (): Promise<readonly SessionInfo[]> => repository.list(),
     createSession: async (options?: CreateSessionOptions) =>
       bindSession(await repository.create({

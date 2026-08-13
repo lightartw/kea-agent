@@ -17,13 +17,14 @@ import type {
 import { AgentTool, type AgentToolResult } from "../../src/agent/tools/types.js";
 import type { AgentToolCall } from "../../src/agent/tools/types.js";
 import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
-import { HookRegistry } from "../../src/agent/hooks/registry.js";
+import { Events } from "../../src/events/events.js";
 
+const run = { sessionId: "session-1", runId: "run-1", lane: "main" } as const;
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 const testModel: ModelConfig = { provider: "test", model: "test-model" };
 
-function emptyHooks(): HookRegistry<Record<string, never>> {
-  return new HookRegistry<Record<string, never>>({});
+function emptyEvents(): Events {
+  return new Events();
 }
 
 /** Minimal AgentLoopConfig with identity convertToLlm for test callers. */
@@ -31,7 +32,8 @@ function makeConfig(overrides?: Partial<AgentLoopConfig>): AgentLoopConfig {
   return {
     model: testModel,
     convertToLlm: (msgs) => msgs,
-    hooks: emptyHooks(),
+    events: emptyEvents(),
+    run,
     ...overrides,
   };
 }
@@ -277,9 +279,14 @@ test("onBeforeTool blocks tool execution and returns error", async () => {
     [{ type: "done", message: assistantMsg("") }],
   ]);
   const history: AgentMessage[] = [];
-  const hooks = emptyHooks();
-  hooks.register("tool_call", async () => ({ block: true, reason: "blocked by test" }) as const);
-  const config = makeConfig({ hooks });
+  const events = new Events();
+  events.on("agent/tool-call", (decision) => ({
+    ...decision,
+    kind: "reject" as const,
+    call: decision.call,
+    reason: "blocked by test",
+  }));
+  const config = makeConfig({ events });
 
   await collect(
     runAgentLoop(
@@ -313,9 +320,11 @@ test("onBeforeTool failure blocks tool execution", async () => {
     [{ type: "done", message: assistantMsg("") }],
   ]);
   const history: AgentMessage[] = [];
-  const hooks = emptyHooks();
-  hooks.register("tool_call", async () => { throw new Error("boom"); });
-  const config = makeConfig({ hooks });
+  const events = new Events();
+  events.on("agent/tool-call", () => {
+    throw new Error("boom");
+  });
+  const config = makeConfig({ events });
 
   await collect(
     runAgentLoop(
@@ -334,17 +343,17 @@ test("onBeforeTool failure blocks tool execution", async () => {
 // ── Task 2: user_prompt, context, stop tests ──
 
 test("user_prompt block prevents history and model access", async () => {
-  const hooks = emptyHooks();
-  hooks.register("user_prompt", () => ({
+  const events = new Events();
+  events.on("agent/user-prompt", () => ({
     block: true,
     reason: "blocked",
   }));
   let streams = 0;
   const history: AgentMessage[] = [];
-  const events = await collect(runAgentLoop(
+  const emitted = await collect(runAgentLoop(
     "secret",
     { systemPrompt: "", messages: history, tools: new AgentToolRegistry() },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     async function* () {
       streams++;
       yield { type: "done", message: assistantMsg("unused") };
@@ -353,17 +362,18 @@ test("user_prompt block prevents history and model access", async () => {
 
   assert.equal(streams, 0);
   assert.deepEqual(history, []);
-  assert.deepEqual(events, [
+  assert.deepEqual(emitted, [
     { type: "agent_start" },
     { type: "agent_end", messages: [] },
   ]);
 });
 
 test("context hook changes one request without replacing real history", async () => {
-  const hooks = emptyHooks();
-  hooks.register("context", ({ messages }) => ({
+  const events = new Events();
+  events.on("agent/context", (input, next) => next({
+    ...input,
     messages: [
-      ...messages,
+      ...input.messages,
       { role: "user", content: "request-only" },
     ],
   }));
@@ -372,7 +382,7 @@ test("context hook changes one request without replacing real history", async ()
   await collect(runAgentLoop(
     "real",
     { systemPrompt: "", messages: history, tools: new AgentToolRegistry() },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     async function* (_model, context) {
       requestMessages = [...context.messages];
       yield { type: "done", message: assistantMsg("done") };
@@ -394,9 +404,9 @@ test("context hook changes one request without replacing real history", async ()
 });
 
 test("stop continueWith appends a message and starts another turn", async () => {
-  const hooks = emptyHooks();
+  const events = new Events();
   let stops = 0;
-  hooks.register("stop", () => {
+  events.on("agent/stop", () => {
     stops++;
     return stops === 1
       ? { continueWith: { role: "user", content: "continue" } }
@@ -407,7 +417,7 @@ test("stop continueWith appends a message and starts another turn", async () => 
   await collect(runAgentLoop(
     "start",
     { systemPrompt: "", messages: history, tools: new AgentToolRegistry() },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     async function* () {
       streams++;
       yield { type: "done", message: assistantMsg(`answer-${streams}`) };
@@ -423,9 +433,9 @@ test("stop continueWith appends a message and starts another turn", async () => 
 });
 
 test("AI error does not trigger stop", async () => {
-  const hooks = emptyHooks();
+  const events = new Events();
   let stops = 0;
-  hooks.register("stop", () => { stops++; });
+  events.on("agent/stop", () => { stops++; });
   const failed = {
     ...assistantMsg(""),
     stopReason: "error" as const,
@@ -439,30 +449,33 @@ test("AI error does not trigger stop", async () => {
       messages: [],
       tools: new AgentToolRegistry(),
     },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     streamFnWithEvents([[{ type: "error", message: failed }]]),
   ));
   assert.equal(stops, 0);
 });
 
-test("pre-aborted run does not trigger stop", async () => {
-  const hooks = emptyHooks();
+test("pre-aborted run rejects with AbortError without triggering stop", async () => {
+  const events = new Events();
   let stops = 0;
-  hooks.register("stop", () => { stops++; });
+  events.on("agent/stop", () => { stops++; });
   const controller = new AbortController();
   controller.abort();
 
-  await collect(runAgentLoop(
-    "start",
-    {
-      systemPrompt: "",
-      messages: [],
-      tools: new AgentToolRegistry(),
-    },
-    makeConfig({ hooks }),
-    streamFnWithEvents([]),
-    controller.signal,
-  ));
+  await assert.rejects(
+    collect(runAgentLoop(
+      "start",
+      {
+        systemPrompt: "",
+        messages: [],
+        tools: new AgentToolRegistry(),
+      },
+      makeConfig({ events }),
+      streamFnWithEvents([]),
+      controller.signal,
+    )),
+    (error: unknown) => (error as Error).name === "AbortError",
+  );
   assert.equal(stops, 0);
 });
 
@@ -520,15 +533,16 @@ test("tool_call can repair input before final TypeBox validation", async () => {
     name: "typed",
     arguments: { value: 1 },
   };
-  const hooks = emptyHooks();
-  hooks.register("tool_call", (event) => {
-    event.input.value = "fixed";
-  });
+  const events = new Events();
+  events.on("agent/tool-call", (decision, next) => next({
+    ...decision,
+    call: { ...decision.call, arguments: { value: "fixed" } },
+  }));
 
   await collect(runAgentLoop(
     "run",
     { systemPrompt: "", messages: [], tools },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     streamForToolCall(call),
   ));
   assert.equal(tool.ran, true);
@@ -546,15 +560,16 @@ test("tool_call mutation cannot bypass final TypeBox validation", async () => {
     name: "typed",
     arguments: { value: "valid" },
   };
-  const hooks = emptyHooks();
-  hooks.register("tool_call", (event) => {
-    event.input.value = 1;
-  });
+  const events = new Events();
+  events.on("agent/tool-call", (decision, next) => next({
+    ...decision,
+    call: { ...decision.call, arguments: { value: 1 } },
+  }));
 
   await collect(runAgentLoop(
     "run",
     { systemPrompt: "", messages: history, tools },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     streamForToolCall(call),
   ));
   assert.equal(tool.ran, false);
@@ -586,18 +601,23 @@ test("tool_call block false continues and block true creates an error result", a
     name: "noop",
     arguments: {},
   };
-  const hooks = emptyHooks();
+  const events = new Events();
   const calls: string[] = [];
-  hooks.register("tool_call", () => {
+  events.on("agent/tool-call", (decision, next) => {
     calls.push("observed");
-    return { block: false, reason: "ignored" };
+    return next(decision);
   });
-  hooks.register("tool_call", () => ({ block: true, reason: "denied" }));
+  events.on("agent/tool-call", (decision) => ({
+    ...decision,
+    kind: "reject" as const,
+    call: decision.call,
+    reason: "denied",
+  }));
 
   await collect(runAgentLoop(
     "run",
     { systemPrompt: "", messages: history, tools },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     streamForToolCall(call),
   ));
   const toolMessage = history.find((message) => message.role === "tool");
@@ -620,10 +640,13 @@ test("tool_result Hook result is identical in event history and next request", a
     name: "noop",
     arguments: {},
   };
-  const hooks = emptyHooks();
-  hooks.register("tool_result", () => ({
-    content: "patched",
-    isError: true,
+  const events = new Events();
+  events.on("agent/tool-result", (input, next) => next({
+    ...input,
+    result: {
+      content: "patched",
+      isError: true,
+    },
   }));
   let secondRequest: readonly Message[] = [];
   const stream = streamFnWithEvents([
@@ -637,13 +660,13 @@ test("tool_result Hook result is identical in event history and next request", a
     if (index === 1) secondRequest = [...context.messages];
   });
 
-  const events = await collect(runAgentLoop(
+  const eventsOut = await collect(runAgentLoop(
     "run",
     { systemPrompt: "", messages: history, tools },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     stream,
   ));
-  const toolEnd = events.find((event) => event.type === "tool_end");
+  const toolEnd = eventsOut.find((event) => event.type === "tool_end");
   assert.equal(toolEnd?.type, "tool_end");
   if (toolEnd?.type !== "tool_end") return;
   assert.deepEqual(toolEnd.result, {
@@ -668,21 +691,21 @@ test("tool_call Hook failure blocks execution", async () => {
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
-  const hooks = emptyHooks();
-  hooks.register("tool_call", () => {
+  const events = new Events();
+  events.on("agent/tool-call", () => {
     throw new Error("permission crashed");
   });
 
   await collect(runAgentLoop(
     "run",
     { systemPrompt: "", messages: history, tools },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     streamForToolCall(call),
   ));
   assert.equal(tool.ran, false);
   assert.equal(
     history[2]?.role === "tool" ? history[2].content : "",
-    "Error: tool_call hook failed: permission crashed",
+    "Error: tool_call listener failed: permission crashed",
   );
 });
 
@@ -694,8 +717,8 @@ test("tool_result Hook failure replaces event history and next request", async (
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
-  const hooks = emptyHooks();
-  hooks.register("tool_result", () => {
+  const events = new Events();
+  events.on("agent/tool-result", () => {
     throw new Error("post hook crashed");
   });
   let secondRequest: readonly Message[] = [];
@@ -710,17 +733,17 @@ test("tool_result Hook failure replaces event history and next request", async (
     if (index === 1) secondRequest = [...context.messages];
   });
 
-  const events = await collect(runAgentLoop(
+  const eventsOut = await collect(runAgentLoop(
     "run",
     { systemPrompt: "", messages: history, tools },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     stream,
   ));
   const expected = {
-    content: "Error: tool_result hook failed: post hook crashed",
+    content: "Error: tool_result listener failed: post hook crashed",
     isError: true,
   };
-  const toolEnd = events.find((event) => event.type === "tool_end");
+  const toolEnd = eventsOut.find((event) => event.type === "tool_end");
   assert.equal(toolEnd?.type, "tool_end");
   if (toolEnd?.type !== "tool_end") return;
   assert.deepEqual(toolEnd.result, expected);
@@ -740,19 +763,32 @@ test("Agent run signal reaches every Hook trigger", async () => {
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
-  const hooks = emptyHooks();
+  const events = new Events();
   const seen: Array<{ type: string; signal: AbortSignal | undefined }> = [];
-  for (const type of ["user_prompt", "context", "tool_call", "tool_result", "stop"] as const) {
-    hooks.register(type, (_event, _context, signal) => {
-      seen.push({ type, signal });
-    });
-  }
+  events.on("agent/user-prompt", (_input, signal) => {
+    seen.push({ type: "user_prompt", signal });
+  });
+  events.on("agent/context", (input, next, signal) => {
+    seen.push({ type: "context", signal });
+    return next(input);
+  });
+  events.on("agent/tool-call", (decision, next, signal) => {
+    seen.push({ type: "tool_call", signal });
+    return next(decision);
+  });
+  events.on("agent/tool-result", (input, next, signal) => {
+    seen.push({ type: "tool_result", signal });
+    return next(input);
+  });
+  events.on("agent/stop", (_input, signal) => {
+    seen.push({ type: "stop", signal });
+  });
   const controller = new AbortController();
 
   await collect(runAgentLoop(
     "run",
     { systemPrompt: "", messages: [], tools },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     streamForToolCall(call),
     controller.signal,
   ));
@@ -789,19 +825,23 @@ test("successful execution ordering is hook → prepare → start → execute �
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "typed", arguments: { value: "original" },
   };
-  const hooks = emptyHooks();
-  hooks.register("tool_call", (event) => {
+  const events = new Events();
+  events.on("agent/tool-call", (decision, next) => {
     trace.push("hook:before");
-    event.input.value = "changed";
+    return next({
+      ...decision,
+      call: { ...decision.call, arguments: { value: "changed" } },
+    });
   });
-  hooks.register("tool_result", (event) => {
-    trace.push(`hook:after:${event.content}`);
+  events.on("agent/tool-result", (input, next) => {
+    trace.push(`hook:after:${input.result.content}`);
+    return next(input);
   });
 
   for await (const event of runAgentLoop(
     "run",
     { systemPrompt: "", messages: [], tools },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     streamForToolCall(call),
   )) {
     if (event.type === "tool_start") {
@@ -829,10 +869,14 @@ test("AfterToolCallResult details reach event, history, and next request", async
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
-  const hooks = emptyHooks();
-  hooks.register("tool_result", () => ({
-    content: "Current tasks:\n1. [completed] tested",
-    details: { todos: [{ content: "tested", status: "completed" }] },
+  const events = new Events();
+  events.on("agent/tool-result", (input, next) => next({
+    ...input,
+    result: {
+      content: "Current tasks:\n1. [completed] tested",
+      details: { todos: [{ content: "tested", status: "completed" }] },
+      isError: false,
+    },
   }));
   let secondRequest: readonly Message[] = [];
   const stream = streamFnWithEvents([
@@ -846,10 +890,10 @@ test("AfterToolCallResult details reach event, history, and next request", async
     if (index === 1) secondRequest = [...context.messages];
   });
 
-  const events = await collect(runAgentLoop(
+  const eventsOut = await collect(runAgentLoop(
     "run",
     { systemPrompt: "", messages: history, tools },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     stream,
   ));
 
@@ -858,7 +902,7 @@ test("AfterToolCallResult details reach event, history, and next request", async
     details: { todos: [{ content: "tested", status: "completed" }] },
     isError: false,
   };
-  const toolEnd = events.find((event) => event.type === "tool_end");
+  const toolEnd = eventsOut.find((event) => event.type === "tool_end");
   assert.equal(toolEnd?.type, "tool_end");
   if (toolEnd?.type !== "tool_end") return;
   assert.deepEqual(toolEnd.result, expected);
@@ -879,19 +923,20 @@ test("tool_rejected.call.arguments stays the original object after hook mutation
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "typed", arguments: originalArguments,
   };
-  const hooks = emptyHooks();
-  hooks.register("tool_call", (event) => {
-    event.input.value = 123;
-  });
+  const events = new Events();
+  events.on("agent/tool-call", (decision, next) => next({
+    ...decision,
+    call: { ...decision.call, arguments: { value: 123 } },
+  }));
 
-  const events = await collect(runAgentLoop(
+  const eventsOut = await collect(runAgentLoop(
     "run",
     { systemPrompt: "", messages: [], tools },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     streamForToolCall(call),
   ));
 
-  const rejected = events.find((event) => event.type === "tool_rejected");
+  const rejected = eventsOut.find((event) => event.type === "tool_rejected");
   assert.equal(rejected?.type, "tool_rejected");
   if (rejected?.type !== "tool_rejected") return;
   assert.equal(rejected.reason, "invalid");
@@ -906,48 +951,56 @@ test("blocked, invalid, and unknown each produce exactly one tool_rejected", asy
       label: "blocked",
       call: { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} },
       register: (registry: AgentToolRegistry) => registry.register(new NoopTool()),
-      hook: (hooks: HookRegistry<Record<string, never>>) => {
-        hooks.register("tool_call", () => ({ block: true, reason: "nope" }));
+      event: (events: Events) => {
+        events.on("agent/tool-call", (decision) => ({
+          ...decision,
+          kind: "reject" as const,
+          call: decision.call,
+          reason: "nope",
+        }));
       },
     },
     {
       label: "invalid",
       call: { type: "toolCall" as const, id: "c2", name: "typed", arguments: { value: 1 } },
       register: (registry: AgentToolRegistry) => registry.register(new TypedTool()),
-      hook: () => undefined,
+      event: () => undefined,
     },
     {
       label: "unknown",
       call: { type: "toolCall" as const, id: "c3", name: "missing", arguments: {} },
       register: () => undefined,
-      hook: () => undefined,
+      event: () => undefined,
     },
   ];
 
   for (const scenario of scenarios) {
     const registry = new AgentToolRegistry();
     scenario.register(registry);
-    const hooks = emptyHooks();
+    const events = new Events();
     let afterToolCallCount = 0;
-    hooks.register("tool_result", () => { afterToolCallCount++; });
-    scenario.hook(hooks);
+    events.on("agent/tool-result", (input, next) => {
+      afterToolCallCount++;
+      return next(input);
+    });
+    scenario.event(events);
     const history: AgentMessage[] = [];
 
-    const events = await collect(runAgentLoop(
+    const emitted = await collect(runAgentLoop(
       "run",
       { systemPrompt: "", messages: history, tools: registry },
-      makeConfig({ hooks }),
+      makeConfig({ events }),
       streamForToolCall(scenario.call),
     ));
 
     assert.equal(
-      events.filter((event) => event.type === "tool_start").length, 0, scenario.label,
+      emitted.filter((event) => event.type === "tool_start").length, 0, scenario.label,
     );
     assert.equal(
-      events.filter((event) => event.type === "tool_end").length, 0, scenario.label,
+      emitted.filter((event) => event.type === "tool_end").length, 0, scenario.label,
     );
     assert.equal(
-      events.filter((event) => event.type === "tool_rejected").length, 1, scenario.label,
+      emitted.filter((event) => event.type === "tool_rejected").length, 1, scenario.label,
     );
     assert.equal(
       history.filter((message) =>
@@ -1031,30 +1084,35 @@ test("run abort wins over a permission confirm returning false", async () => {
   };
   let hookEntered: () => void = () => undefined;
   const entered = new Promise<void>((resolve) => { hookEntered = resolve; });
-  const hooks = emptyHooks();
-  hooks.register("tool_call", async (_event, _context, signal) => {
+  const events = new Events();
+  events.on("agent/tool-call", async (decision, _next, signal) => {
     hookEntered();
     await new Promise<void>((resolve) => {
       if (signal?.aborted) return resolve();
       signal?.addEventListener("abort", () => resolve(), { once: true });
     });
-    return { block: true, reason: "permission denied by user" };
+    return {
+      ...decision,
+      kind: "reject" as const,
+      call: decision.call,
+      reason: "permission denied by user",
+    };
   });
 
   const controller = new AbortController();
   const run = collect(runAgentLoop(
     "run",
     { systemPrompt: "", messages: [], tools },
-    makeConfig({ hooks }),
+    makeConfig({ events }),
     streamForToolCall(call),
     controller.signal,
   ));
 
   await entered;
   controller.abort();
-  const events = await run;
+  const emitted = await run;
 
-  const rejected = events.find((event) => event.type === "tool_rejected");
+  const rejected = emitted.find((event) => event.type === "tool_rejected");
   assert.equal(rejected?.type, "tool_rejected");
   if (rejected?.type !== "tool_rejected") return;
   assert.equal(rejected.reason, "aborted");
