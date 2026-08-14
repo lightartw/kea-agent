@@ -7,7 +7,7 @@ declare module "../../src/events/types.js" {
   interface EventMap {
     "test/fact": EventContract<"emit", { readonly value: number }>;
     "test/question": EventContract<"ask", { readonly prompt: string }, string>;
-    "test/value": EventContract<"transform", number, number>;
+    "test/value": EventContract<"transform", number>;
   }
 }
 
@@ -140,4 +140,62 @@ test("emit continues after a throwing listener and still completes", async () =>
   await events.emit("test/fact", { value: 1 });
 
   assert.deepEqual(calls, ["first", "second"]);
+});
+
+test("the same listener can be registered and removed independently", async () => {
+  const events = new Events();
+  const calls: number[] = [];
+  const listener = (input: { readonly value: number }) => {
+    calls.push(input.value);
+  };
+
+  const unregisterFirst = events.on("test/fact", listener);
+  events.on("test/fact", listener);
+  unregisterFirst();
+  unregisterFirst();
+
+  await events.emit("test/fact", { value: 1 });
+  assert.deepEqual(calls, [1]);
+});
+
+test("emit isolates listener error reporting failures", async () => {
+  const calls: string[] = [];
+  const events = new Events(() => {
+    throw new Error("reporter failed");
+  });
+  events.on("test/fact", () => {
+    calls.push("first");
+    throw new Error("listener failed");
+  });
+  events.on("test/fact", () => { calls.push("second"); });
+
+  await events.emit("test/fact", { value: 1 });
+  assert.deepEqual(calls, ["first", "second"]);
+});
+
+test("transform preserves outer post-processing", async () => {
+  const events = new Events();
+  events.on("test/value", async (value, next) => {
+    const downstream = await next(value + 1);
+    return downstream + 3;
+  });
+  events.on("test/value", (value) => value * 2);
+
+  assert.equal(await events.transform("test/value", 1), 7);
+});
+
+test("transform rejects a second next call without rerunning downstream", async () => {
+  const events = new Events();
+  let downstreamCalls = 0;
+  events.on("test/value", async (value, next) => {
+    await next(value);
+    return next(value);
+  });
+  events.on("test/value", (value) => {
+    downstreamCalls += 1;
+    return value;
+  });
+
+  await assert.rejects(events.transform("test/value", 1), /next.*once/i);
+  assert.equal(downstreamCalls, 1);
 });

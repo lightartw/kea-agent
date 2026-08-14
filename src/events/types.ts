@@ -1,14 +1,12 @@
 export type EventMode = "emit" | "ask" | "transform";
 
-export interface EventContract<
+export type EventContract<
   TMode extends EventMode,
   TInput,
   TResult = void,
-> {
-  readonly mode: TMode;
-  readonly input: TInput;
-  readonly result: TResult;
-}
+> = TMode extends "transform"
+  ? { readonly mode: TMode; readonly input: TInput; readonly result: TInput }
+  : { readonly mode: TMode; readonly input: TInput; readonly result: TResult };
 
 export interface EventMap {}
 
@@ -50,10 +48,10 @@ export type EventListener<TName extends EventName> =
     ? (input: TInput) => void | Promise<void>
     : ContractOf<TName> extends EventContract<"ask", infer TInput, infer TResult>
       ? (input: TInput, signal?: AbortSignal) => TResult | undefined | Promise<TResult | undefined>
-      : ContractOf<TName> extends EventContract<"transform", infer TInput, infer TResult>
+      : ContractOf<TName> extends EventContract<"transform", infer TValue, unknown>
         ? (
-            input: TInput,
-            next: (value: TResult) => Promise<TResult>,
+            value: TValue,
+            next: (value: TValue) => Promise<TValue>,
             signal?: AbortSignal,
-          ) => TResult | Promise<TResult>
+          ) => TValue | Promise<TValue>
         : never;

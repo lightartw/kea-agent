@@ -28,13 +28,11 @@ declare module "../events/types.js" {
     >;
     "agent/context": EventContract<
       "transform",
-      AgentRunIdentity & { readonly messages: readonly AgentMessage[] },
       AgentRunIdentity & { readonly messages: readonly AgentMessage[] }
     >;
-    "agent/tool-call": EventContract<"transform", ToolCallDecision, ToolCallDecision>;
+    "agent/tool-call": EventContract<"transform", ToolCallDecision>;
     "agent/tool-result": EventContract<
       "transform",
-      AgentRunIdentity & { readonly call: AgentToolCall; readonly result: AgentToolResult },
       AgentRunIdentity & { readonly call: AgentToolCall; readonly result: AgentToolResult }
     >;
     "agent/stop": EventContract<

@@ -1,6 +1,7 @@
 import type {
   AskEventName,
   EmitEventName,
+  EventDispatch,
   EventInput,
   EventListener,
   EventListenerErrorHandler,
@@ -12,8 +13,13 @@ import type {
 
 type AnyListener = (...args: never[]) => unknown;
 
+/** One independent registration; unregister() removes this object, not the function. */
+interface ListenerRegistration {
+  readonly listener: AnyListener;
+}
+
 export class Events {
-  readonly #listeners = new Map<string, Set<AnyListener>>();
+  readonly #listeners = new Map<string, Set<ListenerRegistration>>();
   readonly #onListenerError: EventListenerErrorHandler | undefined;
 
   constructor(onListenerError?: EventListenerErrorHandler) {
@@ -24,18 +30,20 @@ export class Events {
     name: TName,
     listener: EventListener<TName>,
   ): Unregister {
-    let listeners = this.#listeners.get(name);
-    if (listeners === undefined) {
-      listeners = new Set();
-      this.#listeners.set(name, listeners);
+    let registrations = this.#listeners.get(name);
+    if (registrations === undefined) {
+      registrations = new Set();
+      this.#listeners.set(name, registrations);
     }
-    const wrapped = listener as unknown as AnyListener;
-    listeners.add(wrapped);
+    const registration: ListenerRegistration = {
+      listener: listener as unknown as AnyListener,
+    };
+    registrations.add(registration);
     let unregistered = false;
     return () => {
       if (unregistered) return;
       unregistered = true;
-      listeners?.delete(wrapped);
+      registrations?.delete(registration);
     };
   }
 
@@ -44,11 +52,11 @@ export class Events {
     input: EventInput<TName>,
   ): Promise<void> {
     const snapshot = [...(this.#listeners.get(name) ?? [])];
-    for (const listener of snapshot) {
+    for (const registration of snapshot) {
       try {
-        await listener(input as never);
+        await registration.listener(input as never);
       } catch (error) {
-        this.#onListenerError?.(error, { name, input });
+        this.#reportListenerError(error, { name, input });
       }
     }
   }
@@ -60,8 +68,8 @@ export class Events {
   ): Promise<EventResult<TName> | undefined> {
     signal?.throwIfAborted();
     const snapshot = [...(this.#listeners.get(name) ?? [])];
-    for (const listener of snapshot) {
-      const answer = await listener(input as never, signal as never);
+    for (const registration of snapshot) {
+      const answer = await registration.listener(input as never, signal as never);
       signal?.throwIfAborted();
       if (answer !== undefined) return answer as EventResult<TName>;
     }
@@ -80,25 +88,33 @@ export class Events {
       value: EventResult<TName>,
     ): Promise<EventResult<TName>> => {
       signal?.throwIfAborted();
-      const listener = snapshot[index];
-      if (listener === undefined) return value;
-      let continued = false;
-      let chained: Promise<EventResult<TName>> | undefined;
+      const registration = snapshot[index];
+      if (registration === undefined) return value;
+      let nextCalled = false;
       const next = (nextValue: EventResult<TName>): Promise<EventResult<TName>> => {
-        continued = true;
-        const result = run(index + 1, nextValue);
-        chained = result;
-        return result;
+        if (nextCalled) {
+          throw new Error(`transform listener for ${name} called next() more than once`);
+        }
+        nextCalled = true;
+        return run(index + 1, nextValue);
       };
-      const returned = await listener(
+      const returned = await registration.listener(
         value as never,
         next as never,
         signal as never,
       );
       signal?.throwIfAborted();
-      if (continued) return (await chained) as EventResult<TName>;
       return returned as EventResult<TName>;
     };
     return run(0, input as unknown as EventResult<TName>);
+  }
+
+  /** Terminal diagnostic boundary: a failing reporter must not change fact delivery. */
+  #reportListenerError(error: unknown, dispatch: EventDispatch): void {
+    try {
+      this.#onListenerError?.(error, dispatch);
+    } catch {
+      // The diagnostic boundary cannot change fact delivery.
+    }
   }
 }
