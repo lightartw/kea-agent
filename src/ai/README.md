@@ -241,8 +241,10 @@ type StreamChunk =
   | { type: "error"; message: AssistantMessage };
 ```
 
-前五种是增量事件；`done` 和 `error` 提供完整 assistant message。agent loop
-直接消费该事件流，但对更高层输出自己的 `AgentEvent`。
+前五种是增量片段；`done` 和 `error` 是终止块，提供完整 assistant message。每一轮 Stream
+必须以 `done` 或 `error` 结束；`error` 块的 message 带 `stopReason: "error"` 和
+`errorMessage`。agent loop 直接消费该流，在缺少终止块时让 Run 失败，不会发布没有完整消息的
+`agent/turn-end`。
 
 ## 使用范围与包边界
 

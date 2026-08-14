@@ -2,17 +2,18 @@
 
 `agent` 在 `ai.StreamFn` 之上实现多 turn 工具循环。
 
-一次 `runAgentLoop()` 调用是一个 **Agent Run**；每次调用 LLM 是一个 turn。assistant
-有 tool call 时，Agent 顺序执行工具、保存结果并开始下一 turn；没有 tool call 时结束。
-Harness 在一次 Harness run 中驱动恰好一个 Agent Run。
+一次 `runAgentLoop()` 调用是一个 **Agent Run**；每次调用 LLM 是一个 turn。当 assistant 消息带
+tool call 时，Agent 顺序执行工具、保存结果并开始下一 turn；没有 tool call 时结束。Harness 在
+一次 Harness run 中驱动恰好一个 Agent Run。
 
 agent 包分为两部分：
 
 1. `runAgentLoop`：纯函数，一次 Agent Run 的驱动。
 2. `AgentTool` 与 `AgentToolRegistry`：工具定义、校验和执行。
 
-控制与事实都通过共享的 `Events` 分发（见 [events/README 概念]）；本包在 `src/agent/events.ts`
-中声明 Agent 命名空间的事件契约。有状态的 `AgentHarness` 属于同级 `harness` 包。
+控制与事实都通过共享的 `Events` 分发（见 [events/README.md](../events/README.md)）；本包在
+`src/agent/events.ts` 中声明 Agent 命名空间的事件契约。有状态的 `AgentHarness` 属于同级
+`harness` 包。
 
 ## 一次 Run
 
@@ -34,7 +35,9 @@ interface AgentContext {
 
 interface AgentLoopConfig {
   readonly model: ModelConfig;
-  readonly convertToLlm: (messages: AgentMessage[]) => Message[];
+  readonly convertToLlm: (
+    messages: readonly AgentMessage[],
+  ) => readonly Message[];
   readonly events: Events;
   readonly run: AgentRunIdentity;
 }
@@ -55,7 +58,8 @@ Loop 不直接修改 `context.messages`。
 1. 通过 `events.ask("agent/user-prompt", ...)` 检查拦截；返回 `block: true` 时直接结束。
 2. 未被拦截则 `appendMessage` 写入 user message。
 3. 每个 turn 复制历史消息，通过 `events.transform("agent/context", ...)` 变换本次请求上下文。
-4. 用 `convertToLlm` 构造 ai `Context`，消费 `StreamFn`。
+4. 用 `convertToLlm` 构造 ai `Context`，消费 `StreamFn`。每轮 Stream 必须以 `done` 或 `error`
+   终止；Stream 在无终止块时结束会让 Run 失败，且不发布 `agent/turn-end`。
 5. 无 tool call 时 `events.ask("agent/stop", ...)`，`continueWith` 非空时添加消息并开始下一 turn。
 6. 有 tool call 时逐个处理（见下方生命周期）。
 7. AI 错误和 Abort 不触发 `stop`。
@@ -201,7 +205,7 @@ timeout 和异常归一化，不重复 lookup 或 validate。`ToolPreparation` �
 ## AgentHarness
 
 位于 sibling 包 `harness/`。持有 `_messages`、管理 `activeRun`、构造 `AgentRunIdentity`，
-并通过共享的 `Events` 调用 `runAgentLoop()`。它没有 `subscribe()`，也没有私有的 EventBus。
+并通过共享的 `Events` 调用 `runAgentLoop()`。
 
 ```ts
 class AgentHarness {
@@ -232,7 +236,7 @@ class AgentHarness {
 从 `src/agent/types.ts`（经根入口）：
 - `AgentContext`, `AgentLoopConfig`, `AgentMessage`
 
-agent 不导出任何 Hook 类型：旧 Hook 系统已被 Events 取代，不保留兼容别名。
+agent 的事件契约与 `Events` 分发器共同构成控制与观察通道；本包不导出任何 listener 注册表。
 
 ## 与 UI 的解耦
 

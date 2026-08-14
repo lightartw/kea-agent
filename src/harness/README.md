@@ -72,8 +72,9 @@ Agent 每次 `appendMessage` 都同步写入 Session；只有完整消息持久�
 
 同一个 Harness 同时只运行一个 `prompt()`。忙碌时调用 `prompt()`、`switchModel()`、
 `registerTool()` 或 `unregisterTool()` 会抛出 `AgentHarness is busy`；`abort()` 可以请求中止当前
-Run，空闲时调用则不产生效果。中止信号优先于迟到的 listener 答案：Run 按 `aborted` 分类，
-取消类错误不会重新抛出。
+Run，空闲时调用则不产生效果。中止信号优先于迟到的 listener 答案：只有真正的取消错误
+（AbortSignal 的 reason 或 `AbortError`）被归类为 `aborted`；与取消同时发生的存储或系统错误仍
+归类为 `error`，并由 `prompt()` 重新抛出。
 
 ## Session：一份会话的数据
 
@@ -150,8 +151,7 @@ export type HarnessRunEndInput = AgentRunIdentity & (
 // "harness/run-end":   EventContract<"emit", HarnessRunEndInput>;
 ```
 
-没有 `HarnessEvent` 联合类型，也没有 `liftAgentEvent`。每个事实事件都携带
-`AgentRunIdentity`（`sessionId`、`runId`、`lane`），UI 用它过滤：
+每个事实事件都携带 `AgentRunIdentity`（`sessionId`、`runId`、`lane`），UI 用它过滤：
 
 ```ts
 events.on("agent/turn-end", (input) => {

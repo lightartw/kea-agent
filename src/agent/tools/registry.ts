@@ -17,7 +17,7 @@ type ToolPreparation =
       readonly result: AgentToolResult<unknown>;
     };
 
-/** Validates and executes tool calls. Does not know about hooks. */
+/** Validates and executes tool calls. Control decisions happen before this registry. */
 export class AgentToolRegistry {
   private readonly tools = new Map<string, AgentTool>();
 

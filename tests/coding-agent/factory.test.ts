@@ -389,7 +389,7 @@ function twoTurnBashStream(command: string): StreamFn {
   };
 }
 
-test("project assembles the default built-in Hook registry with supplied interactions", async () => {
+test("project registers the default permission listener with supplied interactions", async () => {
   const keaHome = await tempDir();
   const dir = await tempDir();
   try {

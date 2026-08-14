@@ -63,7 +63,7 @@ test("bash tool independently blocks only hard-denied commands", async () => {
   assert.deepEqual(execution.calls, []);
 });
 
-test("bash tool leaves ask-class commands to the Hook layer", async () => {
+test("bash tool leaves ask-class commands to the permission listener", async () => {
   const execution = new RecordingBashExecution();
   const definition = createBashToolDefinition(execution.execute);
   for (const command of [

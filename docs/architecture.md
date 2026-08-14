@@ -27,7 +27,8 @@ interface ModelConfig {
 不会被 provider adapter 发到模型服务。
 
 `StreamChunk` 是一次 provider 响应中的一个片段，由 Agent 直接消费；它是数据传输，不是运行事件，
-不会注册、发布或通过 `Events` 观察。
+不会注册、发布或通过 `Events` 观察。每一轮 Stream 必须以 `done` 或 `error` 终止块结束；Agent
+在缺少终止块时让 Run 失败，不发布没有完整消息的 `agent/turn-end`。
 
 ## 2. Events：统一分发器
 
@@ -37,11 +38,10 @@ interface ModelConfig {
 ```ts
 type EventMode = "emit" | "ask" | "transform";
 
-interface EventContract<TMode, TInput, TResult = void> {
-  readonly mode: TMode;
-  readonly input: TInput;
-  readonly result: TResult;
-}
+type EventContract<TMode, TInput, TResult = void> =
+  TMode extends "transform"
+    ? { mode: TMode; input: TInput; result: TInput }
+    : { mode: TMode; input: TInput; result: TResult };
 
 class Events {
   constructor(onListenerError?: EventListenerErrorHandler);
@@ -64,13 +64,21 @@ class Events {
 ```
 
 - `emit` 是观察通道：按注册顺序调用全部 listener，逐个隔离异常并交给 `onListenerError`；
+  错误报告器自身失败不会改变事实分发；
 - `ask` 是控制问答：返回第一个非 `undefined` 答案，不调用后续 listener；
-- `transform` 是控制链：把每个返回值传给下一个 listener；listener 不调用 `next()` 时终止链；
+- `transform` 是控制链：把同一个类型的值传给下一个 listener；listener 不调用 `next()` 时
+  终止链，外层可以等待下游结果再处理，且每个 listener 最多调用一次 `next()`；
 - `ask`/`transform` 在分发前后检查 `AbortSignal`，listener 错误原样穿透；
-- `Unregister` 幂等；每次分发使用当时的 listener 快照。
+- 同一函数注册两次是两次独立注册；`Unregister` 幂等；每次分发使用当时的 listener 快照。
+
+`EventContract` 的 transform 分支只有一个值类型：输入、`next()` 和结果都是同一个 `TValue`。
 
 每个事件都携带 `AgentRunIdentity`（`sessionId`、`runId`、`lane`）。Project 身份来自
 `Events` 实例本身，不进入每个事件。
+
+`src/events/index.ts` 只导出 `Events`、`EventMap`、`EventContract`、`EventMode`、`Unregister`、
+`EventDispatch` 和 `EventListenerErrorHandler`；事件名筛选、输入提取、结果提取和 listener 推导
+类型属于包内实现细节。
 
 ## 3. Agent：Tool 循环与事件控制
 
@@ -307,7 +315,8 @@ Session 的选择发生在 Coding Agent；CLI 只运行已选择的 Harness。
 
 ## 8. 公共入口
 
-- `src/events/index.ts`：`Events`、`EventContract`、`EventMap` 与 listener 类型；
+- `src/events/index.ts`：`Events`、`EventMap`、`EventContract`、`EventMode`、`Unregister`、
+  `EventDispatch`、`EventListenerErrorHandler`；
 - `src/ai/index.ts`：AI 消息、模型、流和 provider 工厂；
 - `src/agent/index.ts`：`runAgentLoop`、`AgentRunIdentity`、`ToolCallDecision`、事件契约和
   Tool API；
