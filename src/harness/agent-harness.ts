@@ -8,7 +8,7 @@ import type { AgentToolRegistry } from "../agent/tools/registry.js";
 import type { Events } from "../events/events.js";
 import type { ModelConfig, StreamFn } from "../ai/types.js";
 import { Session } from "./session/session.js";
-import { MAIN_LANE, type HarnessRunEndInput } from "./events.js";
+import { MAIN_LANE } from "./events.js";
 import type {
   HarnessConfig,
   SessionTitleGenerator,
@@ -180,7 +180,10 @@ export class AgentHarness {
     }
 
     if (started) {
-      const endInput: HarnessRunEndInput = failure === undefined
+      const endInput: AgentRunIdentity & (
+        | { readonly reason: "completed" | "aborted" }
+        | { readonly reason: "error"; readonly errorMessage: string }
+      ) = failure === undefined
         ? { ...run, reason: sawAborted ? "aborted" : "completed" }
         : { ...run, reason: "error", errorMessage: errorMessage(failure) };
       await this.events.emit("harness/run-end", endInput);

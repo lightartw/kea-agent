@@ -27,8 +27,8 @@ test("ordinary streaming and lifecycle events preserve line CLI behavior", async
   const { events, writes, logs } = rendererWith();
   await events.emit("agent/text-delta", { ...run, text: "hello" });
   await events.emit("agent/thinking-delta", { ...run, thinking: "hmm" });
-  await events.emit("agent/toolcall-start", { ...run, id: "c1", name: "bash" });
-  await events.emit("agent/toolcall-delta", { ...run, id: "c1", argumentsDelta: "{}" });
+  await events.emit("agent/tool-call-start", { ...run, id: "c1", name: "bash" });
+  await events.emit("agent/tool-call-delta", { ...run, id: "c1", argumentsDelta: "{}" });
   await events.emit("agent/turn-start", run);
 
   assert.deepEqual(writes, ["hello", "\x1b[90mhmm\x1b[0m", "{}"]);
@@ -44,40 +44,32 @@ test("run-start is no-output and run-end prints the tool-count summary", async (
   assert.deepEqual(logs, ["session used 0 tool calls"]);
 });
 
-test("tool events are delegated to the runtime rendering function", async () => {
+test("tool call/result events are delegated to the runtime rendering function", async () => {
   const { events, logs } = rendererWith((event) => {
-    if (event.type === "tool_start") return "todo start";
-    if (event.type === "tool_end") return "todo end";
-    return "todo rejected";
+    if (event.type === "call") return "todo call";
+    return "todo result";
   });
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "todo_write", arguments: {},
   };
 
   await events.emit("harness/run-start", run);
-  await events.emit("agent/tool-start", { ...run, call });
-  await events.emit("agent/tool-end", { ...run, call, result: { content: "ok", isError: false } });
-  await events.emit("agent/tool-rejected", {
-    ...run,
-    call,
-    result: { content: "no", isError: true },
-    reason: "blocked",
-  });
+  await events.emit("agent/tool-call", { ...run, call });
+  await events.emit("agent/tool-result", { ...run, call, result: { content: "ok", isError: false } });
 
   assert.deepEqual(logs, [
-    "\n\x1b[33mtodo start\x1b[0m",
-    "todo end",
-    "todo rejected",
+    "\n\x1b[33mtodo call\x1b[0m",
+    "todo result",
   ]);
 });
 
-test("tool_end above 100000 characters emits the large-output warning", async () => {
+test("tool-result above 100000 characters emits the large-output warning", async () => {
   const { events, logs } = rendererWith();
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "bash", arguments: {},
   };
   await events.emit("harness/run-start", run);
-  await events.emit("agent/tool-end", {
+  await events.emit("agent/tool-result", {
     ...run,
     call,
     result: { content: "x".repeat(100_001), isError: false },
@@ -90,22 +82,21 @@ test("tool_end above 100000 characters emits the large-output warning", async ()
 test("run-end emits the final tool-count summary", async () => {
   const { events, logs } = rendererWith();
   await events.emit("harness/run-start", run);
-  await events.emit("agent/tool-end", {
+  await events.emit("agent/tool-result", {
     ...run,
     call: { type: "toolCall", id: "c1", name: "bash", arguments: {} },
     result: { content: "one", isError: false },
   });
-  await events.emit("agent/tool-rejected", {
+  await events.emit("agent/tool-result", {
     ...run,
     call: { type: "toolCall", id: "c2", name: "bash", arguments: {} },
     result: { content: "two", isError: true },
-    reason: "blocked",
   });
   await events.emit("harness/run-end", { ...run, reason: "completed" });
 
   assert.deepEqual(logs, [
-    "[tool_end] bash",
-    "[tool_rejected] bash",
+    "[result] bash",
+    "[result] bash",
     "session used 2 tool calls",
   ]);
 });
@@ -126,7 +117,7 @@ test("throwing tool rendering is isolated and never throws through the renderer"
   };
 
   await events.emit("harness/run-start", run);
-  await events.emit("agent/tool-start", { ...run, call });
+  await events.emit("agent/tool-call", { ...run, call });
 
   assert.deepEqual(logs, ["[ui error] crash"]);
 });

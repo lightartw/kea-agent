@@ -1,5 +1,4 @@
 import type { Events } from "../events/events.js";
-import type { Unregister } from "../events/types.js";
 import type { ToolPresentationInput } from "../coding-agent/ui/presentation.js";
 
 const LARGE_OUTPUT_THRESHOLD = 100_000;
@@ -15,9 +14,9 @@ export class CliHarnessRenderer {
     private readonly renderToolEvent: (event: ToolPresentationInput) => string,
   ) {}
 
-  bind(events: Events, sessionId: string): Unregister {
+  bind(events: Events, sessionId: string): () => void {
     const toolCounts = new Map<string, number>();
-    const unregister: Unregister[] = [];
+    const unregister: Array<() => void> = [];
     const render = (event: ToolPresentationInput): string => {
       try {
         return this.renderToolEvent(event);
@@ -49,20 +48,20 @@ export class CliHarnessRenderer {
       this.target.write(`\x1b[90m${input.thinking}\x1b[0m`);
     }));
 
-    unregister.push(events.on("agent/toolcall-start", (input) => {
+    unregister.push(events.on("agent/tool-call-start", (input) => {
       if (input.sessionId !== sessionId) return;
       this.target.log(`\n\x1b[33m[tool] ${input.name}\x1b[0m`);
     }));
 
-    unregister.push(events.on("agent/toolcall-delta", (input) => {
+    unregister.push(events.on("agent/tool-call-delta", (input) => {
       if (input.sessionId !== sessionId) return;
       this.target.write(input.argumentsDelta);
     }));
 
-    unregister.push(events.on("agent/tool-start", (input) => {
+    unregister.push(events.on("agent/tool-call", (input) => {
       if (input.sessionId !== sessionId) return;
       const event: ToolPresentationInput = {
-        type: "tool_start",
+        type: "call",
         call: input.call,
       };
       const text = render(event);
@@ -71,12 +70,12 @@ export class CliHarnessRenderer {
       }
     }));
 
-    unregister.push(events.on("agent/tool-end", (input) => {
+    unregister.push(events.on("agent/tool-result", (input) => {
       if (input.sessionId !== sessionId) return;
       const count = (toolCounts.get(input.runId) ?? 0) + 1;
       toolCounts.set(input.runId, count);
       const event: ToolPresentationInput = {
-        type: "tool_end",
+        type: "result",
         call: input.call,
         result: input.result,
       };
@@ -86,23 +85,6 @@ export class CliHarnessRenderer {
       }
       if (input.result.content.length > LARGE_OUTPUT_THRESHOLD) {
         this.target.log(`⚠ Large output from ${input.call.name} (${input.result.content.length} characters)`);
-      }
-    }));
-
-    unregister.push(events.on("agent/tool-rejected", (input) => {
-      if (input.sessionId !== sessionId) return;
-      const count = (toolCounts.get(input.runId) ?? 0) + 1;
-      toolCounts.set(input.runId, count);
-      const event: ToolPresentationInput = {
-        type: "tool_rejected",
-        call: input.call,
-        ...(input.effectiveArguments === undefined ? {} : { effectiveArguments: input.effectiveArguments }),
-        result: input.result,
-        reason: input.reason,
-      };
-      const text = render(event);
-      if (text.length > 0) {
-        this.target.log(text);
       }
     }));
 

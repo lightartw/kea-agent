@@ -27,30 +27,28 @@ import type {
   AgentRunIdentity,
   AgentToolCall,
   AgentToolResult,
-  ToolCallDecision,
 } from "../src/agent/index.js";
 
 import type {
   CreateSessionInput,
   HarnessConfig,
-  HarnessRunEndInput,
   SessionHeader,
   SessionInfo,
 } from "../src/harness/index.js";
 
 import type {
   CodingAgentInteractions,
-  CodingToolDefinition,
   CodingToolPresentation,
   CreateProjectConfig,
   Project,
   ProjectInfo,
+  ToolDefinition,
   ToolPresentationInput,
 } from "../src/coding-agent/index.js";
 
 import type { StreamChunk } from "../src/ai/index.js";
 
-import type { EventContract, EventMap } from "../src/events/index.js";
+import type { EventMap } from "../src/events/index.js";
 
 void [
   Events,
@@ -68,13 +66,11 @@ void [
 // Type-only assertions — keep imports from being tree-shaken
 type PublicAgentTypes = [
   AgentRunIdentity,
-  ToolCallDecision,
   AgentToolCall,
   AgentToolResult,
 ];
 
 type PublicHarnessTypes = [
-  HarnessRunEndInput,
   HarnessConfig,
   CreateSessionInput,
   SessionHeader,
@@ -86,12 +82,12 @@ type PublicCodingAgentTypes = [
   ProjectInfo,
   CreateProjectConfig,
   CodingAgentInteractions,
-  CodingToolDefinition,
+  ToolDefinition,
   CodingToolPresentation<unknown, unknown>,
   ToolPresentationInput,
 ];
 
-type PublicEventTypes = [EventContract<"emit", unknown>, EventMap];
+type PublicEventTypes = [EventMap];
 type PublicAiTypes = [StreamChunk];
 
 void (null as PublicAgentTypes | null);

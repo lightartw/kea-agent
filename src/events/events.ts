@@ -1,35 +1,68 @@
-import type {
-  AskEventName,
-  EmitEventName,
-  EventDispatch,
-  EventInput,
-  EventListener,
-  EventListenerErrorHandler,
-  EventName,
-  EventResult,
-  TransformEventName,
-  Unregister,
-} from "./types.js";
+import type { EventMap } from "./types.js";
+
+type EventName = keyof EventMap & string;
+type ContractOf<TName extends EventName> = EventMap[TName];
+
+type FactEventName = {
+  [TName in EventName]: Parameters<ContractOf<TName>> extends [infer TInput]
+    ? ReturnType<ContractOf<TName>> extends void | Promise<void>
+      ? TName
+      : never
+    : never;
+}[EventName];
+
+type InterceptEventName = {
+  [TName in EventName]: Parameters<ContractOf<TName>> extends [
+    unknown,
+    unknown,
+    ...unknown[],
+  ]
+    ? TName
+    : never;
+}[EventName];
+
+type FactInput<TName extends EventName> =
+  Parameters<ContractOf<TName>> extends [infer TInput]
+    ? TInput
+    : never;
+
+type InterceptInput<TName extends EventName> =
+  Parameters<ContractOf<TName>> extends [infer TInput, unknown, ...unknown[]]
+    ? TInput
+    : never;
+
+type InterceptResult<TName extends EventName> =
+  ReturnType<ContractOf<TName>> extends infer TResult
+    ? Awaited<TResult>
+    : never;
 
 type AnyListener = (...args: never[]) => unknown;
 
-/** One independent registration; unregister() removes this object, not the function. */
 interface ListenerRegistration {
   readonly listener: AnyListener;
 }
 
 export class Events {
   readonly #listeners = new Map<string, Set<ListenerRegistration>>();
-  readonly #onListenerError: EventListenerErrorHandler | undefined;
+  readonly #onListenerError:
+    | ((error: unknown, name: string, input: unknown) => void)
+    | undefined;
 
-  constructor(onListenerError?: EventListenerErrorHandler) {
-    this.#onListenerError = onListenerError;
+  constructor(
+    onListenerError?: (
+      error: unknown,
+      name: keyof EventMap & string,
+      input: unknown,
+    ) => void,
+  ) {
+    this.#onListenerError =
+      onListenerError as ((error: unknown, name: string, input: unknown) => void) | undefined;
   }
 
   on<TName extends EventName>(
     name: TName,
-    listener: EventListener<TName>,
-  ): Unregister {
+    listener: EventMap[TName],
+  ): () => void {
     let registrations = this.#listeners.get(name);
     if (registrations === undefined) {
       registrations = new Set();
@@ -47,72 +80,65 @@ export class Events {
     };
   }
 
-  async emit<TName extends EmitEventName>(
+  async emit<TName extends FactEventName>(
     name: TName,
-    input: EventInput<TName>,
+    input: FactInput<TName>,
   ): Promise<void> {
     const snapshot = [...(this.#listeners.get(name) ?? [])];
     for (const registration of snapshot) {
       try {
         await registration.listener(input as never);
       } catch (error) {
-        this.#reportListenerError(error, { name, input });
+        this.#reportListenerError(error, name, input);
       }
     }
   }
 
-  async ask<TName extends AskEventName>(
+  async intercept<TName extends InterceptEventName>(
     name: TName,
-    input: EventInput<TName>,
+    input: InterceptInput<TName>,
+    handler: (
+      input: InterceptInput<TName>,
+    ) => InterceptResult<TName> | Promise<InterceptResult<TName>>,
     signal?: AbortSignal,
-  ): Promise<EventResult<TName> | undefined> {
-    signal?.throwIfAborted();
-    const snapshot = [...(this.#listeners.get(name) ?? [])];
-    for (const registration of snapshot) {
-      const answer = await registration.listener(input as never, signal as never);
-      signal?.throwIfAborted();
-      if (answer !== undefined) return answer as EventResult<TName>;
-    }
-    return undefined;
-  }
-
-  async transform<TName extends TransformEventName>(
-    name: TName,
-    input: EventInput<TName>,
-    signal?: AbortSignal,
-  ): Promise<EventResult<TName>> {
+  ): Promise<InterceptResult<TName>> {
     signal?.throwIfAborted();
     const snapshot = [...(this.#listeners.get(name) ?? [])];
     const run = async (
       index: number,
-      value: EventResult<TName>,
-    ): Promise<EventResult<TName>> => {
+      value: InterceptInput<TName>,
+    ): Promise<InterceptResult<TName>> => {
       signal?.throwIfAborted();
       const registration = snapshot[index];
-      if (registration === undefined) return value;
-      let nextCalled = false;
-      const next = (nextValue: EventResult<TName>): Promise<EventResult<TName>> => {
-        if (nextCalled) {
-          throw new Error(`transform listener for ${name} called next() more than once`);
+      if (registration === undefined) {
+        const result = await handler(value as InterceptInput<TName>);
+        signal?.throwIfAborted();
+        return result as InterceptResult<TName>;
+      }
+      let proceedCalled = false;
+      const proceed = (
+        changedInput: InterceptInput<TName>,
+      ): Promise<InterceptResult<TName>> => {
+        if (proceedCalled) {
+          throw new Error(`intercept listener for ${name} called proceed() more than once`);
         }
-        nextCalled = true;
-        return run(index + 1, nextValue);
+        proceedCalled = true;
+        return run(index + 1, changedInput);
       };
       const returned = await registration.listener(
         value as never,
-        next as never,
+        proceed as never,
         signal as never,
       );
       signal?.throwIfAborted();
-      return returned as EventResult<TName>;
+      return returned as InterceptResult<TName>;
     };
-    return run(0, input as unknown as EventResult<TName>);
+    return run(0, input);
   }
 
-  /** Terminal diagnostic boundary: a failing reporter must not change fact delivery. */
-  #reportListenerError(error: unknown, dispatch: EventDispatch): void {
+  #reportListenerError(error: unknown, name: string, input: unknown): void {
     try {
-      this.#onListenerError?.(error, dispatch);
+      this.#onListenerError?.(error, name, input);
     } catch {
       // The diagnostic boundary cannot change fact delivery.
     }

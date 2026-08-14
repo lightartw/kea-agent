@@ -2,22 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Events } from "../../../src/events/events.js";
-import type {
-  AgentRunIdentity,
-  ToolCallDecision,
-} from "../../../src/agent/events.js";
 import { registerPermission } from "../../../src/coding-agent/events/builtin/permission.js";
 import type {
   CodingAgentInteractions,
   ConfirmationRequest,
 } from "../../../src/coding-agent/index.js";
+import type { AgentToolCall, AgentToolResult } from "../../../src/agent/tools/types.js";
 import { classifyBashCommand, hardDeniedBashReason } from "../../../src/coding-agent/tools/builtin/bash/bash-policy.js";
-
-const run: AgentRunIdentity = {
-  sessionId: "session-1",
-  runId: "run-1",
-  lane: "main",
-};
 
 // ── Step 1: Bash classification tests ──
 
@@ -77,35 +68,38 @@ class RecordingUI implements CodingAgentInteractions {
   notify(): void {}
 }
 
-function bashDecision(command: string): ToolCallDecision {
+function bashCall(command: string): AgentToolCall {
   return {
-    ...run,
-    kind: "execute",
-    call: {
-      type: "toolCall",
-      id: "c1",
-      name: "bash",
-      arguments: { command },
-    },
+    type: "toolCall",
+    id: "c1",
+    name: "bash",
+    arguments: { command },
   };
 }
 
-async function transformToolCall(
+async function interceptBash(
   events: Events,
-  decision: ToolCallDecision,
+  call: AgentToolCall,
   signal?: AbortSignal,
-): Promise<ToolCallDecision> {
-  return events.transform("agent/tool-call", decision, signal);
+): Promise<AgentToolCall | AgentToolResult> {
+  return events.intercept(
+    "tools/pre-execute",
+    call,
+    async (effectiveCall) => effectiveCall,
+    signal,
+  );
 }
 
-test("permission hard-deny never asks UI", async () => {
+test("permission hard-deny returns an error result without asking UI", async () => {
   const ui = new RecordingUI(true);
   const events = new Events();
   registerPermission(events, ui);
 
-  const result = await transformToolCall(events, bashDecision("sudo true"));
-  assert.equal(result.kind, "reject");
-  assert.ok(result.kind === "reject" && /sudo/.test(result.reason));
+  const result = await interceptBash(events, bashCall("sudo true"));
+  assert.deepEqual(result, {
+    content: "Error: sudo is not allowed",
+    isError: true,
+  });
   assert.deepEqual(ui.confirmations, []);
 });
 
@@ -114,8 +108,9 @@ test("permission asks for rm and accepts explicit approval", async () => {
   const events = new Events();
   registerPermission(events, ui);
 
-  const result = await transformToolCall(events, bashDecision("rm file.txt"));
-  assert.equal(result.kind, "execute");
+  const result = await interceptBash(events, bashCall("rm file.txt"));
+  assert.equal("name" in result, true);
+  assert.equal((result as AgentToolCall).name, "bash");
   assert.equal(ui.confirmations.length, 1);
   assert.equal(ui.confirmations[0]?.source, "permission");
   assert.equal(ui.confirmations[0]?.title, "Allow Bash command?");
@@ -130,8 +125,9 @@ test("permission fails closed on decline and UI error", async () => {
   for (const ui of cases) {
     const events = new Events();
     registerPermission(events, ui);
-    const result = await transformToolCall(events, bashDecision("rm file.txt"));
-    assert.equal(result.kind, "reject");
+    const result = await interceptBash(events, bashCall("rm file.txt"));
+    assert.equal("content" in result, true);
+    assert.equal((result as AgentToolResult).isError, true);
   }
 });
 
@@ -140,20 +136,18 @@ test("permission ignores non-bash tools and safe Bash commands", async () => {
   const events = new Events();
   registerPermission(events, ui);
 
-  const nonBash: ToolCallDecision = {
-    ...run,
-    kind: "execute",
-    call: {
-      type: "toolCall",
-      id: "c1",
-      name: "write_file",
-      arguments: { path: "inside.txt", content: "ok" },
-    },
+  const nonBash: AgentToolCall = {
+    type: "toolCall",
+    id: "c1",
+    name: "write_file",
+    arguments: { path: "inside.txt", content: "ok" },
   };
-  const first = await transformToolCall(events, nonBash);
-  const second = await transformToolCall(events, bashDecision("pwd"));
-  assert.equal(first.kind, "execute");
-  assert.equal(second.kind, "execute");
+  const first = await interceptBash(events, nonBash);
+  const second = await interceptBash(events, bashCall("pwd"));
+  assert.equal("name" in first, true);
+  assert.equal((first as AgentToolCall).name, "write_file");
+  assert.equal("name" in second, true);
+  assert.equal((second as AgentToolCall).name, "bash");
   assert.deepEqual(ui.confirmations, []);
 });
 
@@ -163,6 +157,6 @@ test("permission forwards the run signal to UI", async () => {
   registerPermission(events, ui);
   const controller = new AbortController();
 
-  await transformToolCall(events, bashDecision("rm file.txt"), controller.signal);
+  await interceptBash(events, bashCall("rm file.txt"), controller.signal);
   assert.equal(ui.signals[0], controller.signal);
 });

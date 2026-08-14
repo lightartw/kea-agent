@@ -5,7 +5,7 @@ import type { Static } from "typebox";
 import { Type } from "typebox";
 
 import { safePath } from "../../../utils/workspace.js";
-import type { CodingToolDefinition } from "../definition.js";
+import type { ToolDefinition } from "../definition.js";
 
 const readParameters = Type.Object(
   {
@@ -43,7 +43,7 @@ const globParameters = Type.Object(
   { additionalProperties: false },
 );
 
-export function createReadFileToolDefinition(): CodingToolDefinition<typeof readParameters> {
+export function createReadFileToolDefinition(): ToolDefinition<typeof readParameters> {
   return {
     name: "read_file",
     description: "Read file contents.",
@@ -60,7 +60,7 @@ export function createReadFileToolDefinition(): CodingToolDefinition<typeof read
   };
 }
 
-export function createWriteFileToolDefinition(): CodingToolDefinition<typeof writeParameters> {
+export function createWriteFileToolDefinition(): ToolDefinition<typeof writeParameters> {
   return {
     name: "write_file",
     description: "Write content to a file.",
@@ -74,7 +74,7 @@ export function createWriteFileToolDefinition(): CodingToolDefinition<typeof wri
   };
 }
 
-export function createEditFileToolDefinition(): CodingToolDefinition<typeof editParameters> {
+export function createEditFileToolDefinition(): ToolDefinition<typeof editParameters> {
   return {
     name: "edit_file",
     description: "Replace exact text in a file once.",
@@ -96,7 +96,7 @@ export function createEditFileToolDefinition(): CodingToolDefinition<typeof edit
   };
 }
 
-export function createGlobToolDefinition(): CodingToolDefinition<typeof globParameters> {
+export function createGlobToolDefinition(): ToolDefinition<typeof globParameters> {
   return {
     name: "glob",
     description: "Find files matching a glob pattern.",

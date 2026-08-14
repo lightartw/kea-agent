@@ -1,4 +1,3 @@
-import type { EventContract } from "../events/types.js";
 import type { AgentMessage } from "./types.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
 
@@ -8,54 +7,67 @@ export interface AgentRunIdentity {
   readonly lane: string;
 }
 
-export type ToolRejectedReason = "blocked" | "invalid" | "unknown" | "aborted";
-
-export type ToolCallDecision =
-  | (AgentRunIdentity & { readonly kind: "execute"; readonly call: AgentToolCall })
-  | (AgentRunIdentity & {
-      readonly kind: "reject";
-      readonly call: AgentToolCall;
-      readonly reason: string;
-    });
-
 declare module "../events/types.js" {
   interface EventMap {
-    // Control questions and transformations.
-    "agent/user-prompt": EventContract<
-      "ask",
-      AgentRunIdentity & { readonly prompt: string },
-      { readonly block: true; readonly reason?: string }
-    >;
-    "agent/context": EventContract<
-      "transform",
-      AgentRunIdentity & { readonly messages: readonly AgentMessage[] }
-    >;
-    "agent/tool-call": EventContract<"transform", ToolCallDecision>;
-    "agent/tool-result": EventContract<
-      "transform",
-      AgentRunIdentity & { readonly call: AgentToolCall; readonly result: AgentToolResult }
-    >;
-    "agent/stop": EventContract<
-      "ask",
-      AgentRunIdentity & { readonly messages: readonly AgentMessage[] },
-      { readonly continueWith: AgentMessage }
-    >;
+    // Control interceptors.
+    "agent/user-prompt"(
+      input: AgentRunIdentity & { readonly prompt: string },
+      proceed: (
+        input: AgentRunIdentity & { readonly prompt: string },
+      ) => Promise<string | undefined>,
+      signal?: AbortSignal,
+    ): string | undefined | Promise<string | undefined>;
+
+    "agent/context"(
+      input: AgentRunIdentity & { readonly messages: readonly AgentMessage[] },
+      proceed: (
+        input: AgentRunIdentity & { readonly messages: readonly AgentMessage[] },
+      ) => Promise<readonly AgentMessage[]>,
+      signal?: AbortSignal,
+    ): readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
+
+    "agent/stopping"(
+      input: AgentRunIdentity & { readonly messages: readonly AgentMessage[] },
+      proceed: (
+        input: AgentRunIdentity & { readonly messages: readonly AgentMessage[] },
+      ) => Promise<AgentMessage | undefined>,
+      signal?: AbortSignal,
+    ): AgentMessage | undefined | Promise<AgentMessage | undefined>;
 
     // Facts published during one Run.
-    "agent/turn-start": EventContract<"emit", AgentRunIdentity>;
-    "agent/turn-end": EventContract<"emit", AgentRunIdentity & { readonly message: AgentMessage }>;
-    "agent/text-delta": EventContract<"emit", AgentRunIdentity & { readonly text: string }>;
-    "agent/thinking-delta": EventContract<"emit", AgentRunIdentity & { readonly thinking: string }>;
-    "agent/toolcall-start": EventContract<"emit", AgentRunIdentity & { readonly id: string; readonly name: string }>;
-    "agent/toolcall-delta": EventContract<"emit", AgentRunIdentity & { readonly id: string; readonly argumentsDelta: string }>;
-    "agent/toolcall-end": EventContract<"emit", AgentRunIdentity & { readonly toolCall: AgentToolCall }>;
-    "agent/tool-start": EventContract<"emit", AgentRunIdentity & { readonly call: AgentToolCall }>;
-    "agent/tool-end": EventContract<"emit", AgentRunIdentity & { readonly call: AgentToolCall; readonly result: AgentToolResult }>;
-    "agent/tool-rejected": EventContract<"emit", AgentRunIdentity & {
-      readonly call: AgentToolCall;
-      readonly effectiveArguments?: Readonly<Record<string, unknown>>;
-      readonly result: AgentToolResult;
-      readonly reason: ToolRejectedReason;
-    }>;
+    "agent/turn-start"(
+      input: AgentRunIdentity,
+    ): void | Promise<void>;
+
+    "agent/turn-end"(
+      input: AgentRunIdentity & {
+        readonly message: AgentMessage;
+        readonly toolResults: readonly AgentMessage[];
+      },
+    ): void | Promise<void>;
+
+    "agent/text-delta"(
+      input: AgentRunIdentity & { readonly text: string },
+    ): void | Promise<void>;
+
+    "agent/thinking-delta"(
+      input: AgentRunIdentity & { readonly thinking: string },
+    ): void | Promise<void>;
+
+    "agent/tool-call-start"(
+      input: AgentRunIdentity & { readonly id: string; readonly name: string },
+    ): void | Promise<void>;
+
+    "agent/tool-call-delta"(
+      input: AgentRunIdentity & { readonly id: string; readonly argumentsDelta: string },
+    ): void | Promise<void>;
+
+    "agent/tool-call"(
+      input: AgentRunIdentity & { readonly call: AgentToolCall },
+    ): void | Promise<void>;
+
+    "agent/tool-result"(
+      input: AgentRunIdentity & { readonly call: AgentToolCall; readonly result: AgentToolResult },
+    ): void | Promise<void>;
   }
 }

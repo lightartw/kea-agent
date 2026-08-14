@@ -2,9 +2,9 @@
 
 `agent` 在 `ai.StreamFn` 之上实现多 turn 工具循环。
 
-一次 `runAgentLoop()` 调用是一个 **Agent Run**；每次调用 LLM 是一个 turn。当 assistant 消息带
-tool call 时，Agent 顺序执行工具、保存结果并开始下一 turn；没有 tool call 时结束。Harness 在
-一次 Harness run 中驱动恰好一个 Agent Run。
+一次 `runAgentLoop()` 调用是一个 **Agent Run**；每次调用 LLM 是一个 **Turn**。当 assistant 消息
+带 tool call 时，Agent 顺序执行工具、保存结果并开始下一 turn；没有 tool call 时结束。Harness
+在一次 Harness run 中驱动恰好一个 Agent Run。
 
 agent 包分为两部分：
 
@@ -12,10 +12,16 @@ agent 包分为两部分：
 2. `AgentTool` 与 `AgentToolRegistry`：工具定义、校验和执行。
 
 控制与事实都通过共享的 `Events` 分发（见 [events/README.md](../events/README.md)）；本包在
-`src/agent/events.ts` 中声明 Agent 命名空间的事件契约。有状态的 `AgentHarness` 属于同级
-`harness` 包。
+`src/agent/events.ts` 和 `src/agent/tools/events.ts` 中声明 Agent 与 Tool 命名空间的事件契约。
+有状态的 `AgentHarness` 属于同级 `harness` 包。
 
-## 一次 Run
+## 1. 一次 AI 请求与一次 Agent Run
+
+一次 `StreamFn` 调用完成一次 LLM 请求。一次 Agent Run 可能包含多次 LLM 请求：模型先输出
+assistant message，Agent 执行其中请求的 Tool，把 Tool Result 写回历史，再请求一次模型让它
+读取结果。`runAgentLoop()` 驱动这整个过程，直到模型不再请求 Tool 且 Run 结束。
+
+## 2. 类型
 
 ```ts
 function runAgentLoop(
@@ -49,118 +55,27 @@ interface AgentRunIdentity {
 }
 ```
 
-`runAgentLoop()` 返回 `Promise<void>`，不持有实例状态。所有完整消息都通过
-`context.appendMessage()` 提交给拥有方（Harness 负责落盘），提交成功后才发布对应的事实事件。
-Loop 不直接修改 `context.messages`。
+`AgentMessage` 是 ai 层 `Message` 的别名。所有完整消息都通过 `context.appendMessage()` 提交给
+拥有方（Harness 负责落盘），提交成功后才发布对应的事实事件。Loop 不直接修改
+`context.messages`。
 
-执行顺序：
+## 3. 一个完整的 Turn
 
-1. 通过 `events.ask("agent/user-prompt", ...)` 检查拦截；返回 `block: true` 时直接结束。
-2. 未被拦截则 `appendMessage` 写入 user message。
-3. 每个 turn 复制历史消息，通过 `events.transform("agent/context", ...)` 变换本次请求上下文。
-4. 用 `convertToLlm` 构造 ai `Context`，消费 `StreamFn`。每轮 Stream 必须以 `done` 或 `error`
-   终止；Stream 在无终止块时结束会让 Run 失败，且不发布 `agent/turn-end`。
-5. 无 tool call 时 `events.ask("agent/stop", ...)`，`continueWith` 非空时添加消息并开始下一 turn。
-6. 有 tool call 时逐个处理（见下方生命周期）。
-7. AI 错误和 Abort 不触发 `stop`。
+一个 Turn 从 `agent/turn-start` 开始，到 `agent/turn-end` 结束，包括：
 
-### 工具调用生命周期
+1. `agent/context` 整理本次请求的消息快照；
+2. 调用模型，流式输出 `agent/text-delta`、`agent/thinking-delta`、
+   `agent/tool-call-start`、`agent/tool-call-delta`；
+3. 收到 `done` 终止块后，完整 assistant message 写入 Session；
+4. 若 assistant 消息带 Tool Call，按源顺序执行每个 Tool（见第 5 节），每个调用产生一个
+   `agent/tool-call` 与一个 `agent/tool-result`；
+5. 发布 `agent/turn-end`，携带 `message` 和本轮全部 `toolResults`。
 
-每个来自最终 assistant message 的 `AgentToolCall` 恰好产生一个终态：
+`agent/turn-end` 只在所有 Tool Result 持久化后发布。模型返回 `error` 终止块时，错误 assistant
+message 仍会写入并产生一个空结果的 `agent/turn-end`，然后 Run 结束，不执行不完整响应中的
+Tool Call。Stream 在无终止块时结束会让 Run 失败，不发布 `agent/turn-end`。
 
-```text
-agent/tool-call (transform) -> prepare -> tool_start -> execute -> agent/tool-result (transform)
-                            -> ToolResultMessage -> tool_end
-
-transform 返回 reject / prepare 被拒绝 -> ToolResultMessage -> tool_rejected
-```
-
-细节：
-
-- 原始 call 的 `arguments` 先 `structuredClone` 成工作副本放进 `ToolCallDecision`，再交给
-  `agent/tool-call` transform 修改；`tool_rejected.call.arguments` 始终是模型原始对象，
-  处理后的参数放在 `effectiveArguments`。
-- `prepare()` 完成 lookup 和最终参数验证；只有 `ready` 才发射 `tool_start` 并执行。
-- 被拒绝、参数无效、工具不存在或已 Abort 的调用，合成一条 synthetic
-  `ToolResultMessage` 并发射恰好一个 `tool_rejected`，不会静默丢失。
-- 批处理中途 Abort 时，已开始的调用照常 `tool_end`，其余调用各得一个 `aborted`
-  的 `tool_rejected`。
-- Abort 优先于迟到的 listener 返回值：信号在 transform/ask 等待期间触发时，
-  结果按 `aborted` 分类。
-
-## Agent 事件契约
-
-`src/agent/events.ts` 通过模块扩充把以下契约加入 `EventMap`。事件名以 `agent/` 为前缀，
-每个事件都携带 `AgentRunIdentity`（`sessionId`、`runId`、`lane`）。
-
-### 控制事件（ask / transform）
-
-| 事件 | 模式 | 作用 |
-|------|------|------|
-| `agent/user-prompt` | ask | 提交 user message 前允许或阻止 |
-| `agent/context` | transform | 每次 LLM 请求前转换消息快照 |
-| `agent/tool-call` | transform | 执行前替换参数或返回终止性 reject |
-| `agent/tool-result` | transform | 提交 Tool Result 前修改结果 |
-| `agent/stop` | ask | Agent 停止前请求继续 |
-
-`ToolCallDecision` 是 `agent/tool-call` 的输入/输出：
-
-```ts
-type ToolCallDecision =
-  | (AgentRunIdentity & { kind: "execute"; call: AgentToolCall })
-  | (AgentRunIdentity & { kind: "reject"; call: AgentToolCall; reason: string });
-```
-
-listener 返回新 decision 或传给 `next()`，不得改写模型的原始 `AgentToolCall`。
-
-### 事实事件（emit）
-
-| 事件 | 载荷 |
-|------|------|
-| `agent/turn-start` | 身份 |
-| `agent/turn-end` | 完整 assistant message |
-| `agent/text-delta` | 文本增量 |
-| `agent/thinking-delta` | 思考增量 |
-| `agent/toolcall-start` / `-delta` / `-end` | tool call 流式片段 |
-| `agent/tool-start` | 有效 call |
-| `agent/tool-end` | call + result |
-| `agent/tool-rejected` | call + result + reason |
-
-`ToolRejectedReason = "blocked" | "invalid" | "unknown" | "aborted"`。事实事件只报告已经发生
-或正在发生的运行事实，观察者返回值被忽略。
-
-## Tools
-
-### 用法
-
-```ts
-import { Type, type Static } from "typebox";
-import {
-  AgentTool,
-  AgentToolRegistry,
-  type AgentToolResult,
-} from "./index.js";
-
-const parameters = Type.Object({ text: Type.String() });
-
-class EchoTool extends AgentTool<typeof parameters> {
-  constructor() {
-    super("echo", "Return text.", parameters);
-  }
-
-  async execute(
-    args: Static<typeof parameters>,
-    _signal: AbortSignal,
-  ): Promise<AgentToolResult> {
-    return { content: args.text, isError: false };
-  }
-}
-
-const tools = new AgentToolRegistry();
-tools.register(new EchoTool());
-```
-
-### 接口
+## 4. Tool 定义与 Registry
 
 ```ts
 interface AgentToolResult<TDetails = unknown> {
@@ -192,42 +107,76 @@ class AgentToolRegistry {
   unregister(name: string): void;
   schemas(): Tool[];
   all(): AgentTool[];
-  prepare(call: AgentToolCall): ToolPreparation;
-  execute(prepared: PreparedAgentToolCall, signal?: AbortSignal): Promise<AgentToolResult<unknown>>;
+  execute(
+    call: AgentToolCall,
+    events: Events,
+    signal?: AbortSignal,
+  ): Promise<AgentToolResult<unknown>>;
 }
 ```
 
-Registry 拆成两阶段：`prepare(call)` 返回 `ready`（携带 `prepared`）或 `rejected`
-（携带 `reason: "unknown" | "invalid"` 与 synthetic result）。`execute(prepared)` 只负责
-timeout 和异常归一化，不重复 lookup 或 validate。`ToolPreparation` 与
-`PreparedAgentToolCall` 是模块内部类型，不从公开入口导出。
+Registry 是 Tool 的唯一执行入口：它接收原始 `AgentToolCall`，内部完成 lookup、TypeBox 校验，
+并把执行过程交给三个 Tool 拦截阶段（见第 5 节）。`execute()` 的最终 `handler` 通过 timeout
+helper 调用 `AgentTool.execute()`，并把抛出的异常归一化为错误结果。
 
-## AgentHarness
+## 5. Tool 拦截：pre-execute / execute / post-execute
 
-位于 sibling 包 `harness/`。持有 `_messages`、管理 `activeRun`、构造 `AgentRunIdentity`，
-并通过共享的 `Events` 调用 `runAgentLoop()`。
+每个 Tool Call 在 `AgentToolRegistry.execute()` 内经过三个 `intercept()` 阶段，均由
+`src/agent/tools/events.ts` 声明：
 
-```ts
-class AgentHarness {
-  constructor(config: HarnessConfig);
-  prompt(input: string): Promise<void>;
-  abort(): void;
-  switchModel(model: ModelConfig): Promise<void>;
-  registerTool(tool: AgentTool): void;
-  unregisterTool(name: string): void;
-  get sessionId(): string;
-  get messages(): readonly AgentMessage[];
-  get model(): ModelConfig;
-  get isRunning(): boolean;
-}
+- **`tools/pre-execute`**：接收原始 call。listener 可以修改 call 或直接返回一个
+  `AgentToolResult` 以阻止执行（例如 Permission 拒绝）。未阻止时，Registry 用返回的 call 做
+  lookup 和验证。
+- **`tools/execute`**：接收有效 call，最终 handler 运行 Tool 本体。listener 可以在这里包一层
+  计时、日志或额外校验。
+- **`tools/post-execute`**：接收 `{ call, result }`，listener 可以在结果写入 Session 前修改它。
+  最终 handler 原样返回 `input.result`。
+
+未知、参数无效、被阻止或已中止的调用跳过无法执行的阶段，但 `execute()` 仍返回一个错误
+`AgentToolResult`。listener 抛出的错误被归一化为当前调用自己的错误结果，不会影响其他调用或
+Session。
+
+## 6. Agent 事实事件顺序
+
+一个成功执行 Tool 的 Turn 的事件顺序：
+
+```text
+agent/turn-start
+agent/context
+agent/text-delta | agent/thinking-delta | agent/tool-call-start | agent/tool-call-delta
+agent/tool-call
+tools/pre-execute
+tools/execute
+tools/post-execute
+agent/tool-result
+agent/turn-end
 ```
 
-详见 [harness/README.md](../harness/README.md)。
+四个流式事实只在 provider 产生对应片段时发生。Tool 拦截五行对每个 Tool Call 重复一次。若
+`shouldContinue()` 决定继续，下一个 `agent/turn-start` 开始新一轮；否则 Loop 拦截
+`agent/stopping` 作为最后一个扩展点。
 
-## 完整公开导出
+## 7. Agent 控制事件
+
+Agent 有三个 `intercept()` 控制点：
+
+- **`agent/user-prompt`**：user message 写入前，listener 可返回 `undefined` 阻止 Run；
+- **`agent/context`**：每次模型请求前整理消息快照，不改写 Session 历史；
+- **`agent/stopping`**：仅当 Loop 即将停止时拦截，listener 可返回一条消息以开始下一 Turn。
+
+`shouldContinue()` 是 Loop 内部的决策（`toolResults` 非空且未 Abort 时继续），不产生事件。
+`agent/stopping` 是唯一在 Loop 即将停止时出现的扩展点。
+
+## 8. 与 Harness 的关系
+
+位于 sibling 包 `harness/`。`AgentHarness` 持有 `_messages`、管理 `activeRun`、构造
+`AgentRunIdentity`，并通过共享的 `Events` 调用 `runAgentLoop()`。详见
+[harness/README.md](../harness/README.md)。
+
+## 9. 完整公开导出
 
 从 `src/agent/events.ts`：
-- `AgentRunIdentity`, `ToolCallDecision`, `ToolRejectedReason`
+- `AgentRunIdentity`
 
 从 `src/agent/tools/index.ts`：
 - `AgentTool`, `AgentToolRegistry`
@@ -236,30 +185,21 @@ class AgentHarness {
 从 `src/agent/types.ts`（经根入口）：
 - `AgentContext`, `AgentLoopConfig`, `AgentMessage`
 
-agent 的事件契约与 `Events` 分发器共同构成控制与观察通道；本包不导出任何 listener 注册表。
+## 10. 与 UI 的解耦
 
-## 与 UI 的解耦
+agent 层（以及其上的 coding-agent 层）从不 import 任何 UI/CLI 类型。UI 通过两种机制注入，
+二者都遵循依赖倒置（DI）：
 
-agent 层（以及其上的 coding-agent 层）从不 import 任何 UI/CLI 类型。UI 通过两种**不同**
-的机制注入，二者都遵循依赖倒置（DI）：
+- **控制拦截**：Permission 等 listener 注册在共享 `Events` 上并闭包捕获
+  `CodingAgentInteractions`；Agent 的 dispatcher 不打开 context 盒子，listener 自己持有依赖。
+- **Tool 构造注入**：`AgentTool.execute(args, timeoutSignal)` 没有 context/UI 参数。工具由
+  coding-agent 的 `ToolDefinition` 在 `createProject()` 中经包内翻译成为 `AgentTool`。
 
-### 控制事件：闭包捕获
+「用户确认」这类 UI 交互不是工具职责，而是策略职责。Permission listener 在
+`tools/pre-execute` 阶段执行 allow/ask 策略，也拒绝 hard-deny 命令；Bash Tool 自身再次检查
+hard-deny，形成纵深防御。
 
-Permission 等控制 listener 注册在共享 `Events` 上并闭包捕获 `CodingAgentInteractions`；
-agent 的 generic dispatcher 不打开任何 context 盒子，listener 自己持有依赖。
-
-### Tool：构造注入（没有 context）
-
-`AgentTool.execute(args, timeoutSignal)` **没有** context/UI 参数。工具由 coding-agent 的
-具体 `CodingToolDefinition` 在 `createProject()` 中经包内翻译成为 `AgentTool`；组合根捕获依赖。
-
-### 关键原则：交互策略属于控制事件，安全底线由工具再次保证
-
-「用户确认」这类 UI 交互不是工具职责，而是**策略**职责。Permission listener 在工具执行前
-执行 allow/ask 策略，也拒绝 hard-deny 命令；Bash Tool 自身再次检查 hard-deny，形成纵深防御。
-工具执行机制不负责询问用户。
-
-## 包边界
+## 11. 包边界
 
 agent 只从相邻 ai 层直接依赖：
 

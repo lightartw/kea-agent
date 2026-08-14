@@ -1,7 +1,7 @@
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import type { CodingToolDefinition } from "../definition.js";
+import type { ToolDefinition } from "../definition.js";
 
 export interface TodoItem {
   readonly content: string;
@@ -51,7 +51,7 @@ function isTodoDetails(value: unknown): value is TodoDetails {
   });
 }
 
-export function createTodoWriteToolDefinition(): CodingToolDefinition<
+export function createTodoWriteToolDefinition(): ToolDefinition<
   typeof parameters,
   TodoDetails
 > {
@@ -60,7 +60,7 @@ export function createTodoWriteToolDefinition(): CodingToolDefinition<
     description: "Create and manage a task list for the current session. " +
       "Use this to plan your work before starting, track progress, " +
       "and keep one task in_progress at a time. Send the full list " +
-      "each call â€” it replaces the previous one.",
+      "each call â€?it replaces the previous one.",
     parameters,
     async execute(arguments_: Static<typeof parameters>) {
       const todos: readonly TodoItem[] = arguments_.todos.map((todo) => ({
@@ -74,10 +74,10 @@ export function createTodoWriteToolDefinition(): CodingToolDefinition<
       };
     },
     presentation: {
-      renderStart() {
+      renderCall() {
         return undefined;
       },
-      renderEnd(_call, result) {
+      renderResult(_call, result) {
         if (!isTodoDetails(result.details)) return undefined;
         return result.details.todos
           .map((todo, index) => `${index + 1}. [${todo.status}] ${todo.content}`)

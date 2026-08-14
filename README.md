@@ -106,7 +106,7 @@ await cli.run(project, harness);
 
 ## 工具系统
 
-`createProject()` 在内部组装 `CodingToolDefinition`（可带 presentation），并为每个 Harness
+`createProject()` 在内部组装 `ToolDefinition`（可带 presentation），并为每个 Harness
 创建独立的 `AgentToolRegistry` 与工具实例。默认内置工具为：
 
 - `bash` — shell 命令执行（从 Session cwd 启动）

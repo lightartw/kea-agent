@@ -10,10 +10,10 @@ import { createTodoWriteToolDefinition } from "./builtin/todo.js";
 import { toAgentTool } from "./definition.js";
 import type {
   CodingToolContext,
-  CodingToolDefinition,
+  ToolDefinition,
 } from "./definition.js";
 
-export function createBuiltinToolDefinitions(): readonly CodingToolDefinition[] {
+export function createBuiltinToolDefinitions(): readonly ToolDefinition[] {
   return [
     createBashToolDefinition(),
     createReadFileToolDefinition(),
@@ -25,7 +25,7 @@ export function createBuiltinToolDefinitions(): readonly CodingToolDefinition[] 
 }
 
 export function createAgentToolRegistry(
-  definitions: readonly CodingToolDefinition[],
+  definitions: readonly ToolDefinition[],
   context: CodingToolContext,
 ): AgentToolRegistry {
   const tools = new AgentToolRegistry();

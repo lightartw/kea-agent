@@ -7,7 +7,7 @@ export interface CodingToolContext {
   readonly directories: readonly string[];
 }
 
-export interface CodingToolDefinition<
+export interface ToolDefinition<
   TParameters extends TObject = TObject,
   TDetails = unknown,
 > {
@@ -27,7 +27,7 @@ class CodingAgentToolAdapter<
   TDetails,
 > extends AgentTool<TParameters, TDetails> {
   constructor(
-    private readonly definition: CodingToolDefinition<TParameters, TDetails>,
+    private readonly definition: ToolDefinition<TParameters, TDetails>,
     private readonly context: CodingToolContext,
   ) {
     super(definition.name, definition.description, definition.parameters);
@@ -42,7 +42,7 @@ class CodingAgentToolAdapter<
 }
 
 export function toAgentTool<TParameters extends TObject, TDetails>(
-  definition: CodingToolDefinition<TParameters, TDetails>,
+  definition: ToolDefinition<TParameters, TDetails>,
   context: CodingToolContext,
 ): AgentTool<TParameters, TDetails> {
   return new CodingAgentToolAdapter(definition, context);

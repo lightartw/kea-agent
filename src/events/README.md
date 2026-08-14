@@ -1,193 +1,147 @@
 # events
 
-`events` 是项目的运行事件通道。它提供一个编译期契约 `EventMap` 和一个运行时对象 `Events`，
-让不同包在同一个 Project 内声明、分发和监听事件。
+`events` 是 Kea 各模块共同使用的通信机制。它让产生行为的模块说明“现在发生了什么”或“某个行为提交前需要什么”，而不必直接依赖日志、权限、CLI 或其他使用者。
 
-## 1. Event 与 Events
+## 1. Event 是什么
 
-先区分两个名字相似的概念：
+Event 是系统生命周期中一个有名字的时点。注册者把 listener 函数挂在这个名字下，行为发生时 `Events` 调用这些 listener。
 
-- **Event** 是运行过程中需要分发的一项信息。它可能是已经发生的事实，也可能是行为提交前
-  需要取得的答案或新值。
-- **`Events`** 是运行时对象。listener 通过 `on()` 注册到它上面，代码通过 `emit()`、`ask()`
-  或 `transform()` 找到并调用这些 listener。
+每种 Event 包含两部分：
 
-一次分发只发生在同一个 `Events` 实例内部：注册者用 `events.on(...)` 把 listener 放在某个
-事件名下，分发者用同一个 `events` 调用对应方法。
+- **名字**：指出发生了什么，例如 `agent/turn-end`；
+- **数据**：描述这次事件，例如完整 assistant message 和它产生的 Tool Result。
 
-最小使用：
+Event 不一定只表示“已经发生的事实”。Kea 也用它表示行为执行前的控制点。区分这两种语义的是注册的 listener 签名，而不是 Event 本身的名字。
+
+## 2. `EventMap`：事件目录
+
+`EventMap` 是编译期接口，描述哪些事件名合法、每个事件名的 listener 长什么样。它只做类型检查，不保存 listener，也不负责分发。
+
+拥有某个行为的模块在自己的 `events.ts` 中扩充 `EventMap`。例如：
 
 ```ts
-import { Events } from "./index.js";
-
-const events = new Events();
-
-events.on("example/started", (input) => {
-  console.log(`started ${input.id}`);
-});
-
-await events.emit("example/started", { id: "task-1" });
+declare module "./types.js" {
+  interface EventMap {
+    "example/started": (
+      input: { readonly id: string },
+    ) => void | Promise<void>;
+    "example/permission": (
+      input: { readonly command: string },
+      proceed: (input: { readonly command: string }) => Promise<string | undefined>,
+      signal?: AbortSignal,
+    ) => string | undefined | Promise<string | undefined>;
+  }
+}
 ```
 
-`example/started` 必须先在 `EventMap` 里声明，上面的调用才能通过类型检查（见第 4 节）。
-上面的例子假设声明是 `EventContract<"emit", { id: string }>`。
+两种 listener 签名对应两种分发规则：
 
-## 2. on() 与注册顺序
+- 只接收一个 `input`、返回 `void` 的 listener 用于 `emit()`；
+- 接收 `input`、`proceed` 和可选 `signal` 的 listener 用于 `intercept()`。
 
-`events.on(name, listener)` 把 listener 注册到“当前 `events` 实例的这个事件名”下。它返回
-一个 `Unregister` 函数，调用它取消这一次注册。
+## 3. `Events`：运行时分发器
 
-- 后续对同一实例、同一事件名的分发才会调用这个 listener；
+`Events` 是真正运行的类。一个 Project 创建一个 `Events` 实例，该 Project 的所有 Session 和 Run 共用它，因此 UI、Permission 和日志只需向这个实例注册。
+
+`Events` 提供三个方法：
+
+- `on(name, listener)`：注册一个 listener；
+- `emit(name, input)`：把事实通知给全部 listener；
+- `intercept(name, input, handler, signal?)`：让 listener 包裹一个待执行的行为。
+
+## 4. `on()`：注册
+
+`events.on(name, listener)` 把 listener 注册到“当前 `events` 实例的这个事件名”下。它返回一个函数，调用它取消这一次注册。
+
 - 同一事件名的 listener 按 `on()` 调用先后排序；
-- **同一个函数注册两次也是两次独立注册**；`unregister()` 只取消对应的那一次；
-- `unregister()` 幂等，重复调用只有第一次生效；
-- 分发开始后使用注册快照，本次过程中发生的注册变化下一次分发才生效。
+- 同一个函数注册两次是两次独立注册，返回的取消函数各管各的；
+- 取消函数幂等，重复调用只有第一次生效；
+- 分发开始时取得当时的注册快照，分发期间的注册变化下一次分发才生效。
 
 ```ts
 const unregister = events.on("example/started", handler);
 unregister();  // 之后的分发不再调用 handler
 ```
 
-## 3. 三种分发方式
+## 5. `emit()`：发布事实
 
-### emit()：调用全部 listener
+`emit(name, input)` 按注册顺序调用当前 `Events` 实例中注册到该事件名的全部 listener。它等待前一个 listener 结束后再调用下一个；listener 的返回值被忽略。
 
-`emit(name, input)` 按注册顺序调用当前 `Events` 实例中注册到该事件名的全部 listener。它等待
-前一个 listener 结束后再调用下一个；listener 的返回值被忽略。
+某个 listener 失败时，错误交给可选的错误处理器，后续 listener 仍继续执行。错误处理器自身失败不会打断分发。没有 listener 时，`emit()` 直接结束。
 
-某个 listener 失败时，失败交给错误报告器，后续 listener 仍继续执行。`emit()` 用于发布已经
-发生的事实，观察者不能改变事实，也不能中断其他观察者。
+`emit()` 用于发布已经发生的事实，观察者不能改变事实，也不能中断其他观察者。
 
-### ask()：依次请求一个答案
+## 6. `intercept()`：包裹一个待执行的行为
 
-`ask(name, input, signal)` 按注册顺序询问当前 `Events` 实例中注册到该事件名的 listener。
-listener 返回 `undefined` 表示不回答；第一个非 `undefined` 值成为最终答案，之后的 listener
-不再调用。如果全部 listener 都不回答，`ask()` 返回 `undefined`。
+`intercept(name, input, handler, signal?)` 让注册的 listener 依次包裹一个最终 `handler`。`handler` 接收修改后的输入并返回结果。
 
-listener 失败时，`ask()` 失败并停止询问；错误不经过错误报告器。分发前和每个异步 listener
-返回后检查 `AbortSignal`。`ask()` 用于让某一个 listener 对即将发生的行为作出决定。
+listener 按注册顺序执行，每个 listener 收到：
 
-### transform()：让一个值经过 listener 链
-
-`transform(name, value, signal)` 把同一个类型的值交给第一个 listener。listener 调用
-`next(newValue)` 时，`newValue` 进入下一个 listener；不调用 `next()` 就返回时，后续 listener
-不再执行。外层 listener 可以等待下游结果，再修改并返回最终值。
-
-一个两层示例：
+- 当前的 `input`；
+- `proceed(changedInput)`：把修改后的输入交给下一个 listener（最后一个 listener 之后是 `handler`）。
 
 ```ts
-events.on("example/context", async (value, next) => {
-  const downstream = await next([...value, "middle"]);
-  return [...downstream, "outer"];
-});
-events.on("example/context", (value) => [...value, "inner"]);
-
-const result = await events.transform("example/context", ["start"]);
-// result === ["start", "middle", "inner", "outer"]
+const result = await events.intercept(
+  "example/permission",
+  { command: "rm file.txt" },
+  async (effective) => effective.command,
+);
 ```
 
-进入顺序是注册顺序：`["start"]` → 第一个 listener → `next([...])` 进入第二个 listener →
-`["start", "middle", "inner"]` 沿链返回 → 第一个 listener 收到下游结果并追加 `"outer"`。
+listener 不调用 `proceed()` 而直接返回时，链在当前位置结束，`handler` 不执行。每个 listener 最多调用一次 `proceed()`，第二次调用抛出明确错误且不再执行下游。
 
-每个 listener 最多调用一次 `next()`。第二次调用抛出明确错误，且不会再执行下游 listener。
-listener 失败时，`transform()` 失败；分发前、进入每一层前和 listener 返回后检查
-`AbortSignal`。`transform()` 用于同一个值在提交前经过多层修改。
+listener 失败时，`intercept()` 失败并传播给行为拥有者。`intercept()` 在分发前、进入每一层前和每个 awaited listener 返回后检查 `AbortSignal`。
 
-## 4. EventMap：编译期契约
+## 7. 错误与取消
 
-`EventMap` 不保存 listener，也不负责分发。它只让 TypeScript 检查事件名、模式、输入和答案
-类型。每个事件模块通过模块扩充声明自己的契约：
+`Events` 构造时可选接收一个错误处理器，它接收 `(error, name, input)`。它只报告 `emit()` listener 的失败，因为事实 listener 没有权限中断运行。`intercept()` 的 listener 失败直接传播，不经过错误处理器。
 
-```ts
-declare module "./types.js" {
-  interface EventMap {
-    "example/started": EventContract<"emit", { readonly id: string }>;
-    "example/permission": EventContract<
-      "ask",
-      { readonly command: string },
-      boolean
-    >;
-    "example/context": EventContract<"transform", readonly string[]>;
-  }
-}
-```
+`emit()` 不接收 `AbortSignal`——已经发生的事实不会被取消。`intercept()` 接收信号，用于行为提交前的控制链。
 
-`EventContract` 的三个参数是 `TMode`、`TInput`、`TResult`：
+## 8. 谁拥有哪些 Event
 
-- `emit` 不需要结果，只写输入；
-- `ask` 写输入和答案类型 `TResult`；
-- `transform` 的输入和结果是同一种类型，只写一次 `TValue`。
-
-事件模块负责声明契约；拥有该行为的代码负责选择正确时点分发。
-
-## 5. 一份 Project 的 Events 如何贯穿各层
-
-在 Kea 中，一份 Project 创建一份 `Events`，项目里的 Harness、Agent Run、Coding Agent listener
-和 UI 使用同一个实例。
-
-先定义几个概念：
-
-- **Project** 是 Coding Agent 管理的一组目录和 Session；它创建一份 `Events`。
-- **Session** 是一段可恢复的对话历史。
-- **Run** 是 Harness 对一次用户输入启动的一次 Agent 执行。
-
-同一 Project 的 Harness、Agent Run、Coding Agent listener 和 UI 使用同一份 `Events`。事件用
-`sessionId`、`runId`、`lane` 标识所属运行，UI 据此筛选自己展示的 Session：
-
-```ts
-project.events.on("agent/turn-end", (input) => {
-  if (input.sessionId !== selectedSessionId) return;
-  render(input.message);
-});
-```
-
-各层的职责分工：
-
-- **Agent** 声明并分发 Agent Run 的事实与控制事件（`agent/*`）；
-- **Harness** 声明并分发 Session Run 边界（`harness/run-start`、`harness/run-end`）；
-- **Coding Agent** 注册 permission 等产品能力，并创建这份共享的 `Events`；
+- **Harness** 声明并分发 Run 边界：`harness/run-start`、`harness/run-end`；
+- **Agent** 声明并分发一次 Run 内的 Turn 与 Tool 事实，以及三个控制点；
+- **Coding Agent** 注册 Project 级 listener（例如 Permission），并创建共享 `Events`；
 - **UI** 只订阅展示需要的事实，用 `sessionId` 过滤。
 
-## 6. 进阶行为
+## 9. 最终生命周期
 
-### listener 快照
+用户提交一次 prompt 后，事件按下面的顺序发生：
 
-一次分发开始时复制当时的注册列表。分发过程中调用 `on()` 或 `unregister()` 不会影响本次
-正在进行的调用顺序，从下一次分发开始生效。
+```text
+harness/run-start
+agent/user-prompt
+agent/turn-start
+agent/context
+agent/text-delta | agent/thinking-delta | agent/tool-call-start | agent/tool-call-delta
+agent/tool-call
+tools/pre-execute
+tools/execute
+tools/post-execute
+agent/tool-result
+agent/turn-end
+shouldContinue() decides internally
+agent/stopping (only when the loop would otherwise stop)
+harness/run-end
+```
 
-### 取消
+几点说明：
 
-`ask()` 和 `transform()` 接收 `AbortSignal`：分发前和每个异步 listener 返回后检查信号，已
-取消时抛出 `AbortError`。`emit()` 不接收信号——已经发生的事实不会被取消。
+- 四个流式事实（`agent/text-delta`、`agent/thinking-delta`、`agent/tool-call-start`、
+  `agent/tool-call-delta`）只在 provider 产生对应片段时发生；
+- 中间的五行（`agent/tool-call` 到 `agent/tool-result`）对 assistant 消息中的每个 Tool Call
+  各重复一次，顺序与模型生成顺序一致；
+- 未知、无效、被阻止、已中止或失败的 Tool Call 跳过无法执行的阶段，但仍然以恰好一个
+  `agent/tool-result` 结束；
+- `shouldContinue()` 是 Agent Loop 内部的决策，不产生事件；只有 Loop 将要停止时才分发
+  `agent/stopping`。
 
-### 错误报告
+## 10. 公共接口
 
-`Events` 构造时可选接收一个 `EventListenerErrorHandler`。它只报告 `emit()` listener 的失败，
-因为事实 listener 没有权限中断运行。报告器自身失败时，错误不会再进入事件系统，也不会改变
-本次 `emit()` 的结果。
+`src/events/index.ts` 导出：
 
-### 公共接口
+- `Events`：运行时分发器；
+- `EventMap`：事件目录接口。
 
-`src/events/index.ts` 只导出：
-
-- `Events`（值）；
-- `EventMap`、`EventContract`、`EventMode`、`Unregister`、`EventDispatch`、
-  `EventListenerErrorHandler`（类型）。
-
-`EventName`、`EventInput`、`EventResult` 和 listener 推导类型属于实现细节，供包内使用，不通过
-入口暴露。
-
-### 依赖方向
-
-`events` 只依赖 TypeScript 类型系统，不依赖 agent、harness、coding-agent 或 UI。其他包在
-`EventMap` 上声明自己的契约，并用 `Events` 分发。
-
-## 7. 新增一个事件
-
-新增事件的完整步骤：
-
-1. 在拥有该事件的层扩充 `EventMap`：选择 `emit`、`ask` 或 `transform`，写出输入和结果类型；
-2. 在行为发生的准确位置分发：事实用 `emit()`，需要决策用 `ask()`，提交前修改用
-   `transform()`；
-3. 在组合层注册 listener（例如 Coding Agent 注册 permission listener）；
-4. 为顺序、返回值和错误语义写测试。
+条件辅助类型（事实/拦截事件名、输入和结果推导）只供 `src/events/events.ts` 内部实现使用，不通过入口暴露。

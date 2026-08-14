@@ -1,23 +1,11 @@
 import { runWithTimeout } from "../../utils/timeout.js";
 import { AgentTool, type AgentToolCall, type AgentToolResult } from "./types.js";
 import type { Tool } from "../../ai/types.js";
+import type { Events } from "../../events/events.js";
 
 const ERROR_PREFIX = "Error: ";
 
-interface PreparedAgentToolCall {
-  readonly call: AgentToolCall;
-  readonly tool: AgentTool;
-}
-
-type ToolPreparation =
-  | { readonly kind: "ready"; readonly prepared: PreparedAgentToolCall }
-  | {
-      readonly kind: "rejected";
-      readonly reason: "unknown" | "invalid";
-      readonly result: AgentToolResult<unknown>;
-    };
-
-/** Validates and executes tool calls. Control decisions happen before this registry. */
+/** Validates and executes tool calls through the three Tool interception stages. */
 export class AgentToolRegistry {
   private readonly tools = new Map<string, AgentTool>();
 
@@ -47,31 +35,54 @@ export class AgentToolRegistry {
     return { content: message.startsWith(ERROR_PREFIX) ? message : `${ERROR_PREFIX}${message}`, isError: true };
   }
 
-  /** Look up and validate a call without executing it. */
-  prepare(call: AgentToolCall): ToolPreparation {
-    const tool = this.tools.get(call.name);
-    if (tool === undefined) {
-      return { kind: "rejected", reason: "unknown", result: this.error(`Unknown tool '${call.name}'`) };
-    }
-    const validationError = tool.validate(call.arguments);
-    if (validationError !== undefined) {
-      return {
-        kind: "rejected",
-        reason: "invalid",
-        result: this.error(`Invalid arguments for tool '${call.name}': ${validationError}`),
-      };
-    }
-    return { kind: "ready", prepared: { call, tool } };
-  }
-
-  /** Execute a previously prepared call. Hooks are handled by the caller. */
+  /**
+   * Run one Tool Call through pre-execute, execute, and post-execute.
+   * Returns the final AgentToolResult; every call produces exactly one result.
+   */
   async execute(
-    prepared: PreparedAgentToolCall,
+    call: AgentToolCall,
+    events: Events,
     signal?: AbortSignal,
   ): Promise<AgentToolResult<unknown>> {
     try {
-      return await runWithTimeout(this.timeout, (timeoutSignal) =>
-        prepared.tool.execute(prepared.call.arguments, timeoutSignal), signal);
+      const preResult = await events.intercept(
+        "tools/pre-execute",
+        call,
+        async (effectiveCall) => effectiveCall,
+        signal,
+      );
+
+      if ("content" in preResult) {
+        return preResult as AgentToolResult<unknown>;
+      }
+      const effectiveCall = preResult;
+
+      const tool = this.tools.get(effectiveCall.name);
+      if (tool === undefined) {
+        return this.error(`Unknown tool '${effectiveCall.name}'`);
+      }
+      const validationError = tool.validate(effectiveCall.arguments);
+      if (validationError !== undefined) {
+        return this.error(`Invalid arguments for tool '${effectiveCall.name}': ${validationError}`);
+      }
+
+      const executed = await events.intercept(
+        "tools/execute",
+        effectiveCall,
+        async (callToRun) =>
+          runWithTimeout(this.timeout, (timeoutSignal) =>
+            tool.execute(callToRun.arguments, timeoutSignal), signal),
+        signal,
+      );
+
+      const finalized = await events.intercept(
+        "tools/post-execute",
+        { call: effectiveCall, result: executed },
+        async (input) => input.result,
+        signal,
+      );
+
+      return finalized;
     } catch (error) {
       return this.error(error instanceof Error ? error.message : String(error));
     }

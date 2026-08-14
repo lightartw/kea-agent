@@ -84,7 +84,7 @@ interface Project extends ProjectInfo {
 - `continueRecent()` 打开列表中的第一份 Session；列表为空时在启动 `initialCwd` 创建。
 - `update(input)` 原子地更新 name/directories/primaryDirectory 并持久化；更改 primary 不会
   改写已有 Session 文件。
-- `renderTool(input)` 按工具名把 `tool_start` / `tool_end` / `tool_rejected` 渲染成 UI 文本。
+- `renderTool(input)` 按工具名把 `call` / `result` 渲染成 UI 文本。
 
 `AgentHarness.sessionId` 是 Harness 所绑定 Session 的只读标识。Harness 不持有 Repository，
 也不负责切换 Session；再次选择 Session 会得到另一个 Harness，而不会改写已有 Harness。
@@ -158,7 +158,7 @@ project.events.on("agent/turn-end", (input) => {
 | ask | `rm file.txt`、`chmod 777` | permission listener 调用 `confirm()` |
 | deny | `sudo`、`mkfs`、`rm -rf /` | 直接拒绝，不询问 UI |
 
-Permission listener 注册在 `agent/tool-call` transform 上，使用完整策略；Bash Tool 自身再次
+Permission listener 注册在 `tools/pre-execute` 拦截上，使用完整策略；Bash Tool 自身再次
 检查 deny 规则，避免绕过 listener 后执行硬拒绝命令。Bash 失败和非零退出码会成为
 `isError: true` 的 Tool Result。
 
@@ -216,18 +216,17 @@ interface CodingAgentInteractions {
 }
 ```
 
-事实事件报告已经发生的事实。UI 订阅 `project.events`，把带 `sessionId` 的 `agent/tool-start`、
-`agent/tool-end`、`agent/tool-rejected` 投影成 `ToolPresentationInput`，再交给 Project 级的展示
-入口：
+事实事件报告已经发生的事实。UI 订阅 `project.events`，把带 `sessionId` 的 `agent/tool-call`、
+`agent/tool-result` 投影成 `ToolPresentationInput`，再交给 Project 级的展示入口：
 
 ```ts
-project.events.on("agent/tool-end", (input) => {
+project.events.on("agent/tool-result", (input) => {
   if (input.sessionId !== selectedSessionId) return;
-  console.log(project.renderTool({ type: "tool_end", call: input.call, result: input.result }));
+  console.log(project.renderTool({ type: "result", call: input.call, result: input.result }));
 });
 ```
 
-每个 `CodingToolDefinition` 可以提供 `CodingToolPresentation`。没有专用规则、规则返回
+每个 `ToolDefinition` 可以提供 `CodingToolPresentation`。没有专用规则、规则返回
 `undefined` 或规则抛错时，Coding Agent 使用通用文本；展示失败不会改变 Tool Result。
 
 ## 11. 源码结构
@@ -262,9 +261,8 @@ project.events.on("agent/tool-end", (input) => {
 - Project：`Project`、`ProjectInfo`、`OpenedProject`、`OpenProjectInput`、
   `UpdateProjectInput`、`CreateSessionOptions`、`CreateProjectConfig`；
 - UI 交互：`CodingAgentInteractions`、`ConfirmationRequest`、`Notification`；
-- Tool 展示：`CodingToolPresentation`、`ToolPresentationCall`、
-  `ToolPresentationRejected`、`ToolPresentationInput`；
-- Tool 定义：`CodingToolContext`、`CodingToolDefinition`；
+- Tool 展示：`CodingToolPresentation`、`ToolPresentationCall`、`ToolPresentationInput`；
+- Tool 定义：`CodingToolContext`、`ToolDefinition`；
 - Todo：`TodoItem`、`TodoDetails`。
 
 内置 Tool/事件工厂、`toAgentTool()`、Bash policy 和 presentation registry 是包内实现，不是

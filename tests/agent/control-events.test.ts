@@ -125,9 +125,9 @@ class NoopTool extends AgentTool<typeof emptyParameters> {
 
 // ── agent/user-prompt ──
 
-test("agent/user-prompt rejection prevents message insertion and model calls", async () => {
+test("agent/user-prompt blocking prevents message insertion and model calls", async () => {
   const events = new Events();
-  events.on("agent/user-prompt", () => ({ block: true, reason: "blocked" }));
+  events.on("agent/user-prompt", () => undefined);
   let streams = 0;
   const history: AgentMessage[] = [];
   const context = memoryContext(undefined, history);
@@ -151,11 +151,29 @@ test("agent/user-prompt rejection prevents message insertion and model calls", a
   assert.deepEqual(recorded, []);
 });
 
+test("agent/user-prompt a returned prompt runs the Run", async () => {
+  const events = new Events();
+  events.on("agent/user-prompt", (input, proceed) => proceed(input));
+  const history: AgentMessage[] = [];
+  const context = memoryContext(undefined, history);
+
+  await runAgentLoop(
+    "hello",
+    context,
+    makeConfig(events),
+    async function* () {
+      yield { type: "done", message: assistantMsg("done") };
+    },
+  );
+
+  assert.deepEqual(history.map((message) => message.role), ["user", "assistant"]);
+});
+
 // ── agent/context ──
 
-test("agent/context transform reaches the model without replacing history", async () => {
+test("agent/context intercept reaches the model without replacing history", async () => {
   const events = new Events();
-  events.on("agent/context", (input, next) => next({
+  events.on("agent/context", (input, proceed) => proceed({
     ...input,
     messages: [
       ...input.messages,
@@ -190,9 +208,9 @@ test("agent/context transform reaches the model without replacing history", asyn
   );
 });
 
-// ── agent/tool-call ──
+// ── Tool interception and facts ──
 
-test("agent/tool-call transform can replace arguments", async () => {
+test("tools/pre-execute can replace arguments before validation", async () => {
   const tool = new TypedTool();
   const tools = new AgentToolRegistry();
   tools.register(tool);
@@ -203,9 +221,9 @@ test("agent/tool-call transform can replace arguments", async () => {
     arguments: { value: 1 },
   };
   const events = new Events();
-  events.on("agent/tool-call", (decision, next) => next({
-    ...decision,
-    call: { ...decision.call, arguments: { value: "fixed" } },
+  events.on("tools/pre-execute", (input, proceed) => proceed({
+    ...input,
+    arguments: { value: "fixed" },
   }));
 
   await runAgentLoop("run", memoryContext(tools), makeConfig(events), streamForToolCall(call));
@@ -213,37 +231,7 @@ test("agent/tool-call transform can replace arguments", async () => {
   assert.equal(tool.seen, "fixed");
 });
 
-test("agent/tool-call terminal rejection blocks execution", async () => {
-  const tool = new NoopTool();
-  const tools = new AgentToolRegistry();
-  tools.register(tool);
-  const history: AgentMessage[] = [];
-  const context = memoryContext(tools);
-  const call: AgentToolCall = {
-    type: "toolCall", id: "c1", name: "noop", arguments: {},
-  };
-  const events = new Events();
-  events.on("agent/tool-call", (decision) => ({
-    ...decision,
-    kind: "reject" as const,
-    call: decision.call,
-    reason: "denied by policy",
-  }));
-  const rejected: Array<{ reason: string }> = [];
-  events.on("agent/tool-rejected", (input) => {
-    if (input.sessionId === "session-1") rejected.push({ reason: input.reason });
-  });
-
-  await runAgentLoop("run", context, makeConfig(events), streamForToolCall(call));
-
-  assert.equal(tool.ran, false);
-  assert.equal(rejected.length, 1);
-  assert.equal(rejected[0]?.reason, "blocked");
-});
-
-// ── agent/tool-result ──
-
-test("agent/tool-result transformed result is identical in tool message and next request", async () => {
+test("tools/pre-execute can block execution", async () => {
   const tool = new NoopTool();
   const tools = new AgentToolRegistry();
   tools.register(tool);
@@ -253,7 +241,33 @@ test("agent/tool-result transformed result is identical in tool message and next
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
   const events = new Events();
-  events.on("agent/tool-result", (input, next) => next({
+  events.on("tools/pre-execute", () => ({
+    content: "Error: denied by policy",
+    isError: true,
+  }));
+  const results: AgentToolResult[] = [];
+  events.on("agent/tool-result", (input) => {
+    if (input.sessionId === "session-1") results.push(input.result);
+  });
+
+  await runAgentLoop("run", context, makeConfig(events), streamForToolCall(call));
+
+  assert.equal(tool.ran, false);
+  assert.equal(results.length, 1);
+  assert.deepEqual(results[0], { content: "Error: denied by policy", isError: true });
+});
+
+test("tools/post-execute transformed result is identical in tool message and next request", async () => {
+  const tool = new NoopTool();
+  const tools = new AgentToolRegistry();
+  tools.register(tool);
+  const history: AgentMessage[] = [];
+  const context = memoryContext(tools, history);
+  const call: AgentToolCall = {
+    type: "toolCall", id: "c1", name: "noop", arguments: {},
+  };
+  const events = new Events();
+  events.on("tools/post-execute", (input, proceed) => proceed({
     ...input,
     result: { content: "patched", isError: true },
   }));
@@ -268,14 +282,14 @@ test("agent/tool-result transformed result is identical in tool message and next
   ], (context, index) => {
     if (index === 1) secondRequest = [...context.messages];
   });
-  const toolEnds: AgentToolResult[] = [];
-  events.on("agent/tool-end", (input) => {
-    if (input.sessionId === "session-1") toolEnds.push(input.result);
+  const results: AgentToolResult[] = [];
+  events.on("agent/tool-result", (input) => {
+    if (input.sessionId === "session-1") results.push(input.result);
   });
 
   await runAgentLoop("run", context, makeConfig(events), stream);
 
-  assert.deepEqual(toolEnds[0], { content: "patched", isError: true });
+  assert.deepEqual(results[0], { content: "patched", isError: true });
   assert.deepEqual(history[2], {
     role: "tool",
     toolCallId: "c1",
@@ -286,15 +300,15 @@ test("agent/tool-result transformed result is identical in tool message and next
   assert.deepEqual(secondRequest.at(-1), history[2]);
 });
 
-// ── agent/stop ──
+// ── agent/stopping ──
 
-test("agent/stop continueWith is appended before the next turn", async () => {
+test("agent/stopping continues when it returns a message", async () => {
   const events = new Events();
   let stops = 0;
-  events.on("agent/stop", () => {
+  events.on("agent/stopping", () => {
     stops += 1;
     return stops === 1
-      ? { continueWith: { role: "user", content: "continue" } }
+      ? { role: "user", content: "continue" }
       : undefined;
   });
   const history: AgentMessage[] = [];
@@ -324,23 +338,16 @@ test("agent/stop continueWith is appended before the next turn", async () => {
 test("the same AbortSignal reaches every control listener", async () => {
   const events = new Events();
   const seen: Array<{ type: string; signal: AbortSignal | undefined }> = [];
-  events.on("agent/user-prompt", (_input, signal) => {
+  events.on("agent/user-prompt", (input, proceed, signal) => {
     seen.push({ type: "user_prompt", signal });
+    return proceed(input);
   });
-  events.on("agent/context", (input, next, signal) => {
+  events.on("agent/context", (input, proceed, signal) => {
     seen.push({ type: "context", signal });
-    return next(input);
+    return proceed(input);
   });
-  events.on("agent/tool-call", (decision, next, signal) => {
-    seen.push({ type: "tool_call", signal });
-    return next(decision);
-  });
-  events.on("agent/tool-result", (input, next, signal) => {
-    seen.push({ type: "tool_result", signal });
-    return next(input);
-  });
-  events.on("agent/stop", (_input, signal) => {
-    seen.push({ type: "stop", signal });
+  events.on("agent/stopping", (_input, _proceed, signal) => {
+    seen.push({ type: "stopping", signal });
   });
 
   const tool = new NoopTool();
@@ -362,10 +369,8 @@ test("the same AbortSignal reaches every control listener", async () => {
   assert.deepEqual(seen.map(({ type }) => type), [
     "user_prompt",
     "context",
-    "tool_call",
-    "tool_result",
     "context",
-    "stop",
+    "stopping",
   ]);
   assert.ok(seen.every(({ signal }) => signal === controller.signal));
 });

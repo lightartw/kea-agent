@@ -499,21 +499,16 @@ test("an AbortSignal fired while Permission awaits confirmation wins over the an
   const signal: AbortSignal[] = [];
   let resolvePermission: (value: boolean) => void = () => undefined;
   const permissionGate = new Promise<boolean>((resolve) => { resolvePermission = resolve; });
-  events.on("agent/tool-call", (decision, next, abortSignal) => {
+  events.on("tools/pre-execute", (call, proceed, abortSignal) => {
     signal.push(abortSignal!);
     return permissionGate.then((allowed) => {
-      if (allowed) return next(decision);
-      return {
-        ...decision,
-        kind: "reject" as const,
-        call: decision.call,
-        reason: "permission denied by user",
-      };
+      if (allowed) return proceed(call);
+      return { content: "Error: permission denied by user", isError: true };
     });
   });
-  const reasons: string[] = [];
-  events.on("agent/tool-rejected", (input) => {
-    if (input.sessionId === harness.sessionId) reasons.push(input.reason);
+  const results: Array<{ isError: boolean }> = [];
+  events.on("agent/tool-result", (input) => {
+    if (input.sessionId === harness.sessionId) results.push({ isError: input.result.isError });
   });
 
   const run = harness.prompt("run tool");
@@ -523,8 +518,8 @@ test("an AbortSignal fired while Permission awaits confirmation wins over the an
   await run;
 
   assert.equal(signal.length, 1);
-  assert.equal(reasons.length, 1);
-  assert.equal(reasons[0], "aborted");
+  assert.equal(results.length, 1);
+  assert.equal(results[0]?.isError, true);
 });
 
 function streamFnWithToolCall(): StreamFn {
@@ -554,21 +549,24 @@ function streamFnWithToolCall(): StreamFn {
 test("Harness shares one Events instance with Agent Loop", async () => {
   const events = new Events();
   const calls: string[] = [];
-  events.on("agent/user-prompt", () => { calls.push("user_prompt"); });
-  events.on("agent/context", (input, next) => {
-    calls.push("context");
-    return next(input);
+  events.on("agent/user-prompt", (input, proceed) => {
+    calls.push("user_prompt");
+    return proceed(input);
   });
-  events.on("agent/stop", () => { calls.push("stop"); });
+  events.on("agent/context", (input, proceed) => {
+    calls.push("context");
+    return proceed(input);
+  });
+  events.on("agent/stopping", () => { calls.push("stopping"); });
 
   const { harness } = makeHarness({ events });
   await harness.prompt("hello");
   assert.deepEqual(calls, [
-    "user_prompt", "context", "stop",
+    "user_prompt", "context", "stopping",
   ]);
 });
 
-test("agent/user-prompt and agent/context listener failures reject prompt and restore idle", async () => {
+test("agent/user-prompt and agent/context interceptor failures reject prompt and restore idle", async () => {
   for (const type of ["agent/user-prompt", "agent/context"] as const) {
     const events = new Events();
     if (type === "agent/user-prompt") {
@@ -584,9 +582,9 @@ test("agent/user-prompt and agent/context listener failures reject prompt and re
   }
 });
 
-test("agent/stop listener failure keeps the completed assistant message and restores idle", async () => {
+test("agent/stopping interceptor failure keeps the completed assistant message and restores idle", async () => {
   const events = new Events();
-  events.on("agent/stop", () => { throw new Error("stop failed"); });
+  events.on("agent/stopping", () => { throw new Error("stop failed"); });
   const { harness } = makeHarness({ events });
 
   await assert.rejects(harness.prompt("hello"), /stop failed/);
@@ -594,9 +592,9 @@ test("agent/stop listener failure keeps the completed assistant message and rest
   assert.equal(harness.isRunning, false);
 });
 
-// ── Task 4: tool terminal event ordering against persisted Session ──
+// ── Task 4: tool result ordering against persisted Session ──
 
-test("tool_end subscriber sees the persisted result message", async () => {
+test("tool-result subscriber sees the persisted result message", async () => {
   const registry = new AgentToolRegistry();
   registry.register(new (class extends AgentTool {
     constructor() {
@@ -638,7 +636,7 @@ test("tool_end subscriber sees the persisted result message", async () => {
   });
 
   const observed: Array<{ type: string; matches: boolean }> = [];
-  events.on("agent/tool-end", (input) => {
+  events.on("agent/tool-result", (input) => {
     if (input.sessionId !== harness.sessionId) return;
     const message = session.buildContext().messages.find(
       (entry) => entry.role === "tool" && entry.toolCallId === "c1",
@@ -646,23 +644,14 @@ test("tool_end subscriber sees the persisted result message", async () => {
     const matches = message !== undefined && message.role === "tool" &&
       message.content === input.result.content &&
       JSON.stringify(message.details) === JSON.stringify(input.result.details);
-    observed.push({ type: "tool_end", matches });
-  });
-  events.on("agent/tool-rejected", (input) => {
-    if (input.sessionId !== harness.sessionId) return;
-    const message = session.buildContext().messages.find(
-      (entry) => entry.role === "tool" && entry.toolCallId === "c1",
-    );
-    const matches = message !== undefined &&
-      message.content === input.result.content;
-    observed.push({ type: "tool_rejected", matches });
+    observed.push({ type: "tool-result", matches });
   });
 
   await harness.prompt("run");
-  assert.deepEqual(observed, [{ type: "tool_end", matches: true }]);
+  assert.deepEqual(observed, [{ type: "tool-result", matches: true }]);
 });
 
-test("tool_rejected subscriber sees the persisted synthetic message", async () => {
+test("tool-result subscriber sees the persisted synthetic message for an unknown call", async () => {
   const registry = new AgentToolRegistry();
   const session = memorySession();
   const tc = { type: "toolCall" as const, id: "c1", name: "missing", arguments: {} };
@@ -696,27 +685,18 @@ test("tool_rejected subscriber sees the persisted synthetic message", async () =
   });
 
   const observed: Array<{ type: string; matches: boolean }> = [];
-  events.on("agent/tool-end", (input) => {
-    if (input.sessionId !== harness.sessionId) return;
-    const message = session.buildContext().messages.find(
-      (entry) => entry.role === "tool" && entry.toolCallId === "c1",
-    );
-    const matches = message !== undefined && message.role === "tool" &&
-      message.content === input.result.content;
-    observed.push({ type: "tool_end", matches });
-  });
-  events.on("agent/tool-rejected", (input) => {
+  events.on("agent/tool-result", (input) => {
     if (input.sessionId !== harness.sessionId) return;
     const message = session.buildContext().messages.find(
       (entry) => entry.role === "tool" && entry.toolCallId === "c1",
     );
     const matches = message !== undefined &&
       message.content === input.result.content;
-    observed.push({ type: "tool_rejected", matches });
+    observed.push({ type: "tool-result", matches });
   });
 
   await harness.prompt("run");
-  assert.deepEqual(observed, [{ type: "tool_rejected", matches: true }]);
+  assert.deepEqual(observed, [{ type: "tool-result", matches: true }]);
 });
 
 // ── Task 4: automatic title timing ──
@@ -766,7 +746,7 @@ test("blocked first prompts do not start title generation", async () => {
   const session = memorySession();
   let titleCalls = 0;
   const events = new Events();
-  events.on("agent/user-prompt", () => ({ block: true, reason: "blocked" }));
+  events.on("agent/user-prompt", () => undefined);
   const { harness } = makeHarness({
     session,
     events,

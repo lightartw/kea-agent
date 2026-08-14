@@ -24,7 +24,7 @@ export interface AgentContext {
 
 /**
  * Configuration consumed by the agent loop.
- * Control flows through the shared `Events` dispatcher using ask()/transform();
+ * Control flows through the shared `Events` dispatcher using emit()/intercept();
  * the loop never calls hooks directly.
  */
 export interface AgentLoopConfig {
@@ -33,7 +33,7 @@ export interface AgentLoopConfig {
   readonly convertToLlm: (
     messages: readonly AgentMessage[],
   ) => readonly Message[];
-  /** Shared event dispatcher; control listeners answer via ask()/transform(). */
+  /** Shared event dispatcher; control listeners wrap pending behavior via intercept(). */
   readonly events: Events;
   /** Identity of the current run, attached to every event. */
   readonly run: AgentRunIdentity;

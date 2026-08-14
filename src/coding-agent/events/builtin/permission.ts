@@ -1,5 +1,4 @@
 import type { Events } from "../../../events/events.js";
-import type { ToolCallDecision } from "../../../agent/events.js";
 import { classifyBashCommand } from "../../tools/builtin/bash/bash-policy.js";
 import type { CodingAgentInteractions } from "../../ui/interactions.js";
 
@@ -7,49 +6,30 @@ export function registerPermission(
   events: Events,
   interactions: CodingAgentInteractions,
 ): void {
-  events.on("agent/tool-call", async (
-    decision: ToolCallDecision,
-    next,
-    signal?: AbortSignal,
-  ): Promise<ToolCallDecision> => {
-    if (decision.kind !== "execute") return next(decision);
-    if (decision.call.name !== "bash") return next(decision);
-    const command = decision.call.arguments.command;
-    if (typeof command !== "string") return next(decision);
+  events.on("tools/pre-execute", async (call, proceed, signal) => {
+    if (call.name !== "bash") return proceed(call);
+    const command = call.arguments.command;
+    if (typeof command !== "string") return proceed(call);
 
     const classification = classifyBashCommand(command);
-    if (classification.decision === "allow") return next(decision);
+    if (classification.decision === "allow") return proceed(call);
     if (classification.decision === "deny") {
-      return {
-        ...decision,
-        kind: "reject",
-        call: decision.call,
-        reason: classification.reason,
-      };
+      return { content: `Error: ${classification.reason}`, isError: true };
     }
 
     try {
       const allowed = await interactions.confirm({
         source: "permission",
         title: "Allow Bash command?",
-        message: `${classification.reason}\nTool: bash(${JSON.stringify(decision.call.arguments)})`,
+        message: `${classification.reason}\nTool: bash(${JSON.stringify(call.arguments)})`,
       }, signal);
-      if (!allowed) {
-        return {
-          ...decision,
-          kind: "reject",
-          call: decision.call,
-          reason: "permission denied by user",
-        };
-      }
-      return next(decision);
+      return allowed
+        ? proceed(call)
+        : { content: "Error: permission denied by user", isError: true };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       return {
-        ...decision,
-        kind: "reject",
-        call: decision.call,
-        reason: `permission confirmation failed: ${message}`,
+        content: `Error: permission confirmation failed: ${error instanceof Error ? error.message : String(error)}`,
+        isError: true,
       };
     }
   });

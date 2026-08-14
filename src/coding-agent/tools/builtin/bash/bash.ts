@@ -5,7 +5,7 @@ import type { Static } from "typebox";
 import { Type } from "typebox";
 
 import { hardDeniedBashReason } from "./bash-policy.js";
-import type { CodingToolDefinition } from "../../definition.js";
+import type { ToolDefinition } from "../../definition.js";
 
 type ExecuteBash = (
   command: string,
@@ -84,7 +84,7 @@ async function executeLocalBash(
 
 export function createBashToolDefinition(
   executeBash: ExecuteBash = executeLocalBash,
-): CodingToolDefinition<typeof parameters> {
+): ToolDefinition<typeof parameters> {
   return {
     name: "bash",
     description: "Run a shell command.",

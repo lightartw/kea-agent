@@ -5,17 +5,22 @@ import { Events } from "../../src/events/events.js";
 
 declare module "../../src/events/types.js" {
   interface EventMap {
-    "test/fact": EventContract<"emit", { readonly value: number }>;
-    "test/question": EventContract<"ask", { readonly prompt: string }, string>;
-    "test/value": EventContract<"transform", number>;
+    "test/fact": (
+      input: { readonly value: number },
+    ) => void | Promise<void>;
+    "test/intercept": (
+      input: number,
+      proceed: (input: number) => Promise<number>,
+      signal?: AbortSignal,
+    ) => number | Promise<number>;
   }
 }
 
 test("emit snapshots listeners, preserves order, and isolates failures", async () => {
   const failures: string[] = [];
   const calls: string[] = [];
-  const events = new Events((error, dispatch) => {
-    failures.push(`${dispatch.name}:${(error as Error).message}`);
+  const events = new Events((error, name, input) => {
+    failures.push(`${name}:${(error as Error).message}:${(input as { value: number }).value}`);
   });
   let unregisterSecond: () => void = () => undefined;
   events.on("test/fact", async () => {
@@ -29,117 +34,10 @@ test("emit snapshots listeners, preserves order, and isolates failures", async (
   await events.emit("test/fact", { value: 2 });
 
   assert.deepEqual(calls, ["first", "second", "first"]);
-  assert.deepEqual(failures, ["test/fact:broken", "test/fact:broken"]);
-});
-
-test("ask returns the first non-undefined answer and stops", async () => {
-  const events = new Events();
-  const called: string[] = [];
-  events.on("test/question", () => {
-    called.push("first");
-    return undefined;
-  });
-  events.on("test/question", () => {
-    called.push("second");
-    return "second";
-  });
-  events.on("test/question", () => {
-    called.push("third");
-    return "third";
-  });
-
-  const answer = await events.ask("test/question", { prompt: "p" });
-  assert.equal(answer, "second");
-  assert.deepEqual(called, ["first", "second"]);
-});
-
-test("transform passes each value to the next middleware", async () => {
-  const events = new Events();
-  events.on("test/value", (value, next) => next(value + 1));
-  events.on("test/value", (value, next) => next(value * 2));
-
-  const result = await events.transform("test/value", 1);
-  assert.equal(result, 4);
-});
-
-test("transform middleware may stop the chain without next", async () => {
-  const events = new Events();
-  const called: string[] = [];
-  events.on("test/value", (value, next) => {
-    called.push("first");
-    return next(value + 1);
-  });
-  events.on("test/value", (value) => {
-    called.push("stopping");
-    return value * 10;
-  });
-  events.on("test/value", () => {
-    called.push("third");
-    throw new Error("should not run");
-  });
-
-  const result = await events.transform("test/value", 1);
-  assert.equal(result, 20);
-  assert.deepEqual(called, ["first", "stopping"]);
-});
-
-test("ask propagates listener errors", async () => {
-  const events = new Events();
-  events.on("test/question", () => {
-    throw new Error("ask failed");
-  });
-  await assert.rejects(
-    events.ask("test/question", { prompt: "p" }),
-    /ask failed/,
-  );
-});
-
-test("transform propagates listener errors", async () => {
-  const events = new Events();
-  events.on("test/value", () => {
-    throw new Error("transform failed");
-  });
-  await assert.rejects(events.transform("test/value", 1), /transform failed/);
-});
-
-test("ask and transform check an already-aborted signal", async () => {
-  const events = new Events();
-  events.on("test/question", () => "answer");
-  events.on("test/value", (value, next) => next(value + 1));
-
-  const aborted = AbortSignal.abort();
-  await assert.rejects(
-    events.ask("test/question", { prompt: "p" }, aborted),
-    (error: unknown) => (error as Error).name === "AbortError",
-  );
-  await assert.rejects(
-    events.transform("test/value", 1, aborted),
-    (error: unknown) => (error as Error).name === "AbortError",
-  );
-});
-
-test("unregister is idempotent", async () => {
-  const events = new Events();
-  const calls: string[] = [];
-  const unregister = events.on("test/fact", () => { calls.push("hit"); });
-  unregister();
-  unregister();
-  await events.emit("test/fact", { value: 1 });
-  assert.deepEqual(calls, []);
-});
-
-test("emit continues after a throwing listener and still completes", async () => {
-  const events = new Events();
-  const calls: string[] = [];
-  events.on("test/fact", () => {
-    calls.push("first");
-    throw new Error("boom");
-  });
-  events.on("test/fact", () => { calls.push("second"); });
-
-  await events.emit("test/fact", { value: 1 });
-
-  assert.deepEqual(calls, ["first", "second"]);
+  assert.deepEqual(failures, [
+    "test/fact:broken:1",
+    "test/fact:broken:2",
+  ]);
 });
 
 test("the same listener can be registered and removed independently", async () => {
@@ -158,6 +56,16 @@ test("the same listener can be registered and removed independently", async () =
   assert.deepEqual(calls, [1]);
 });
 
+test("unregister is idempotent", async () => {
+  const events = new Events();
+  const calls: string[] = [];
+  const unregister = events.on("test/fact", () => { calls.push("hit"); });
+  unregister();
+  unregister();
+  await events.emit("test/fact", { value: 1 });
+  assert.deepEqual(calls, []);
+});
+
 test("emit isolates listener error reporting failures", async () => {
   const calls: string[] = [];
   const events = new Events(() => {
@@ -173,29 +81,114 @@ test("emit isolates listener error reporting failures", async () => {
   assert.deepEqual(calls, ["first", "second"]);
 });
 
-test("transform preserves outer post-processing", async () => {
+test("emit continues after a throwing listener and still completes", async () => {
   const events = new Events();
-  events.on("test/value", async (value, next) => {
-    const downstream = await next(value + 1);
-    return downstream + 3;
+  const calls: string[] = [];
+  events.on("test/fact", () => {
+    calls.push("first");
+    throw new Error("boom");
   });
-  events.on("test/value", (value) => value * 2);
+  events.on("test/fact", () => { calls.push("second"); });
 
-  assert.equal(await events.transform("test/value", 1), 7);
+  await events.emit("test/fact", { value: 1 });
+
+  assert.deepEqual(calls, ["first", "second"]);
 });
 
-test("transform rejects a second next call without rerunning downstream", async () => {
+test("intercept passes changed input through listeners in registration order", async () => {
+  const events = new Events();
+  events.on("test/intercept", (value, proceed) => proceed(value + 1));
+  events.on("test/intercept", (value, proceed) => proceed(value * 2));
+
+  const result = await events.intercept(
+    "test/intercept",
+    1,
+    async (value) => value + 3,
+  );
+
+  assert.equal(result, 7);
+});
+
+test("intercept listener may stop before the final handler", async () => {
+  const events = new Events();
+  let finalCalls = 0;
+  events.on("test/intercept", (value) => value * 10);
+
+  const result = await events.intercept("test/intercept", 2, async (value) => {
+    finalCalls += 1;
+    return value;
+  });
+
+  assert.equal(result, 20);
+  assert.equal(finalCalls, 0);
+});
+
+test("intercept preserves outer post-processing", async () => {
+  const events = new Events();
+  events.on("test/intercept", async (value, proceed) => {
+    const downstream = await proceed(value + 1);
+    return downstream + 3;
+  });
+  events.on("test/intercept", (value) => value * 2);
+
+  assert.equal(await events.intercept("test/intercept", 1, async (value) => value), 7);
+});
+
+test("intercept rejects a second proceed call without rerunning downstream", async () => {
   const events = new Events();
   let downstreamCalls = 0;
-  events.on("test/value", async (value, next) => {
-    await next(value);
-    return next(value);
+  events.on("test/intercept", async (value, proceed) => {
+    await proceed(value);
+    return proceed(value);
   });
-  events.on("test/value", (value) => {
+  events.on("test/intercept", (value) => {
     downstreamCalls += 1;
     return value;
   });
 
-  await assert.rejects(events.transform("test/value", 1), /next.*once/i);
+  await assert.rejects(events.intercept("test/intercept", 1, async (value) => value), /proceed.*once/i);
   assert.equal(downstreamCalls, 1);
+});
+
+test("intercept propagates listener errors", async () => {
+  const events = new Events();
+  events.on("test/intercept", () => {
+    throw new Error("intercept failed");
+  });
+  await assert.rejects(
+    events.intercept("test/intercept", 1, async (value) => value),
+    /intercept failed/,
+  );
+});
+
+test("intercept checks an already-aborted signal before dispatch", async () => {
+  const events = new Events();
+  events.on("test/intercept", (value, proceed) => proceed(value + 1));
+
+  const aborted = AbortSignal.abort();
+  await assert.rejects(
+    events.intercept("test/intercept", 1, async (value) => value, aborted),
+    (error: unknown) => (error as Error).name === "AbortError",
+  );
+});
+
+test("intercept checks an aborted signal after an awaited listener", async () => {
+  const events = new Events();
+  let resolveListener: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => { resolveListener = resolve; });
+  events.on("test/intercept", async (value, proceed) => {
+    await gate;
+    return proceed(value + 1);
+  });
+  const controller = new AbortController();
+
+  const run = events.intercept("test/intercept", 1, async (value) => value, controller.signal);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  controller.abort();
+  resolveListener();
+
+  await assert.rejects(
+    run,
+    (error: unknown) => (error as Error).name === "AbortError",
+  );
 });

@@ -33,11 +33,10 @@ export type {
   CodingToolPresentation,
   ToolPresentationCall,
   ToolPresentationInput,
-  ToolPresentationRejected,
 } from "./ui/presentation.js";
 export type {
   CodingToolContext,
-  CodingToolDefinition,
+  ToolDefinition,
 } from "./tools/definition.js";
 export type {
   TodoItem,

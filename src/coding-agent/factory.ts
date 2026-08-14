@@ -22,7 +22,7 @@ import {
   openOrCreateProject,
   persistProject,
 } from "./project/storage.js";
-import type { CodingToolContext, CodingToolDefinition } from "./tools/definition.js";
+import type { CodingToolContext, ToolDefinition } from "./tools/definition.js";
 import type {
   CreateSessionOptions,
   OpenedProject,
@@ -72,7 +72,7 @@ function selectContainingDirectory(
 function createHarness(
   session: Session,
   config: CreateProjectConfig,
-  definitions: readonly CodingToolDefinition[],
+  definitions: readonly ToolDefinition[],
   systemPrompt: SystemPromptBuilder,
   titleGenerator: SessionTitleGenerator,
   directories: readonly string[],

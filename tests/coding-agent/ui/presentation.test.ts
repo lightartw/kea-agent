@@ -12,28 +12,21 @@ const bashCall: AgentToolCall = {
   type: "toolCall", id: "c2", name: "bash", arguments: {},
 };
 
-function todoEnd(result: { content: string; isError: boolean }): ToolPresentationInput {
-  return { type: "tool_end", call: todoCall, result };
+function todoResult(result: { content: string; isError: boolean }): ToolPresentationInput {
+  return { type: "result", call: todoCall, result };
 }
 
 test("registry matches by tool name and falls back for unknown tools", () => {
   const errors: string[] = [];
   const registry = new CodingToolPresentationRegistry((message) => errors.push(message));
   registry.register("todo_write", {
-    renderStart: () => "todo start",
-    renderEnd: () => "todo end",
-    renderRejected: () => "todo rejected",
+    renderCall: () => "todo call",
+    renderResult: () => "todo result",
   });
 
-  assert.equal(registry.render({ type: "tool_start", call: todoCall }), "todo start");
-  assert.equal(registry.render(todoEnd({ content: "ok", isError: false })), "todo end");
-  assert.equal(registry.render({
-    type: "tool_rejected",
-    call: todoCall,
-    result: { content: "no", isError: true },
-    reason: "blocked",
-  }), "todo rejected");
-  assert.equal(registry.render({ type: "tool_start", call: bashCall }), "[exec] bash: {}");
+  assert.equal(registry.render({ type: "call", call: todoCall }), "todo call");
+  assert.equal(registry.render(todoResult({ content: "ok", isError: false })), "todo result");
+  assert.equal(registry.render({ type: "call", call: bashCall }), "[exec] bash: {}");
   assert.deepEqual(errors, []);
 });
 
@@ -41,43 +34,38 @@ test("registry falls back when presentation returns undefined or throws", () => 
   const errors: string[] = [];
   const registry = new CodingToolPresentationRegistry((message) => errors.push(message));
   registry.register("todo_write", {
-    renderStart: () => undefined,
-    renderEnd: () => { throw new Error("boom"); },
+    renderCall: () => undefined,
+    renderResult: () => { throw new Error("boom"); },
   });
 
   assert.equal(
-    registry.render({ type: "tool_start", call: todoCall }),
+    registry.render({ type: "call", call: todoCall }),
     "[exec] todo_write: {}",
   );
   assert.equal(
-    registry.render(todoEnd({ content: "ok", isError: false })),
+    registry.render(todoResult({ content: "ok", isError: false })),
     "[done] todo_write: ok",
   );
   assert.deepEqual(errors, ["boom"]);
 });
 
-test("tool_end fallback reflects the error flag and rejected uses the reason", () => {
+test("result fallback reflects the error flag", () => {
   const registry = new CodingToolPresentationRegistry();
   assert.equal(
-    registry.render(todoEnd({ content: "failed", isError: true })),
+    registry.render(todoResult({ content: "failed", isError: true })),
     "[error] todo_write: failed",
   );
   assert.equal(
-    registry.render({
-      type: "tool_rejected",
-      call: todoCall,
-      result: { content: "denied", isError: true },
-      reason: "blocked",
-    }),
-    "[rejected:blocked] todo_write: denied",
+    registry.render(todoResult({ content: "ok", isError: false })),
+    "[done] todo_write: ok",
   );
 });
 
 test("duplicate registration throws", () => {
   const registry = new CodingToolPresentationRegistry();
-  registry.register("todo_write", { renderStart: () => "x", renderEnd: () => "y" });
+  registry.register("todo_write", { renderCall: () => "x", renderResult: () => "y" });
   assert.throws(
-    () => registry.register("todo_write", { renderStart: () => "z", renderEnd: () => "w" }),
+    () => registry.register("todo_write", { renderCall: () => "z", renderResult: () => "w" }),
     /already registered/,
   );
 });
@@ -88,11 +76,11 @@ test("fallback rendering never throws for non-JSON-safe arguments", () => {
   cyclic.self = cyclic;
 
   assert.doesNotThrow(() => registry.render({
-    type: "tool_start",
+    type: "call",
     call: { type: "toolCall", id: "c1", name: "unknown", arguments: cyclic },
   }));
   assert.match(registry.render({
-    type: "tool_start",
+    type: "call",
     call: { type: "toolCall", id: "c2", name: "unknown", arguments: { value: 1n } },
   }), /unknown/);
 });

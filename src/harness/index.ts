@@ -8,8 +8,6 @@ export { SessionError } from "./session/types.js";
 export { SessionRepository } from "./session/repository.js";
 export { MAIN_LANE } from "./events.js";
 
-export type { HarnessRunEndInput } from "./events.js";
-
 export type {
   HarnessConfig,
   SessionTitleGenerator,

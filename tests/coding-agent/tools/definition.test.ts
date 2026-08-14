@@ -4,13 +4,13 @@ import { Type, type Static } from "typebox";
 
 import {
   toAgentTool,
-  type CodingToolDefinition,
+  type ToolDefinition,
 } from "../../../src/coding-agent/tools/definition.js";
 
 const parameters = Type.Object({ value: Type.Number() });
 
 test("toAgentTool strips presentation and projects execution with context", async () => {
-  const definition: CodingToolDefinition<typeof parameters, { value: number }> = {
+  const definition: ToolDefinition<typeof parameters, { value: number }> = {
     name: "sample",
     description: "Sample tool",
     parameters,
@@ -22,8 +22,8 @@ test("toAgentTool strips presentation and projects execution with context", asyn
       };
     },
     presentation: {
-      renderStart: () => "start",
-      renderEnd: () => "end",
+      renderCall: () => "call",
+      renderResult: () => "result",
     },
   };
 
@@ -36,7 +36,7 @@ test("toAgentTool strips presentation and projects execution with context", asyn
 });
 
 test("toAgentTool exposes the tool metadata", () => {
-  const definition: CodingToolDefinition<typeof parameters> = {
+  const definition: ToolDefinition<typeof parameters> = {
     name: "sample",
     description: "Sample tool",
     parameters,

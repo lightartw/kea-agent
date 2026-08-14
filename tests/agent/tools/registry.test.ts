@@ -5,6 +5,7 @@ import { Type, type Static } from "typebox";
 
 import { AgentTool, type AgentToolResult } from "../../../src/agent/tools/types.js";
 import { AgentToolRegistry } from "../../../src/agent/tools/registry.js";
+import { Events } from "../../../src/events/events.js";
 
 const parameters = Type.Object({ value: Type.String() });
 
@@ -25,6 +26,16 @@ class EchoTool extends AgentTool<typeof parameters> {
   }
 }
 
+function echoCall(overrides: Partial<{ id: string; name: string; arguments: Record<string, unknown> }> = {}) {
+  return {
+    type: "toolCall" as const,
+    id: "1",
+    name: "echo",
+    arguments: { value: "ok" },
+    ...overrides,
+  };
+}
+
 test("Registry registers, unregisters, and exports schemas", () => {
   const registry = new AgentToolRegistry();
   registry.register(new EchoTool("first"));
@@ -33,45 +44,84 @@ test("Registry registers, unregisters, and exports schemas", () => {
   assert.deepEqual(registry.schemas().map((schema) => schema.name), ["second"]);
 });
 
-test("prepare returns ready for valid calls and execute does not revalidate", async () => {
+test("execute runs lookup, validation, and the tool body", async () => {
   const registry = new AgentToolRegistry();
   const tool = new EchoTool();
   registry.register(tool);
 
-  const ready = registry.prepare({
-    type: "toolCall", id: "1", name: "echo", arguments: { value: "ok" },
-  });
-  assert.equal(ready.kind, "ready");
-  if (ready.kind === "ready") {
-    assert.deepEqual(await registry.execute(ready.prepared), {
-      content: "ok",
-      isError: false,
-    });
-  }
+  const result = await registry.execute(echoCall(), new Events());
+
+  assert.deepEqual(result, { content: "ok", isError: false });
   assert.equal(tool.validations.length, 1);
 });
 
-test("prepare rejects unknown tools", () => {
+test("execute rejects unknown tools", async () => {
   const registry = new AgentToolRegistry();
-  assert.deepEqual(
-    registry.prepare({ type: "toolCall", id: "2", name: "missing", arguments: {} }),
-    {
-      kind: "rejected",
-      reason: "unknown",
-      result: { content: "Error: Unknown tool 'missing'", isError: true },
-    },
+  const result = await registry.execute(
+    echoCall({ name: "missing" }),
+    new Events(),
   );
+  assert.deepEqual(result, {
+    content: "Error: Unknown tool 'missing'",
+    isError: true,
+  });
 });
 
-test("prepare rejects invalid arguments", () => {
+test("execute rejects invalid arguments", async () => {
   const registry = new AgentToolRegistry();
   registry.register(new EchoTool());
 
-  const invalid = registry.prepare({
-    type: "toolCall", id: "3", name: "echo", arguments: {},
+  const result = await registry.execute(
+    echoCall({ arguments: {} }),
+    new Events(),
+  );
+  assert.equal(result.isError, true);
+  assert.match(result.content, /Invalid arguments for tool 'echo'/);
+});
+
+test("execute runs tools/pre-execute then lookup then execute", async () => {
+  const registry = new AgentToolRegistry();
+  const tool = new EchoTool();
+  registry.register(tool);
+  const events = new Events();
+  const stages: string[] = [];
+  events.on("tools/pre-execute", (call, proceed) => {
+    stages.push("pre-execute");
+    return proceed({ ...call, arguments: { value: "changed" } });
   });
-  assert.equal(invalid.kind, "rejected");
-  if (invalid.kind === "rejected") assert.equal(invalid.reason, "invalid");
+  events.on("tools/execute", (call, proceed) => {
+    stages.push(`execute:${(call.arguments as { value: string }).value}`);
+    return proceed(call);
+  });
+  events.on("tools/post-execute", (input, proceed) => {
+    stages.push("post-execute");
+    return proceed(input);
+  });
+
+  const result = await registry.execute(echoCall(), events);
+
+  assert.deepEqual(result, { content: "changed", isError: false });
+  assert.deepEqual(stages, [
+    "pre-execute",
+    "execute:changed",
+    "post-execute",
+  ]);
+});
+
+test("execute returns a pre-execute block result without running the tool", async () => {
+  const registry = new AgentToolRegistry();
+  const tool = new EchoTool();
+  registry.register(tool);
+  const events = new Events();
+  events.on("tools/pre-execute", () => ({
+    content: "Error: blocked",
+    isError: true,
+  }));
+
+  const result = await registry.execute(echoCall(), events);
+
+  assert.deepEqual(result, { content: "Error: blocked", isError: true });
+  assert.equal(tool.validations.length, 0);
 });
 
 test("execute applies its global timeout", async () => {
@@ -83,17 +133,13 @@ test("execute applies its global timeout", async () => {
   const registry = new AgentToolRegistry(0.001);
   registry.register(new HangingTool());
 
-  const ready = registry.prepare({
-    type: "toolCall", id: "1", name: "echo", arguments: { value: "x" },
-  });
-  assert.equal(ready.kind, "ready");
-  if (ready.kind === "ready") {
-    assert.equal((await registry.execute(ready.prepared)).isError, true);
-  }
+  assert.equal((await registry.execute(echoCall(), new Events())).isError, true);
 });
 
 test("execute forwards a caller abort into the running tool", async () => {
   let received: AbortSignal | undefined;
+  let started: () => void = () => undefined;
+  const startedPromise = new Promise<void>((resolve) => { started = resolve; });
   class SignalTool extends AgentTool<typeof parameters> {
     constructor() {
       super("echo", "Echo text.", parameters);
@@ -104,6 +150,7 @@ test("execute forwards a caller abort into the running tool", async () => {
       signal: AbortSignal,
     ): Promise<AgentToolResult> {
       received = signal;
+      started();
       return new Promise<never>((_resolve, reject) => {
         signal.addEventListener(
           "abort",
@@ -116,15 +163,24 @@ test("execute forwards a caller abort into the running tool", async () => {
   const registry = new AgentToolRegistry(120);
   registry.register(new SignalTool());
 
-  const ready = registry.prepare({
-    type: "toolCall", id: "1", name: "echo", arguments: { value: "x" },
+  const controller = new AbortController();
+  const execution = registry.execute(echoCall(), new Events(), controller.signal);
+  await startedPromise;
+  controller.abort();
+  assert.equal((await execution).isError, true);
+  assert.equal(received?.aborted, true);
+});
+
+test("a failing Tool interceptor becomes this call's error result", async () => {
+  const registry = new AgentToolRegistry();
+  registry.register(new EchoTool());
+  const events = new Events();
+  events.on("tools/execute", () => {
+    throw new Error("tool pipeline failed");
   });
-  assert.equal(ready.kind, "ready");
-  if (ready.kind === "ready") {
-    const controller = new AbortController();
-    const execution = registry.execute(ready.prepared, controller.signal);
-    controller.abort();
-    assert.equal((await execution).isError, true);
-    assert.equal(received?.aborted, true);
-  }
+
+  const result = await registry.execute(echoCall(), events);
+
+  assert.equal(result.isError, true);
+  assert.match(result.content, /tool pipeline failed/);
 });

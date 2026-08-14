@@ -137,18 +137,16 @@ Harness。`harness.sessionId` 标识 Harness 当前绑定的 Session，但不暴
 ## Events：共享的运行事实通道
 
 Harness 构造时接收 `events: Events`——它是 Project 拥有的唯一实例，一份 Project 的所有
-Session 共享。Harness 发布两个 Run 边界事件，Agent 层发布其余事实：
+Session 共享。Harness 发布两个 Run 边界事实，Agent 层发布其余事实：
 
 ```ts
 export const MAIN_LANE = "main";
 
-export type HarnessRunEndInput = AgentRunIdentity & (
-  | { reason: "completed" | "aborted" }
-  | { reason: "error"; errorMessage: string }
-);
-
-// "harness/run-start": EventContract<"emit", AgentRunIdentity>;
-// "harness/run-end":   EventContract<"emit", HarnessRunEndInput>;
+// "harness/run-start": (input: AgentRunIdentity) => void | Promise<void>;
+// "harness/run-end": (input: AgentRunIdentity & (
+//   | { reason: "completed" | "aborted" }
+//   | { reason: "error"; errorMessage: string }
+// )) => void | Promise<void>;
 ```
 
 每个事实事件都携带 `AgentRunIdentity`（`sessionId`、`runId`、`lane`），UI 用它过滤：
@@ -165,22 +163,21 @@ events.on("agent/turn-end", (input) => {
 - Run 边界：`harness/run-start`、`harness/run-end`；
 - Turn：`agent/turn-start`、`agent/turn-end`；
 - 流式内容：`agent/text-delta`、`agent/thinking-delta`；
-- Tool call 生成：`agent/toolcall-start`、`agent/toolcall-delta`、`agent/toolcall-end`；
-- Tool 执行：`agent/tool-start`、`agent/tool-end`、`agent/tool-rejected`。
+- Tool call 生成：`agent/tool-call-start`、`agent/tool-call-delta`；
+- Tool 完成：`agent/tool-call`、`agent/tool-result`。
 
 ### `EventMap` 与 `Events`
 
-`EventMap` 是编译期契约：各包通过模块扩充把 `EventContract` 加入 `EventMap`，`Events.on()`
-从选定事件自动推导 listener 签名。运行时 `Events` 提供四种方法：
+`EventMap` 是编译期契约：各包通过模块扩充把事件名和 listener 签名加入 `EventMap`，`Events.on()`
+从选定事件自动推导 listener 类型。运行时 `Events` 提供三个方法：
 
-- `on(name, listener)`：注册 listener，返回幂等的 `Unregister`；
-- `emit(name, input)`：按顺序调用全部 listener，逐个隔离异常并交给 `onListenerError`；
-- `ask(name, input, signal?)`：返回第一个非 `undefined` 答案，不调用后续 listener；
-- `transform(name, input, signal?)`：把每个返回值传给下一个 listener；listener 不调用
-  `next()` 时终止链。
+- `on(name, listener)`：注册 listener，返回一个移除函数；
+- `emit(name, input)`：按顺序调用全部 listener，逐个隔离异常并交给错误处理器；
+- `intercept(name, input, handler, signal?)`：让 listener 包裹一个待执行行为，`handler` 是
+  最终执行者。
 
-`emit` 的 listener 错误被隔离，不会中断 Run；`ask`/`transform` 的 listener 错误原样穿透。
-控制（`ask`/`transform`）在状态提交前执行，事实（`emit`）报告已经发生的事实——两者是不同通道。
+`emit` 的 listener 错误被隔离，不会中断 Run；`intercept` 的 listener 错误原样穿透给行为拥有者。
+注册顺序、错误和取消的通用规则见 [Events README](../events/README.md)。
 
 ## 配置 `AgentHarness`
 
@@ -250,7 +247,7 @@ Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 
 - `agent-harness.ts`：Session 的运行与控制；
 - `types.ts`：`HarnessConfig` 与 system prompt 类型；
 - `system-prompt.ts`：默认 builder 与模板格式化；
-- `events.ts`：Run 边界事件契约（`MAIN_LANE`、`HarnessRunEndInput`）；
+- `events.ts`：Run 边界事件契约（`MAIN_LANE`）；
 - `session/session.ts`：单份 Session 的数据和持久化；
 - `session/repository.ts`：多份 Session 的 `create/open/list`；
 - `session/types.ts`：`SessionContext`、错误和存储记录类型。
@@ -275,5 +272,4 @@ Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 
   `SystemPromptBuilder`、`SystemPromptContext`；
 - Session：`CreateSessionInput`、`SessionHeader`、`SessionInfo`、`SessionContext`、
   `SessionErrorCode`；
-- 事件：`HarnessRunEndInput`；
 - `AgentRunIdentity` 来自 `agent` 包，是所有事件共用的身份类型。

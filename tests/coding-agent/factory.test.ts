@@ -476,14 +476,14 @@ test("createProject returns distinct Projects and tool render functions per call
   }
 });
 
-test("project presentations render todo details from the Coding Tool definition", async () => {
+test("project presentations render todo details from the Tool definition", async () => {
   const keaHome = await tempDir();
   const dir = await tempDir();
   try {
     const project = await createProjectAt(keaHome, dir);
 
-    const todoEndEvent: ToolPresentationInput = {
-      type: "tool_end",
+    const todoResultEvent: ToolPresentationInput = {
+      type: "result",
       call: {
         type: "toolCall",
         id: "c1",
@@ -497,7 +497,7 @@ test("project presentations render todo details from the Coding Tool definition"
       },
     };
     assert.equal(
-      project.renderTool(todoEndEvent),
+      project.renderTool(todoResultEvent),
       "1. [in_progress] Design UI",
     );
   } finally {
