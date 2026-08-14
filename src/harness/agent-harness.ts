@@ -24,6 +24,13 @@ function errorMessage(failure: unknown): string {
   return failure instanceof Error ? failure.message : String(failure);
 }
 
+/** True only for genuine cancellation: the signal is aborted and the failure is its reason or an AbortError. */
+function isAbortFailure(error: unknown, signal: AbortSignal): boolean {
+  if (!signal.aborted) return false;
+  if (error === signal.reason) return true;
+  return error instanceof Error && error.name === "AbortError";
+}
+
 export class AgentHarness {
   private readonly session: Session;
   private readonly toolRegistry: AgentToolRegistry;
@@ -162,7 +169,7 @@ export class AgentHarness {
         );
       }
     } catch (error) {
-      if (!this.abortRequested) {
+      if (!isAbortFailure(error, abortController.signal)) {
         failure = error;
       }
     } finally {

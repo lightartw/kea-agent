@@ -215,6 +215,37 @@ test("persistence failure still publishes one run_end error", async () => {
   assert.equal(harness.isRunning, false);
 });
 
+test("abort concurrent with storage failure still rejects the Run", async () => {
+  const session = memorySession();
+  let aborted = false;
+  session.appendMessage = async () => {
+    if (!aborted) {
+      aborted = true;
+      harness.abort();
+    }
+    throw new Error("storage failed");
+  };
+  const { harness, events } = makeHarness({ session });
+  const facts: Array<{ type: string; reason?: string; errorMessage?: string }> = [];
+  events.on("harness/run-start", (input) => {
+    if (input.sessionId === harness.sessionId) facts.push({ type: "run_start" });
+  });
+  events.on("harness/run-end", (input) => {
+    if (input.sessionId !== harness.sessionId) return;
+    facts.push(input.reason === "error"
+      ? { type: "run_end", reason: input.reason, errorMessage: input.errorMessage }
+      : { type: "run_end", reason: input.reason });
+  });
+
+  await assert.rejects(harness.prompt("hello"), /storage failed/);
+
+  assert.equal(harness.isRunning, false);
+  assert.deepEqual(facts, [
+    { type: "run_start" },
+    { type: "run_end", reason: "error", errorMessage: "storage failed" },
+  ]);
+});
+
 test("run identity is stable within a run and differs across runs", async () => {
   const session = memorySession();
   const { harness, events } = makeHarness({ session });
