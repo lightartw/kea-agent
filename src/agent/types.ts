@@ -30,7 +30,9 @@ export interface AgentContext {
 export interface AgentLoopConfig {
   readonly model: ModelConfig;
   /** Convert agent messages to LLM-compatible messages before each stream call. */
-  readonly convertToLlm: (messages: AgentMessage[]) => Message[];
+  readonly convertToLlm: (
+    messages: readonly AgentMessage[],
+  ) => readonly Message[];
   /** Shared event dispatcher; control listeners answer via ask()/transform(). */
   readonly events: Events;
   /** Identity of the current run, attached to every event. */

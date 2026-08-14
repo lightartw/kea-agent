@@ -6,7 +6,7 @@ import type { AgentRunIdentity } from "../agent/events.js";
 import type { AgentTool } from "../agent/tools/types.js";
 import type { AgentToolRegistry } from "../agent/tools/registry.js";
 import type { Events } from "../events/events.js";
-import type { Message, ModelConfig, StreamFn } from "../ai/types.js";
+import type { ModelConfig, StreamFn } from "../ai/types.js";
 import { Session } from "./session/session.js";
 import { MAIN_LANE, type HarnessRunEndInput } from "./events.js";
 import type {
@@ -83,7 +83,7 @@ export class AgentHarness {
   private createLoopConfig(run: AgentRunIdentity): AgentLoopConfig {
     return {
       model: this.currentModel,
-      convertToLlm: (msgs) => msgs as Message[],
+      convertToLlm: (messages) => messages,
       events: this.events,
       run,
     };

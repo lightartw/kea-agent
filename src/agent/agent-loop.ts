@@ -54,7 +54,7 @@ export async function runAgentLoop(
   );
   if (userPromptResult?.block === true) return;
 
-  await context.appendMessage({ role: "user", content: input } as AgentMessage);
+  await context.appendMessage({ role: "user", content: input });
 
   // ── Main loop ──
   while (true) {
@@ -69,8 +69,8 @@ export async function runAgentLoop(
       { ...config.run, messages: requestMessages },
       signal,
     );
-    const llmMessages: Message[] = config.convertToLlm(
-      contextResult.messages as AgentMessage[],
+    const llmMessages: readonly Message[] = config.convertToLlm(
+      contextResult.messages,
     );
     const llmContext: Context = {
       ...(context.systemPrompt ? { systemPrompt: context.systemPrompt } : {}),
@@ -109,17 +109,20 @@ export async function runAgentLoop(
           });
           break;
         case "done":
-          await context.appendMessage(event.message as AgentMessage);
-          turnMessage = event.message as AgentMessage;
+          await context.appendMessage(event.message);
+          turnMessage = event.message;
           break;
         case "error":
-          await context.appendMessage(event.message as AgentMessage);
-          await config.events.emit("agent/turn-end", { ...config.run, message: event.message as AgentMessage });
+          await context.appendMessage(event.message);
+          await config.events.emit("agent/turn-end", { ...config.run, message: event.message });
           return;
       }
     }
 
-    await config.events.emit("agent/turn-end", { ...config.run, message: turnMessage! });
+    if (turnMessage === undefined) {
+      throw new Error("Model stream ended without a done or error terminal chunk");
+    }
+    await config.events.emit("agent/turn-end", { ...config.run, message: turnMessage });
 
     // ── No tool calls → stop check and maybe done ──
     if (toolCalls.length === 0) {

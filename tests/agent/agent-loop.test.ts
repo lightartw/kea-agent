@@ -483,6 +483,31 @@ test("pre-aborted run rejects with AbortError without triggering stop", async ()
   assert.equal(stops, 0);
 });
 
+test("stream ending without a terminal chunk rejects and emits no turn-end", async () => {
+  const events = new Events();
+  const history: AgentMessage[] = [];
+  const context: AgentContext = {
+    systemPrompt: "",
+    messages: history,
+    tools: new AgentToolRegistry(),
+    appendMessage: async (message) => { history.push(message); },
+  };
+  let turnEnds = 0;
+  events.on("agent/turn-end", (input) => {
+    if (input.sessionId === "session-1") turnEnds++;
+  });
+
+  await assert.rejects(
+    runAgentLoop("hello", context, makeConfig({ events }), async function* () {}),
+    /stream.*terminal|done.*error/i,
+  );
+  assert.equal(turnEnds, 0);
+  assert.deepEqual(
+    history.map((message) => message.role),
+    ["user"],
+  );
+});
+
 // ── Tool control tests ──
 
 const typedParameters = Type.Object(

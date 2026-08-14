@@ -95,7 +95,9 @@ interface AgentContext {
 
 interface AgentLoopConfig {
   readonly model: ModelConfig;
-  readonly convertToLlm: (messages: AgentMessage[]) => Message[];
+  readonly convertToLlm: (
+    messages: readonly AgentMessage[],
+  ) => readonly Message[];
   readonly events: Events;
   readonly run: AgentRunIdentity;
 }
