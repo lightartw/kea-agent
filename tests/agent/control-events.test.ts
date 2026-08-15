@@ -3,16 +3,16 @@ import test from "node:test";
 
 import { Type, type Static } from "typebox";
 
-import { runAgentLoop } from "../../src/agent/agent-loop.js";
+import { runAgentLoop } from "../../src/core/agent/agent-loop.js";
 import type {
   AgentContext,
   AgentLoopConfig,
   AgentMessage,
-} from "../../src/agent/types.js";
-import { Events } from "../../src/events/events.js";
-import { AgentTool, type AgentToolResult } from "../../src/agent/tools/types.js";
-import type { AgentToolCall } from "../../src/agent/tools/types.js";
-import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
+} from "../../src/core/agent/types.js";
+import { Events } from "../../src/core/events/events.js";
+import { AgentTool, type AgentToolResult } from "../../src/core/agent/tools/types.js";
+import type { AgentToolCall } from "../../src/core/agent/tools/types.js";
+import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
 import type {
   AssistantMessage,
   ContentBlock,
@@ -21,9 +21,9 @@ import type {
   ModelConfig,
   StreamChunk,
   StreamFn,
-} from "../../src/ai/types.js";
+} from "../../src/core/ai/types.js";
 
-const run = { sessionId: "session-1", runId: "run-1", lane: "main" } as const;
+const run = { sessionId: "session-1", runId: "run-1" } as const;
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 const typedParameters = Type.Object(
@@ -169,6 +169,33 @@ test("agent/user-prompt a returned prompt runs the Run", async () => {
   assert.deepEqual(history.map((message) => message.role), ["user", "assistant"]);
 });
 
+test("agent/user-prompt transformation reaches persisted history and the model request", async () => {
+  const events = new Events();
+  events.on("agent/user-prompt", (input, proceed) => proceed({
+    ...input,
+    prompt: input.prompt.toUpperCase(),
+  }));
+  const history: AgentMessage[] = [];
+  const context = memoryContext(undefined, history);
+  let requestMessages: readonly Message[] = [];
+
+  await runAgentLoop(
+    "hello",
+    context,
+    makeConfig(events),
+    async function* (_model, context) {
+      requestMessages = [...context.messages];
+      yield { type: "done", message: assistantMsg("done") };
+    },
+  );
+
+  const userContent = (message: Message): string | null =>
+    message.role === "user" ? String(message.content) : null;
+  assert.equal(userContent(history[0]!), "HELLO");
+  assert.equal(userContent(requestMessages[0]!), "HELLO");
+  assert.deepEqual(history.map((message) => message.role), ["user", "assistant"]);
+});
+
 // ── agent/context ──
 
 test("agent/context intercept reaches the model without replacing history", async () => {
@@ -242,8 +269,8 @@ test("tools/pre-execute can block execution", async () => {
   };
   const events = new Events();
   events.on("tools/pre-execute", () => ({
-    content: "Error: denied by policy",
-    isError: true,
+    kind: "deny",
+    reason: "denied by policy",
   }));
   const results: AgentToolResult[] = [];
   events.on("agent/tool-result", (input) => {

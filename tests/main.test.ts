@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CliHarnessRenderer } from "../src/ui/cli-harness-renderer.js";
-import { AgentHarness } from "../src/harness/agent-harness.js";
-import { Session } from "../src/harness/session/session.js";
-import { AgentToolRegistry } from "../src/agent/tools/registry.js";
-import { Events } from "../src/events/events.js";
-import type { AssistantMessage, StreamFn } from "../src/ai/types.js";
+import { AgentHarness } from "../src/core/harness/agent-harness.js";
+import { Session } from "../src/core/harness/session/session.js";
+import { AgentToolRegistry } from "../src/core/agent/tools/registry.js";
+import { Events } from "../src/core/events/events.js";
+import type { AssistantMessage, StreamFn } from "../src/core/ai/types.js";
 
 const message: AssistantMessage = {
   role: "assistant",

@@ -94,15 +94,19 @@ await cli.run(project, harness);
 
 ## 包结构
 
+Harness 核心代码统一位于 `src/core/`；产品适配与界面代码位于核心层之外。
+
 | 包 | README | 职责 |
 |----|--------|------|
-| `ai` | [ai/README.md](src/ai/README.md) | LLM 客户端抽象、StreamFn、消息类型 |
-| `agent` | [agent/README.md](src/agent/README.md) | Agent loop、Hook Call、工具注册、AgentEvent |
-| `harness` | [harness/README.md](src/harness/README.md) | 运行时、版本化 Session、平坦 HarnessEvent、Hook 透传 |
+| `ai` | [ai/README.md](src/core/ai/README.md) | LLM 客户端抽象、StreamFn、消息类型 |
+| `agent` | [agent/README.md](src/core/agent/README.md) | Agent loop、Hook Call、工具注册、AgentEvent |
+| `events` | [events/README.md](src/core/events/README.md) | 核心事件契约与统一分发器 |
+| `harness` | [harness/README.md](src/core/harness/README.md) | 运行时、版本化 Session、平坦 HarnessEvent、Hook 透传 |
 | `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | 持久化 Project、默认工具定义、Bash 策略、permission Hook、交互 port |
 | `ui` | — | 具体 CLI UI：交互适配、Harness event 渲染、Coding Tool presentation 消费 |
 
-源码依赖方向始终向下：`ui -> coding-agent -> harness -> agent -> ai`。
+源码依赖方向始终向下：`ui -> coding-agent -> core/harness -> core/agent -> core/ai`；
+`core/events` 是 Agent 与 Harness 共享的核心运行时。
 
 ## 工具系统
 
@@ -148,13 +152,13 @@ Bash 安全策略分为三层：
 - **Tool UI（presentation）**：Harness UI 内部针对工具事件按工具名分派的专用 presentation（如 `todo_write`），不是第四套运行机制。
 
 具体实现集中在 `src/ui`（`cli-frontend.ts`、`cli-harness-renderer.ts`、`cli-interactions.ts`），
-`agent`、`harness` 与 `coding-agent` 不 import `src/ui`；`src/ui` 也不 import `src/agent`。
+`agent`、`harness` 与 `coding-agent` 不 import `src/ui`；`src/ui` 也不 import `src/core/agent`。
 
 ## AI 层
 
 `createStreamFn()` 默认根据唯一存在的 API key 环境变量选择 provider，也支持显式配置。该工厂函数返回 `{ stream, defaultModel }`，其中 `stream` 是 Agent 层注入的 `StreamFn`。
 
-详见 AI 层源码（`src/ai/`）。
+详见 AI 层源码（`src/core/ai/`）。
 
 ## 开发与验证
 

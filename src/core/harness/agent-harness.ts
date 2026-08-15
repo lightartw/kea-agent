@@ -1,14 +1,13 @@
 import { randomUUID } from "node:crypto";
 
 import { runAgentLoop } from "../agent/agent-loop.js";
-import type { AgentLoopConfig, AgentMessage } from "../agent/types.js";
-import type { AgentRunIdentity } from "../agent/events.js";
+import type { AgentLoopConfig, AgentMessage, AgentRunIdentity } from "../agent/types.js";
 import type { AgentTool } from "../agent/tools/types.js";
 import type { AgentToolRegistry } from "../agent/tools/registry.js";
 import type { Events } from "../events/events.js";
 import type { ModelConfig, StreamFn } from "../ai/types.js";
+import { errorMessage } from "../util/index.js";
 import { Session } from "./session/session.js";
-import { MAIN_LANE } from "./events.js";
 import type {
   HarnessConfig,
   SessionTitleGenerator,
@@ -18,10 +17,6 @@ import type {
 /** Tracks an in-flight prompt so abort() can cancel it. */
 interface ActiveRun {
   readonly abortController: AbortController;
-}
-
-function errorMessage(failure: unknown): string {
-  return failure instanceof Error ? failure.message : String(failure);
 }
 
 /** True only for genuine cancellation: the signal is aborted and the failure is its reason or an AbortError. */
@@ -136,7 +131,6 @@ export class AgentHarness {
     const run: AgentRunIdentity = {
       sessionId: this.session.id,
       runId: randomUUID(),
-      lane: MAIN_LANE,
     };
     let started = false;
     let sawAborted = false;

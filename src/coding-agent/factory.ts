@@ -1,13 +1,13 @@
 import { relative, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 
-import { AgentHarness } from "../harness/agent-harness.js";
-import { SessionRepository } from "../harness/session/repository.js";
-import type { Session } from "../harness/session/session.js";
-import type { SessionInfo } from "../harness/session/types.js";
-import { Events } from "../events/events.js";
+import { AgentHarness } from "../core/harness/agent-harness.js";
+import { SessionRepository } from "../core/harness/session/repository.js";
+import type { Session } from "../core/harness/session/session.js";
+import type { SessionInfo } from "../core/harness/session/types.js";
+import { Events } from "../core/events/events.js";
 import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
-import { defaultSystemPrompt } from "../harness/system-prompt.js";
+import { defaultSystemPrompt } from "../core/harness/system-prompt.js";
 import { createSessionTitleGenerator } from "./title-generator.js";
 import {
   createAgentToolRegistry,
@@ -30,7 +30,7 @@ import type {
   ProjectInfo,
   UpdateProjectInput,
 } from "./project/types.js";
-import type { SystemPromptBuilder, SessionTitleGenerator } from "../harness/types.js";
+import type { SystemPromptBuilder, SessionTitleGenerator } from "../core/harness/types.js";
 import type { CreateProjectConfig } from "./types.js";
 import type { CodingAgentInteractions } from "./ui/interactions.js";
 

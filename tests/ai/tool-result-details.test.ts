@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AnthropicAdapter } from "../../src/ai/adapters/anthropic.js";
-import { OpenAIAdapter } from "../../src/ai/adapters/openai.js";
-import { GeminiAdapter } from "../../src/ai/adapters/gemini.js";
-import type { ResolvedOptions } from "../../src/ai/factory.js";
-import type { Context } from "../../src/ai/types.js";
+import { AnthropicAdapter } from "../../src/core/ai/adapters/anthropic.js";
+import { OpenAIAdapter } from "../../src/core/ai/adapters/openai.js";
+import { GeminiAdapter } from "../../src/core/ai/adapters/gemini.js";
+import type { ResolvedOptions } from "../../src/core/ai/factory.js";
+import type { Context } from "../../src/core/ai/types.js";
 import { detailedToolResult } from "./fixtures.js";
 
 const options: ResolvedOptions = { timeout: 120, maxTokens: 8000 };

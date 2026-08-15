@@ -43,7 +43,7 @@ Project 注册会报错。
 ## 2. 创建并继续最近的 Session
 
 ```ts
-import { createStreamFn } from "../ai/index.js";
+import { createStreamFn } from "../core/ai/index.js";
 import { createProject } from "./index.js";
 
 const { stream, defaultModel } = createStreamFn();

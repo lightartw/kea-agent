@@ -1,4 +1,4 @@
-import type { AgentToolCall, AgentToolResult } from "../../agent/tools/types.js";
+import type { AgentToolCall, AgentToolResult } from "../../core/agent/tools/types.js";
 
 export type ToolPresentationCall<TArguments> =
   Omit<AgentToolCall, "arguments"> & { readonly arguments: TArguments };

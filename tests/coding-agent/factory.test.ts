@@ -6,12 +6,12 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { createProject } from "../../src/coding-agent/factory.js";
-import type { SessionInfo } from "../../src/harness/session/types.js";
+import type { SessionInfo } from "../../src/core/harness/session/types.js";
 import type {
   AssistantMessage,
   ModelConfig,
   StreamFn,
-} from "../../src/ai/types.js";
+} from "../../src/core/ai/types.js";
 import type { CodingAgentInteractions } from "../../src/coding-agent/index.js";
 import type { ToolPresentationInput } from "../../src/coding-agent/ui/presentation.js";
 import type { TodoItem } from "../../src/coding-agent/tools/builtin/todo.js";

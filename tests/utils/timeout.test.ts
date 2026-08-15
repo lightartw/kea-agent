@@ -5,7 +5,7 @@ import {
   TimeoutError,
   runWithTimeout,
   timeoutMilliseconds,
-} from "../../src/utils/timeout.js";
+} from "../../src/core/util/timeout.js";
 
 test("timeoutMilliseconds rounds up fractional milliseconds", () => {
   assert.equal(timeoutMilliseconds(1.2345), 1_235);

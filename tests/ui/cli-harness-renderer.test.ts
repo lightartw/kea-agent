@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CliHarnessRenderer } from "../../src/ui/cli-harness-renderer.js";
-import type { AgentToolCall } from "../../src/agent/tools/types.js";
+import type { AgentToolCall } from "../../src/core/agent/tools/types.js";
 import type { ToolPresentationInput } from "../../src/coding-agent/ui/presentation.js";
-import { Events } from "../../src/events/events.js";
+import { Events } from "../../src/core/events/events.js";
 
-const run = { sessionId: "session-1", runId: "run-1", lane: "main" } as const;
+const run = { sessionId: "session-1", runId: "run-1" } as const;
 
 function rendererWith(
   renderToolEvent: (event: ToolPresentationInput) => string = (event) =>

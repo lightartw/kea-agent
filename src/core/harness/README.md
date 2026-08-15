@@ -7,13 +7,13 @@
 - AgentHarness 运行这个 Session；
 - SessionRepository 创建、打开和列举多个 Session。
 
-Harness 没有 `subscribe()`，也没有私有的 EventBus。运行事实通过 **Project 提供的共享
-`Events`** 实例发布；Session 和 Run 的身份（`sessionId`、`runId`、`lane`）让 UI 可以从多个
-并发 Session 中选择自己要渲染的那一个。
+Harness 没有 `subscribe()`，也没有私有的 EventBus。调用方在构造 Harness 时提供 `Events`
+实例；同一个实例可以交给多份 Harness 共享。Session 和 Run 的身份（`sessionId`、`runId`）
+让 listener 可以区分多个并发 Session。调用方也可以让多份 Session 复用一个 `Events`。
 
 ## 最小用法
 
-下面的 Session 只存在于内存中。UI 订阅 `events` 后，`prompt()` 启动一次完整的 Run：
+下面的 Session 只存在于内存中。调用方订阅 `events` 后，`prompt()` 启动一次完整的 Run：
 
 ```ts
 import { createStreamFn } from "../ai/index.js";
@@ -58,17 +58,17 @@ unsubscribe();
 
 运行时，Harness 依次完成这些工作：
 
-1. 创建 Run 的 `AbortController` 和身份 `run = { sessionId, runId, lane }`；
+1. 创建 Run 的 `AbortController` 和身份 `run = { sessionId, runId }`；
 2. 根据当前模型、工具、工作目录和日期生成 system prompt；
 3. 通过 `events.emit("harness/run-start", run)` 发布 run 开始；
 4. 调用一次 `runAgentLoop()`，把 `_messages` 本身作为只读视图交给 Agent，并实现
    `appendMessage`（先 `session.appendMessage` 落盘，再更新内存视图）；
-5. 在 `finally` 中清理 `activeRun` 并发布恰好一个 `harness/run-end`，其 `reason` 为
-   `completed`、`aborted` 或 `error`。
+5. 在 `finally` 中清理 `activeRun` 和 busy 状态；如果已经发布 `run-start`，清理完成后再发布
+   恰好一个 `harness/run-end`，其 `reason` 为 `completed`、`aborted` 或 `error`。
 
 Agent 每次 `appendMessage` 都同步写入 Session；只有完整消息持久化成功后，Agent 才发布对应
-的事实事件。如果 system prompt 尚未生成就失败，Run 还没有开始，因此不会发布 `run_start`
-或 `run_end`。
+的事实事件。如果 system prompt 生成失败，或者在生成期间收到 `abort()`，Run 还没有开始，
+因此不会发布 `run-start` 或 `run-end`。
 
 同一个 Harness 同时只运行一个 `prompt()`。忙碌时调用 `prompt()`、`switchModel()`、
 `registerTool()` 或 `unregisterTool()` 会抛出 `AgentHarness is busy`；`abort()` 可以请求中止当前
@@ -111,8 +111,8 @@ const persistent = await Session.create(".kea", {
 - `info` 返回不可变的 `SessionInfo`（含 `title`、`createdAt`、`updatedAt`）；
 - `buildContext()` 返回 `SessionContext`。
 
-持久化 Session 的文件位于 `<storageDir>/sessions/<sessionId>.jsonl`。`updatedAt` 等于最后成功
-追加记录的 `createdAt`。`SessionError.code` 说明失败类别：`not_found`、
+持久化 Session 的文件位于 `<storageDir>/sessions/<sessionId>.jsonl`。`updatedAt` 是 header 和
+全部记录中最大的 `createdAt`。`SessionError.code` 说明失败类别：`not_found`、
 `invalid_session`、`invalid_entry` 或 `storage`。
 
 ## SessionRepository：管理多份 Session
@@ -129,19 +129,18 @@ const recent = sessions[0] === undefined
 
 `create(input)` 和 `open(id)` 返回 Session；`list()` 通过 `Session.open()` 读取每个候选文件，
 按存储的 `updatedAt` 从新到旧排列并返回 `SessionInfo[]`（相同时间按 ID 降序）。空目录返回空
-数组；损坏的 JSONL 会让 `list()` 以 `invalid_session` 拒绝，而不会静默忽略。
+数组；损坏或包含无效记录的 JSONL 会让 `list()` 传播对应的 `SessionError`，而不会静默忽略。
 
 `AgentHarness` 不持有 Repository。应用先用 Repository 取得 Session，再把该 Session 交给新的
 Harness。`harness.sessionId` 标识 Harness 当前绑定的 Session，但不暴露可写的 Session 对象。
 
 ## Events：共享的运行事实通道
 
-Harness 构造时接收 `events: Events`——它是 Project 拥有的唯一实例，一份 Project 的所有
-Session 共享。Harness 发布两个 Run 边界事实，Agent 层发布其余事实：
+Harness 构造时接收调用方提供的 `events: Events`。Harness 发布两个 Run 边界事实，Agent 层
+通过同一实例发布其余事实；如果调用方让多份 Harness 共享该实例，listener 需要按
+`sessionId` 过滤：
 
 ```ts
-export const MAIN_LANE = "main";
-
 // "harness/run-start": (input: AgentRunIdentity) => void | Promise<void>;
 // "harness/run-end": (input: AgentRunIdentity & (
 //   | { reason: "completed" | "aborted" }
@@ -149,16 +148,16 @@ export const MAIN_LANE = "main";
 // )) => void | Promise<void>;
 ```
 
-每个事实事件都携带 `AgentRunIdentity`（`sessionId`、`runId`、`lane`），UI 用它过滤：
+每个事实事件都携带 `AgentRunIdentity`（`sessionId`、`runId`），共享实例上的 listener 用它过滤：
 
 ```ts
 events.on("agent/turn-end", (input) => {
   if (input.sessionId !== selectedSessionId) return;
-  render(input.message);
+  consume(input.message);
 });
 ```
 
-常见事实事件（均由 `src/agent/events.ts` 声明）：
+常见事实事件（均由 `src/core/agent/events.ts` 声明）：
 
 - Run 边界：`harness/run-start`、`harness/run-end`；
 - Turn：`agent/turn-start`、`agent/turn-end`；
@@ -168,7 +167,7 @@ events.on("agent/turn-end", (input) => {
 
 ### `EventMap` 与 `Events`
 
-`EventMap` 是编译期契约：各包通过模块扩充把事件名和 listener 签名加入 `EventMap`，`Events.on()`
+`EventMap` 是编译期契约：各包通过模块扩充把 event 名、输入和结果加入 `EventMap`，`Events.on()`
 从选定事件自动推导 listener 类型。运行时 `Events` 提供三个方法：
 
 - `on(name, listener)`：注册 listener，返回一个移除函数；
@@ -235,26 +234,27 @@ class AgentHarness {
 
 `messages` 是当前上下文的只读视图，`model` 是当前模型，`isRunning` 表示一个 Run 是否正在
 执行。`switchModel()` 会把选择持久化到 Session；工具注册变更从下一次 Run 的 system prompt
-和模型上下文开始生效。
+和模型上下文开始生效。`setTitle()` 直接把标题追加到 Session，不受 Harness busy 状态限制。
 
 ## 包边界和源码位置
 
 Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 提供
 `runAgentLoop()`、消息、`AgentRunIdentity` 和 Tool Registry；`events` 提供共享 dispatcher。
-具体 coding tools、交互 UI 和项目级组装属于 Harness 上层。
+具体 Tool 和项目级组装属于 Harness 上层。Harness 还通过仅供 core 内部使用的 `core/util`
+复用通用错误处理。
 
 - `index.ts`：包入口；
 - `agent-harness.ts`：Session 的运行与控制；
 - `types.ts`：`HarnessConfig` 与 system prompt 类型；
 - `system-prompt.ts`：默认 builder 与模板格式化；
-- `events.ts`：Run 边界事件契约（`MAIN_LANE`）；
+- `events.ts`：Run 边界事件契约；
 - `session/session.ts`：单份 Session 的数据和持久化；
 - `session/repository.ts`：多份 Session 的 `create/open/list`；
 - `session/types.ts`：`SessionContext`、错误和存储记录类型。
 
 ## 完整公开导出
 
-以下清单与 `src/harness/index.ts` 一致。
+以下清单与 `src/core/harness/index.ts` 一致。
 
 ### 值
 
@@ -263,13 +263,14 @@ Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 
 - `SessionRepository`：在一个存储目录中创建、打开和列举 Session；
 - `SessionError`：带有 `SessionErrorCode` 的会话错误；
 - `defaultSystemPrompt`：把模板包装为 `SystemPromptBuilder`；
-- `formatSystemPrompt`：替换模板的 `{{cwd}}` 和 `{{date}}`；
-- `MAIN_LANE`：当前 lane 值 `main`。
+- `formatSystemPrompt`：替换模板的 `{{cwd}}` 和 `{{date}}`。
 
 ### 类型
 
 - 配置与 system prompt：`HarnessConfig`、`SessionTitleGenerator`、
   `SystemPromptBuilder`、`SystemPromptContext`；
 - Session：`CreateSessionInput`、`SessionHeader`、`SessionInfo`、`SessionContext`、
-  `SessionErrorCode`；
-- `AgentRunIdentity` 来自 `agent` 包，是所有事件共用的身份类型。
+  `SessionErrorCode`。
+
+Harness 事件载荷使用 agent 包定义的 `AgentRunIdentity`，但 harness 入口不重新导出这个类型；
+需要显式使用时从 `core/agent` 入口导入。

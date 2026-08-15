@@ -43,7 +43,7 @@ function shouldContinue(
 
 /**
  * Run one Agent Run from a user input. Complete messages are committed
- * through `context.appendMessage()` before their facts are emitted.
+ * through `context.appendMessage()` before their events are emitted.
  */
 export async function runAgentLoop(
   input: string,
@@ -61,7 +61,7 @@ export async function runAgentLoop(
   );
   if (prompt === undefined) return;
 
-  await context.appendMessage({ role: "user", content: input });
+  await context.appendMessage({ role: "user", content: prompt });
 
   // ── Main loop ──
   while (true) {

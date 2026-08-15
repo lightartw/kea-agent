@@ -1,13 +1,15 @@
 # Kea Agent 架构
 
-**更新：** 2026-08-14
+**更新：** 2026-08-15
 
-本文描述当前代码的所有权与边界。依赖方向是 `ui -> coding-agent -> harness -> agent -> ai`；
+本文描述当前代码的所有权与边界。`ai`、`agent`、`events`、`harness` 共同组成
+`src/core/` 下的 Harness 核心。依赖方向是
+`ui -> coding-agent -> core/harness -> core/agent -> core/ai`；`core/events` 由核心运行时共享，
 `main.ts` 是连接具体 UI、Coding Agent 和 AI provider 的组合根。
 
 ## 1. AI：LLM 流式协议
 
-`src/ai/` 统一 Anthropic、OpenAI 和 Gemini 的流式协议，不保存会话，也不执行工具。
+`src/core/ai/` 统一 Anthropic、OpenAI 和 Gemini 的流式协议，不保存会话，也不执行工具。
 
 ```ts
 type StreamFn = (
@@ -32,8 +34,8 @@ interface ModelConfig {
 
 ## 2. Events：统一分发器
 
-`src/events/` 提供一次 `runAgentLoop()` 或 `prompt()` 期间唯一的运行时事件通道。`EventMap`
-是编译期契约：各包通过模块扩充把事件名与 listener 签名加入 `EventMap`；`Events` 是运行时
+`src/core/events/` 提供一次 `runAgentLoop()` 或 `prompt()` 期间唯一的运行时事件通道。`EventMap`
+是编译期契约：各包通过模块扩充把 event 名、输入和结果加入 `EventMap`；`Events` 是运行时
 dispatcher。
 
 ```ts
@@ -45,41 +47,41 @@ class Events {
       input: unknown,
     ) => void,
   );
-  on<TName extends keyof EventMap & string>(
+  on<TName extends EventName>(
     name: TName,
-    listener: EventMap[TName],
+    listener: ListenerOf<TName>,
   ): () => void;
-  emit<TName extends FactEventName>(name: TName, input: FactInput<TName>): Promise<void>;
+  emit<TName extends EmitEventName>(name: TName, input: EventInput<TName>): Promise<void>;
   intercept<TName extends InterceptEventName>(
     name: TName,
-    input: InterceptInput<TName>,
-    handler: (input: InterceptInput<TName>) => InterceptResult<TName> | Promise<InterceptResult<TName>>,
+    input: EventInput<TName>,
+    handler: (input: EventInput<TName>) => EventResult<TName> | Promise<EventResult<TName>>,
     signal?: AbortSignal,
-  ): Promise<InterceptResult<TName>>;
+  ): Promise<EventResult<TName>>;
 }
 ```
 
-- `emit` 是事实通道：按注册顺序调用全部 listener，逐个隔离异常并交给错误处理器；错误处理器
-  自身失败不会改变事实分发；
-- `intercept` 是控制通道：让 listener 按顺序包裹一个最终 `handler`；listener 调用
+- `emit` 按注册顺序调用全部 listener，逐个隔离异常并交给错误处理器；错误处理器自身失败不会
+  改变 event 分发；
+- `intercept` 让 listener 按顺序包裹一个最终 `handler`；listener 调用
   `proceed(changedInput)` 把值传给下一个 listener，不调用 `proceed()` 就返回时终止链，每个
   listener 最多调用一次 `proceed()`；
 - `intercept` 在分发前、进入每一层前和每个 awaited listener 返回后检查 `AbortSignal`；
   listener 错误原样穿透给行为拥有者；
 - 同一函数注册两次是两次独立注册；移除函数幂等；每次分发使用当时的 listener 快照。
 
-事实 listener 只有一个输入参数并返回 `void`；拦截 listener 有 `(input, proceed, signal?)`
-签名。条件辅助类型（`FactEventName`、`InterceptEventName`、输入和结果推导）只供
-`src/events/events.ts` 内部实现使用。
+emit listener 只有一个输入参数并返回 `void`；intercept listener 有 `(input, proceed, signal?)`
+签名。条件辅助类型（`EmitEventName`、`InterceptEventName`、listener、输入和结果推导）只供
+`src/core/events/events.ts` 内部实现使用。
 
-每个事件都携带 `AgentRunIdentity`（`sessionId`、`runId`、`lane`）。Project 身份来自
-`Events` 实例本身，不进入每个事件。
+每个 event 都携带 `AgentRunIdentity`（`sessionId`、`runId`）。Project 身份来自
+`Events` 实例本身，不进入每个 event。
 
-`src/events/index.ts` 只导出 `Events` 与 `EventMap`。
+`src/core/events/index.ts` 导出 `Events`、`EventMap`、`EmitEvent` 与 `InterceptEvent`。
 
 ## 3. Agent：Tool 循环与事件控制
 
-`src/agent/` 用 `runAgentLoop()` 执行一次多 Turn Agent Run。它接收消息、`AgentToolRegistry`、
+`src/core/agent/` 用 `runAgentLoop()` 执行一次多 Turn Agent Run。它接收消息、`AgentToolRegistry`、
 模型、`StreamFn` 和共享 `Events`，并产生 `Promise<void>`。
 
 ```ts
@@ -110,7 +112,7 @@ interface AgentLoopConfig {
 
 ### 控制事件
 
-`src/agent/events.ts` 声明三个控制拦截器（通过 `EventMap` 扩充）：
+`src/core/agent/events.ts` 声明三个控制拦截器（通过 `EventMap` 扩充）：
 
 | 事件 | 作用 |
 | ---- | ---- |
@@ -128,9 +130,9 @@ Agent 同时声明 `emit` 事实事件：`agent/turn-start`、`agent/turn-end`�
 `context.appendMessage()` 提交，再发布对应完成事实。
 
 每个 Tool Call 在 `AgentToolRegistry.execute()` 内经过三个拦截阶段，由
-`src/agent/tools/events.ts` 声明：`tools/pre-execute`、`tools/execute`、`tools/post-execute`。
-pre-execute 可以修改 call 或返回错误结果阻止执行；execute 运行 Tool 本体；post-execute 在结果
-写入 Session 前修改它。未知、无效、被阻止、已中止或失败的调用都会以恰好一个
+`src/core/agent/tools/events.ts` 声明：`tools/pre-execute`、`tools/execute`、`tools/post-execute`。
+pre-execute 返回 `allow` 或可选原因的 `deny`；Registry 把拒绝统一转换成错误结果。execute 运行
+Tool 本体；post-execute 在结果写入 Session 前修改它。未知、无效、被阻止、已中止或失败的调用都会以恰好一个
 `agent/tool-result` 结束。
 
 ### Tool 边界
@@ -140,7 +142,7 @@ timeout 与异常归一化。Agent Tool 不依赖 Coding Agent 或 UI，也不�
 
 ## 4. Harness：一份 Session 的运行器
 
-`src/harness/` 提供 Session 数据、Repository 和 Session 运行能力。
+`src/core/harness/` 提供 Session 数据、Repository 和 Session 运行能力。
 
 ### Session 与 SessionRepository
 
@@ -183,13 +185,13 @@ class AgentHarness {
 
 Harness 为这份 Session 持有消息视图、当前模型、Tool Registry、AbortController 和 run 状态。
 它构造时接收 Project 提供的共享 `Events`，在 `prompt()` 中创建 Run 身份
-（`sessionId`、`runId`、`lane`），发布 `harness/run-start`，调用一次 `runAgentLoop()`，并发布
+（`sessionId`、`runId`），发布 `harness/run-start`，调用一次 `runAgentLoop()`，并发布
 `harness/run-end`。同一个 Harness 同时只运行一个 `prompt()`；运行时切换模型或修改 Tool 会抛错。
 Harness 没有 `subscribe()`，也没有私有的 EventBus。
 
 ### Harness Event 边界
 
-`src/harness/events.ts` 声明 `MAIN_LANE`，并把 `harness/run-start`、`harness/run-end` 直接加入
+`src/core/harness/events.ts` 把 `harness/run-start`、`harness/run-end` 直接加入
 `EventMap`（run-end 的输入内联了 `completed`、`aborted`、`error` 联合）。Listener 观察已经
 发生的事实，返回值不会改变运行；`emit` 的 listener 错误被隔离，并交给 `Events` 的错误处理器。
 
@@ -312,11 +314,11 @@ Session 的选择发生在 Coding Agent；CLI 只运行已选择的 Harness。
 
 ## 8. 公共入口
 
-- `src/events/index.ts`：`Events`、`EventMap`；
-- `src/ai/index.ts`：AI 消息、模型、流和 provider 工厂；
-- `src/agent/index.ts`：`runAgentLoop`、`AgentRunIdentity`、事件契约和 Tool API；
-- `src/harness/index.ts`：`AgentHarness`、`Session`、`SessionRepository`、Session 错误、system
-  prompt 与 `MAIN_LANE`；
+- `src/core/events/index.ts`：`Events`、`EventMap`；
+- `src/core/ai/index.ts`：AI 消息、模型、流和 provider 工厂；
+- `src/core/agent/index.ts`：`runAgentLoop`、`AgentRunIdentity`、事件契约和 Tool API；
+- `src/core/harness/index.ts`：`AgentHarness`、`Session`、`SessionRepository`、Session 错误和 system
+  prompt；
 - `src/coding-agent/index.ts`：`createProject`、`Project`、`ProjectInfo`、默认 prompt、
   interactions、`ToolDefinition`/presentation 和 Todo API；
 - `src/ui/index.ts`：`CliFrontend`、`CliInteractions`、`CliHarnessRenderer`；

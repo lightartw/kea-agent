@@ -3,9 +3,9 @@ import test from "node:test";
 
 import { Type, type Static } from "typebox";
 
-import { AgentTool, type AgentToolResult } from "../../../src/agent/tools/types.js";
-import { AgentToolRegistry } from "../../../src/agent/tools/registry.js";
-import { Events } from "../../../src/events/events.js";
+import { AgentTool, type AgentToolResult } from "../../../src/core/agent/tools/types.js";
+import { AgentToolRegistry } from "../../../src/core/agent/tools/registry.js";
+import { Events } from "../../../src/core/events/events.js";
 
 const parameters = Type.Object({ value: Type.String() });
 
@@ -114,8 +114,8 @@ test("execute returns a pre-execute block result without running the tool", asyn
   registry.register(tool);
   const events = new Events();
   events.on("tools/pre-execute", () => ({
-    content: "Error: blocked",
-    isError: true,
+    kind: "deny",
+    reason: "blocked",
   }));
 
   const result = await registry.execute(echoCall(), events);

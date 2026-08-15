@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { Events } from "../../src/events/events.js";
+import { Events } from "../../src/core/events/events.js";
+import type { EmitEvent, InterceptEvent } from "../../src/core/events/types.js";
 
-declare module "../../src/events/types.js" {
+declare module "../../src/core/events/types.js" {
   interface EventMap {
-    "test/fact": (
-      input: { readonly value: number },
-    ) => void | Promise<void>;
-    "test/intercept": (
-      input: number,
-      proceed: (input: number) => Promise<number>,
-      signal?: AbortSignal,
-    ) => number | Promise<number>;
+    "test/emit": EmitEvent<{ readonly value: number }>;
+    "test/intercept": InterceptEvent<number, number>;
   }
 }
 
@@ -23,20 +18,20 @@ test("emit snapshots listeners, preserves order, and isolates failures", async (
     failures.push(`${name}:${(error as Error).message}:${(input as { value: number }).value}`);
   });
   let unregisterSecond: () => void = () => undefined;
-  events.on("test/fact", async () => {
+  events.on("test/emit", async () => {
     calls.push("first");
     unregisterSecond();
     throw new Error("broken");
   });
-  unregisterSecond = events.on("test/fact", () => { calls.push("second"); });
+  unregisterSecond = events.on("test/emit", () => { calls.push("second"); });
 
-  await events.emit("test/fact", { value: 1 });
-  await events.emit("test/fact", { value: 2 });
+  await events.emit("test/emit", { value: 1 });
+  await events.emit("test/emit", { value: 2 });
 
   assert.deepEqual(calls, ["first", "second", "first"]);
   assert.deepEqual(failures, [
-    "test/fact:broken:1",
-    "test/fact:broken:2",
+    "test/emit:broken:1",
+    "test/emit:broken:2",
   ]);
 });
 
@@ -47,22 +42,22 @@ test("the same listener can be registered and removed independently", async () =
     calls.push(input.value);
   };
 
-  const unregisterFirst = events.on("test/fact", listener);
-  events.on("test/fact", listener);
+  const unregisterFirst = events.on("test/emit", listener);
+  events.on("test/emit", listener);
   unregisterFirst();
   unregisterFirst();
 
-  await events.emit("test/fact", { value: 1 });
+  await events.emit("test/emit", { value: 1 });
   assert.deepEqual(calls, [1]);
 });
 
 test("unregister is idempotent", async () => {
   const events = new Events();
   const calls: string[] = [];
-  const unregister = events.on("test/fact", () => { calls.push("hit"); });
+  const unregister = events.on("test/emit", () => { calls.push("hit"); });
   unregister();
   unregister();
-  await events.emit("test/fact", { value: 1 });
+  await events.emit("test/emit", { value: 1 });
   assert.deepEqual(calls, []);
 });
 
@@ -71,26 +66,26 @@ test("emit isolates listener error reporting failures", async () => {
   const events = new Events(() => {
     throw new Error("reporter failed");
   });
-  events.on("test/fact", () => {
+  events.on("test/emit", () => {
     calls.push("first");
     throw new Error("listener failed");
   });
-  events.on("test/fact", () => { calls.push("second"); });
+  events.on("test/emit", () => { calls.push("second"); });
 
-  await events.emit("test/fact", { value: 1 });
+  await events.emit("test/emit", { value: 1 });
   assert.deepEqual(calls, ["first", "second"]);
 });
 
 test("emit continues after a throwing listener and still completes", async () => {
   const events = new Events();
   const calls: string[] = [];
-  events.on("test/fact", () => {
+  events.on("test/emit", () => {
     calls.push("first");
     throw new Error("boom");
   });
-  events.on("test/fact", () => { calls.push("second"); });
+  events.on("test/emit", () => { calls.push("second"); });
 
-  await events.emit("test/fact", { value: 1 });
+  await events.emit("test/emit", { value: 1 });
 
   assert.deepEqual(calls, ["first", "second"]);
 });

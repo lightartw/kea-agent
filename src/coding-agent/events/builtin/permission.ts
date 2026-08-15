@@ -1,4 +1,5 @@
-import type { Events } from "../../../events/events.js";
+import type { Events } from "../../../core/events/events.js";
+import type { PreToolDecision } from "../../../core/agent/tools/events.js";
 import { classifyBashCommand } from "../../tools/builtin/bash/bash-policy.js";
 import type { CodingAgentInteractions } from "../../ui/interactions.js";
 
@@ -6,7 +7,11 @@ export function registerPermission(
   events: Events,
   interactions: CodingAgentInteractions,
 ): void {
-  events.on("tools/pre-execute", async (call, proceed, signal) => {
+  events.on("tools/pre-execute", async (
+    call,
+    proceed,
+    signal,
+  ): Promise<PreToolDecision> => {
     if (call.name !== "bash") return proceed(call);
     const command = call.arguments.command;
     if (typeof command !== "string") return proceed(call);
@@ -14,7 +19,7 @@ export function registerPermission(
     const classification = classifyBashCommand(command);
     if (classification.decision === "allow") return proceed(call);
     if (classification.decision === "deny") {
-      return { content: `Error: ${classification.reason}`, isError: true };
+      return { kind: "deny", reason: classification.reason };
     }
 
     try {
@@ -25,11 +30,11 @@ export function registerPermission(
       }, signal);
       return allowed
         ? proceed(call)
-        : { content: "Error: permission denied by user", isError: true };
+        : { kind: "deny", reason: "permission denied by user" };
     } catch (error) {
       return {
-        content: `Error: permission confirmation failed: ${error instanceof Error ? error.message : String(error)}`,
-        isError: true,
+        kind: "deny",
+        reason: `permission confirmation failed: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   });

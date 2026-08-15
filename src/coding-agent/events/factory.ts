@@ -1,4 +1,4 @@
-import { Events } from "../../events/events.js";
+import { Events } from "../../core/events/events.js";
 import type { CodingAgentInteractions } from "../ui/interactions.js";
 import { registerPermission } from "./builtin/permission.js";
 

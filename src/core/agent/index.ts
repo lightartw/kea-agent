@@ -6,4 +6,5 @@ export type {
   AgentContext,
   AgentLoopConfig,
   AgentMessage,
+  AgentRunIdentity,
 } from "./types.js";

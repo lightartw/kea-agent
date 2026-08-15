@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
-import type { AgentMessage } from "../../src/agent/types.js";
-import type { ModelConfig } from "../../src/ai/types.js";
-import { Session, sessionsDir } from "../../src/harness/session/session.js";
-import { SessionError, type CreateSessionInput } from "../../src/harness/session/types.js";
+import type { AgentMessage } from "../../src/core/agent/types.js";
+import type { ModelConfig } from "../../src/core/ai/types.js";
+import { Session, sessionsDir } from "../../src/core/harness/session/session.js";
+import { SessionError, type CreateSessionInput } from "../../src/core/harness/session/types.js";
 import { detailedToolResult } from "../ai/fixtures.js";
 
 const modelA: ModelConfig = { provider: "test-a", model: "model-a" };

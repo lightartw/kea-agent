@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { Events } from "../../../src/events/events.js";
+import { Events } from "../../../src/core/events/events.js";
 import { registerPermission } from "../../../src/coding-agent/events/builtin/permission.js";
 import type {
   CodingAgentInteractions,
   ConfirmationRequest,
 } from "../../../src/coding-agent/index.js";
-import type { AgentToolCall, AgentToolResult } from "../../../src/agent/tools/types.js";
+import type { PreToolDecision } from "../../../src/core/agent/tools/events.js";
+import type { AgentToolCall } from "../../../src/core/agent/tools/types.js";
 import { classifyBashCommand, hardDeniedBashReason } from "../../../src/coding-agent/tools/builtin/bash/bash-policy.js";
 
 // ── Step 1: Bash classification tests ──
@@ -81,11 +82,11 @@ async function interceptBash(
   events: Events,
   call: AgentToolCall,
   signal?: AbortSignal,
-): Promise<AgentToolCall | AgentToolResult> {
+): Promise<PreToolDecision> {
   return events.intercept(
     "tools/pre-execute",
     call,
-    async (effectiveCall) => effectiveCall,
+    async (): Promise<PreToolDecision> => ({ kind: "allow" }),
     signal,
   );
 }
@@ -97,8 +98,8 @@ test("permission hard-deny returns an error result without asking UI", async () 
 
   const result = await interceptBash(events, bashCall("sudo true"));
   assert.deepEqual(result, {
-    content: "Error: sudo is not allowed",
-    isError: true,
+    kind: "deny",
+    reason: "sudo is not allowed",
   });
   assert.deepEqual(ui.confirmations, []);
 });
@@ -109,8 +110,7 @@ test("permission asks for rm and accepts explicit approval", async () => {
   registerPermission(events, ui);
 
   const result = await interceptBash(events, bashCall("rm file.txt"));
-  assert.equal("name" in result, true);
-  assert.equal((result as AgentToolCall).name, "bash");
+  assert.deepEqual(result, { kind: "allow" });
   assert.equal(ui.confirmations.length, 1);
   assert.equal(ui.confirmations[0]?.source, "permission");
   assert.equal(ui.confirmations[0]?.title, "Allow Bash command?");
@@ -126,8 +126,7 @@ test("permission fails closed on decline and UI error", async () => {
     const events = new Events();
     registerPermission(events, ui);
     const result = await interceptBash(events, bashCall("rm file.txt"));
-    assert.equal("content" in result, true);
-    assert.equal((result as AgentToolResult).isError, true);
+    assert.equal(result.kind, "deny");
   }
 });
 
@@ -144,10 +143,8 @@ test("permission ignores non-bash tools and safe Bash commands", async () => {
   };
   const first = await interceptBash(events, nonBash);
   const second = await interceptBash(events, bashCall("pwd"));
-  assert.equal("name" in first, true);
-  assert.equal((first as AgentToolCall).name, "write_file");
-  assert.equal("name" in second, true);
-  assert.equal((second as AgentToolCall).name, "bash");
+  assert.deepEqual(first, { kind: "allow" });
+  assert.deepEqual(second, { kind: "allow" });
   assert.deepEqual(ui.confirmations, []);
 });
 

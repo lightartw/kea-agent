@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createSessionTitleGenerator } from "../../src/coding-agent/title-generator.js";
-import type { Context, ModelConfig, StreamFn } from "../../src/ai/types.js";
+import type { Context, ModelConfig, StreamFn } from "../../src/core/ai/types.js";
 
 const model: ModelConfig = { provider: "test", model: "model" };
 

@@ -4,7 +4,7 @@ import type {
   CodingAgentInteractions,
   Project,
 } from "../coding-agent/index.js";
-import type { AgentHarness } from "../harness/index.js";
+import type { AgentHarness } from "../core/harness/index.js";
 import { CliHarnessRenderer } from "./cli-harness-renderer.js";
 import { CliInteractions } from "./cli-interactions.js";
 

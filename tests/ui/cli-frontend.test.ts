@@ -9,8 +9,8 @@ import type {
   ConfirmationRequest,
   Project,
 } from "../../src/coding-agent/index.js";
-import type { AgentHarness } from "../../src/harness/index.js";
-import { Events } from "../../src/events/events.js";
+import type { AgentHarness } from "../../src/core/harness/index.js";
+import { Events } from "../../src/core/events/events.js";
 
 type QuestionFn = (
   query: string,

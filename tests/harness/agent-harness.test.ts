@@ -5,18 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { AgentHarness } from "../../src/harness/agent-harness.js";
-import { Session } from "../../src/harness/session/session.js";
-import type { CreateSessionInput } from "../../src/harness/session/types.js";
-import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
-import { AgentTool } from "../../src/agent/tools/types.js";
-import { Events } from "../../src/events/events.js";
-import type { HarnessConfig, SessionTitleGenerator } from "../../src/harness/types.js";
+import { AgentHarness } from "../../src/core/harness/agent-harness.js";
+import { Session } from "../../src/core/harness/session/session.js";
+import type { CreateSessionInput } from "../../src/core/harness/session/types.js";
+import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
+import { AgentTool } from "../../src/core/agent/tools/types.js";
+import { Events } from "../../src/core/events/events.js";
+import type { HarnessConfig, SessionTitleGenerator } from "../../src/core/harness/types.js";
 import type {
   AssistantMessage,
   ModelConfig,
   StreamFn,
-} from "../../src/ai/types.js";
+} from "../../src/core/ai/types.js";
 import { Type } from "typebox";
 
 const modelA: ModelConfig = { provider: "test", model: "model-a" };
@@ -503,7 +503,7 @@ test("an AbortSignal fired while Permission awaits confirmation wins over the an
     signal.push(abortSignal!);
     return permissionGate.then((allowed) => {
       if (allowed) return proceed(call);
-      return { content: "Error: permission denied by user", isError: true };
+      return { kind: "deny" as const, reason: "permission denied by user" };
     });
   });
   const results: Array<{ isError: boolean }> = [];

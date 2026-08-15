@@ -1,7 +1,7 @@
-import type { AgentHarness } from "../../harness/agent-harness.js";
-import type { Events } from "../../events/events.js";
+import type { AgentHarness } from "../../core/harness/agent-harness.js";
+import type { Events } from "../../core/events/events.js";
 import type { ToolPresentationInput } from "../ui/presentation.js";
-import type { SessionInfo } from "../../harness/session/types.js";
+import type { SessionInfo } from "../../core/harness/session/types.js";
 
 export interface ProjectInfo {
   readonly id: string;

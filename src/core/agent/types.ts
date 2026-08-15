@@ -1,7 +1,16 @@
 import type { Message, ModelConfig } from "../ai/types.js";
 import type { Events } from "../events/events.js";
-import type { AgentRunIdentity } from "./events.js";
 import type { AgentToolRegistry } from "./tools/registry.js";
+
+/**
+ * Identity of one Agent Run. One Project-level `Events` instance is shared by
+ * multiple Sessions, so listeners need `sessionId` to filter; `runId`
+ * correlates events across the concurrent Runs of a shared dispatcher.
+ */
+export interface AgentRunIdentity {
+  readonly sessionId: string;
+  readonly runId: string;
+}
 
 /**
  * Agent-layer message type. Currently an alias for Message; will become
@@ -12,8 +21,8 @@ export type AgentMessage = Message;
 /**
  * Agent state passed into the loop. The messages view is read-only from
  * the Agent's perspective; every completed message is committed through
- * `appendMessage()` so the owning Session persists it before any fact is
- * published.
+ * `appendMessage()` so the owning Session persists it before the corresponding
+ * events are emitted.
  */
 export interface AgentContext {
   readonly systemPrompt: string;

@@ -3,8 +3,8 @@ import test from "node:test";
 
 import { Type, type Static } from "typebox";
 
-import { runAgentLoop } from "../../src/agent/agent-loop.js";
-import type { AgentContext, AgentLoopConfig, AgentMessage } from "../../src/agent/types.js";
+import { runAgentLoop } from "../../src/core/agent/agent-loop.js";
+import type { AgentContext, AgentLoopConfig, AgentMessage } from "../../src/core/agent/types.js";
 import type {
   AssistantMessage,
   ContentBlock,
@@ -13,13 +13,13 @@ import type {
   ModelConfig,
   StreamChunk,
   StreamFn,
-} from "../../src/ai/types.js";
-import { AgentTool, type AgentToolResult } from "../../src/agent/tools/types.js";
-import type { AgentToolCall } from "../../src/agent/tools/types.js";
-import { AgentToolRegistry } from "../../src/agent/tools/registry.js";
-import { Events } from "../../src/events/events.js";
+} from "../../src/core/ai/types.js";
+import { AgentTool, type AgentToolResult } from "../../src/core/agent/tools/types.js";
+import type { AgentToolCall } from "../../src/core/agent/tools/types.js";
+import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
+import { Events } from "../../src/core/events/events.js";
 
-const run = { sessionId: "session-1", runId: "run-1", lane: "main" } as const;
+const run = { sessionId: "session-1", runId: "run-1" } as const;
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 const testModel: ModelConfig = { provider: "test", model: "test-model" };
 
@@ -300,8 +300,8 @@ test("unknown, invalid, blocked, and thrown tools each produce exactly one error
       register: (registry: AgentToolRegistry) => registry.register(new NoopTool()),
       event: (events: Events) => {
         events.on("tools/pre-execute", () => ({
-          content: "Error: blocked",
-          isError: true,
+          kind: "deny",
+          reason: "blocked",
         }));
       },
     },

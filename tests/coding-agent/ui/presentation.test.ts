@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { CodingToolPresentationRegistry } from "../../../src/coding-agent/ui/presentation.js";
 import type { ToolPresentationInput } from "../../../src/coding-agent/ui/presentation.js";
-import type { AgentToolCall } from "../../../src/agent/tools/types.js";
+import type { AgentToolCall } from "../../../src/core/agent/tools/types.js";
 
 const todoCall: AgentToolCall = {
   type: "toolCall", id: "c1", name: "todo_write", arguments: {},

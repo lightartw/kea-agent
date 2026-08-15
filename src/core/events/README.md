@@ -1,6 +1,6 @@
 # events
 
-`events` 是 Kea 各模块共同使用的通信机制。它让产生行为的模块说明“现在发生了什么”或“某个行为提交前需要什么”，而不必直接依赖日志、权限、CLI 或其他使用者。
+`events` 是 Kea 各模块共同使用的通信机制。它让产生行为的模块通过 `emit()` 说明“现在发生了什么”，或通过 `intercept()` 允许 listener 参与一个待执行的行为，而不必直接依赖日志、权限、CLI 或其他使用者。
 
 ## 1. Event 是什么
 
@@ -11,33 +11,34 @@ Event 是系统生命周期中一个有名字的时点。注册者把 listener �
 - **名字**：指出发生了什么，例如 `agent/turn-end`；
 - **数据**：描述这次事件，例如完整 assistant message 和它产生的 Tool Result。
 
-Event 不一定只表示“已经发生的事实”。Kea 也用它表示行为执行前的控制点。区分这两种语义的是注册的 listener 签名，而不是 Event 本身的名字。
+Event 不一定只表示已经发生的事情。Kea 也用 event 表示可以被 listener 改变或阻止的行为。`EmitEvent` 声明由 `emit()` 分发的 event，`InterceptEvent` 声明由 `intercept()` 分发的 event。
 
 ## 2. `EventMap`：事件目录
 
-`EventMap` 是编译期接口，描述哪些事件名合法、每个事件名的 listener 长什么样。它只做类型检查，不保存 listener，也不负责分发。
+`EventMap` 是编译期接口，描述 event 名、输入和结果。它不要求各模块手写 listener 函数类型；`Events.on()` 会根据 `EmitEvent` 或 `InterceptEvent` 自动生成正确的 listener 类型。`EventMap` 只做类型检查，不保存 listener，也不负责分发。
 
 拥有某个行为的模块在自己的 `events.ts` 中扩充 `EventMap`。例如：
 
 ```ts
+import type { EmitEvent, InterceptEvent } from "./types.js";
+
 declare module "./types.js" {
   interface EventMap {
-    "example/started": (
-      input: { readonly id: string },
-    ) => void | Promise<void>;
-    "example/permission": (
-      input: { readonly command: string },
-      proceed: (input: { readonly command: string }) => Promise<string | undefined>,
-      signal?: AbortSignal,
-    ) => string | undefined | Promise<string | undefined>;
+    "example/started": EmitEvent<{ readonly id: string }>;
+    "example/permission": InterceptEvent<
+      { readonly command: string },
+      string | undefined
+    >;
   }
 }
 ```
 
-两种 listener 签名对应两种分发规则：
+每个声明只包含 event 自身的信息：
 
-- 只接收一个 `input`、返回 `void` 的 listener 用于 `emit()`；
-- 接收 `input`、`proceed` 和可选 `signal` 的 listener 用于 `intercept()`。
+- `EmitEvent<Input>` 声明 `emit()` 的输入；
+- `InterceptEvent<Input, Result>` 声明 `intercept()` 的输入和结果。
+
+注册 listener 时，`on()` 根据这个声明自动提供函数类型：emit listener 接收 `input`；intercept listener 接收 `input`、`proceed` 和可选的 `signal`。因此 event 的拥有者不需要重复 `proceed`、`signal` 和异步返回类型。
 
 ## 3. `Events`：运行时分发器
 
@@ -46,7 +47,7 @@ declare module "./types.js" {
 `Events` 提供三个方法：
 
 - `on(name, listener)`：注册一个 listener；
-- `emit(name, input)`：把事实通知给全部 listener；
+- `emit(name, input)`：把 event 依次交给全部 listener；
 - `intercept(name, input, handler, signal?)`：让 listener 包裹一个待执行的行为。
 
 ## 4. `on()`：注册
@@ -63,13 +64,13 @@ const unregister = events.on("example/started", handler);
 unregister();  // 之后的分发不再调用 handler
 ```
 
-## 5. `emit()`：发布事实
+## 5. `emit()`：分发 event
 
 `emit(name, input)` 按注册顺序调用当前 `Events` 实例中注册到该事件名的全部 listener。它等待前一个 listener 结束后再调用下一个；listener 的返回值被忽略。
 
 某个 listener 失败时，错误交给可选的错误处理器，后续 listener 仍继续执行。错误处理器自身失败不会打断分发。没有 listener 时，`emit()` 直接结束。
 
-`emit()` 用于发布已经发生的事实，观察者不能改变事实，也不能中断其他观察者。
+`emit()` 用于分发已经发生的 event。listener 不能改变这次 event，也不能中断其他 listener。
 
 ## 6. `intercept()`：包裹一个待执行的行为
 
@@ -94,16 +95,16 @@ listener 失败时，`intercept()` 失败并传播给行为拥有者。`intercep
 
 ## 7. 错误与取消
 
-`Events` 构造时可选接收一个错误处理器，它接收 `(error, name, input)`。它只报告 `emit()` listener 的失败，因为事实 listener 没有权限中断运行。`intercept()` 的 listener 失败直接传播，不经过错误处理器。
+`Events` 构造时可选接收一个错误处理器，它接收 `(error, name, input)`。它只报告 `emit()` listener 的失败；`intercept()` 的 listener 失败直接传播，不经过错误处理器。
 
-`emit()` 不接收 `AbortSignal`——已经发生的事实不会被取消。`intercept()` 接收信号，用于行为提交前的控制链。
+`emit()` 不接收 `AbortSignal`——已经开始分发的 event 不会被取消。`intercept()` 接收信号，用于取消尚未完成的行为。
 
 ## 8. 谁拥有哪些 Event
 
 - **Harness** 声明并分发 Run 边界：`harness/run-start`、`harness/run-end`；
-- **Agent** 声明并分发一次 Run 内的 Turn 与 Tool 事实，以及三个控制点；
+- **Agent** 声明并分发一次 Run 内的 Turn、Tool 和流式 event，以及三个 intercept event；
 - **Coding Agent** 注册 Project 级 listener（例如 Permission），并创建共享 `Events`；
-- **UI** 只订阅展示需要的事实，用 `sessionId` 过滤。
+- **UI** 通过 `on()` 注册展示所需的 listener，并用 `sessionId` 过滤 event。
 
 ## 9. 最终生命周期
 
@@ -128,7 +129,7 @@ harness/run-end
 
 几点说明：
 
-- 四个流式事实（`agent/text-delta`、`agent/thinking-delta`、`agent/tool-call-start`、
+- 四个流式 event（`agent/text-delta`、`agent/thinking-delta`、`agent/tool-call-start`、
   `agent/tool-call-delta`）只在 provider 产生对应片段时发生；
 - 中间的五行（`agent/tool-call` 到 `agent/tool-result`）对 assistant 消息中的每个 Tool Call
   各重复一次，顺序与模型生成顺序一致；
@@ -139,9 +140,11 @@ harness/run-end
 
 ## 10. 公共接口
 
-`src/events/index.ts` 导出：
+`src/core/events/index.ts` 导出：
 
 - `Events`：运行时分发器；
-- `EventMap`：事件目录接口。
+- `EventMap`：event 目录接口；
+- `EmitEvent`：声明 `emit()` event 的输入；
+- `InterceptEvent`：声明 `intercept()` event 的输入和结果。
 
-条件辅助类型（事实/拦截事件名、输入和结果推导）只供 `src/events/events.ts` 内部实现使用，不通过入口暴露。
+条件辅助类型（emit/intercept event 名、listener、输入和结果推导）只供 `src/core/events/events.ts` 内部实现使用，不通过入口暴露。

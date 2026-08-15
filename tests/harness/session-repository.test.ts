@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
-import type { AgentMessage } from "../../src/agent/types.js";
-import { Session, sessionsDir } from "../../src/harness/session/session.js";
-import { SessionRepository } from "../../src/harness/session/repository.js";
-import type { CreateSessionInput } from "../../src/harness/session/types.js";
+import type { AgentMessage } from "../../src/core/agent/types.js";
+import { Session, sessionsDir } from "../../src/core/harness/session/session.js";
+import { SessionRepository } from "../../src/core/harness/session/repository.js";
+import type { CreateSessionInput } from "../../src/core/harness/session/types.js";
 
 const user: AgentMessage = { role: "user", content: "hello" };
 const assistant: AgentMessage = {

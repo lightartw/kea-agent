@@ -1,4 +1,5 @@
-import { runWithTimeout } from "../../utils/timeout.js";
+import { errorMessage, runWithTimeout } from "../../util/index.js";
+import type { PreToolDecision } from "./events.js";
 import { AgentTool, type AgentToolCall, type AgentToolResult } from "./types.js";
 import type { Tool } from "../../ai/types.js";
 import type { Events } from "../../events/events.js";
@@ -32,7 +33,10 @@ export class AgentToolRegistry {
   }
 
   private error(message: string): AgentToolResult {
-    return { content: message.startsWith(ERROR_PREFIX) ? message : `${ERROR_PREFIX}${message}`, isError: true };
+    const content = message.startsWith(ERROR_PREFIX)
+      ? message
+      : `${ERROR_PREFIX}${message}`;
+    return { content, isError: true };
   }
 
   /**
@@ -45,46 +49,49 @@ export class AgentToolRegistry {
     signal?: AbortSignal,
   ): Promise<AgentToolResult<unknown>> {
     try {
-      const preResult = await events.intercept(
+      const preDecision = await events.intercept(
         "tools/pre-execute",
         call,
-        async (effectiveCall) => effectiveCall,
+        (): PreToolDecision => ({ kind: "allow" }),
         signal,
       );
-
-      if ("content" in preResult) {
-        return preResult as AgentToolResult<unknown>;
+      if (preDecision.kind === "deny") {
+        return this.error(preDecision.reason ?? "Tool execution denied");
       }
-      const effectiveCall = preResult;
 
-      const tool = this.tools.get(effectiveCall.name);
+      const tool = this.tools.get(call.name);
       if (tool === undefined) {
-        return this.error(`Unknown tool '${effectiveCall.name}'`);
+        return this.error(`Unknown tool '${call.name}'`);
       }
-      const validationError = tool.validate(effectiveCall.arguments);
+
+      const validationError = tool.validate(call.arguments);
       if (validationError !== undefined) {
-        return this.error(`Invalid arguments for tool '${effectiveCall.name}': ${validationError}`);
+        return this.error(
+          `Invalid arguments for tool '${call.name}': ${validationError}`,
+        );
       }
 
-      const executed = await events.intercept(
+      const result = await events.intercept(
         "tools/execute",
-        effectiveCall,
-        async (callToRun) =>
-          runWithTimeout(this.timeout, (timeoutSignal) =>
-            tool.execute(callToRun.arguments, timeoutSignal), signal),
+        call,
+        (callToRun) =>
+          runWithTimeout(
+            this.timeout,
+            (timeoutSignal) =>
+              tool.execute(callToRun.arguments, timeoutSignal),
+            signal,
+          ),
         signal,
       );
 
-      const finalized = await events.intercept(
+      return await events.intercept(
         "tools/post-execute",
-        { call: effectiveCall, result: executed },
-        async (input) => input.result,
+        { call, result },
+        (input) => input.result,
         signal,
       );
-
-      return finalized;
     } catch (error) {
-      return this.error(error instanceof Error ? error.message : String(error));
+      return this.error(errorMessage(error));
     }
   }
 }

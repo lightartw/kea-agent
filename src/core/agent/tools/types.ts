@@ -44,4 +44,3 @@ export abstract class AgentTool<
     timeoutSignal: AbortSignal,
   ): Promise<AgentToolResult<TDetails>>;
 }
-

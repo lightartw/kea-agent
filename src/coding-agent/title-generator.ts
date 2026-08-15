@@ -1,5 +1,5 @@
-import type { Context, ModelConfig, StreamFn } from "../ai/types.js";
-import type { SessionTitleGenerator } from "../harness/types.js";
+import type { Context, ModelConfig, StreamFn } from "../core/ai/types.js";
+import type { SessionTitleGenerator } from "../core/harness/types.js";
 
 const TITLE_SYSTEM_PROMPT =
   "Generate a brief single-line title for this coding session. Return only the title.";

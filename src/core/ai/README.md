@@ -6,7 +6,7 @@
 ## 用法
 
 ```ts
-import { createStreamFn, type Context } from "./ai/index.js";
+import { createStreamFn, type Context } from "./core/ai/index.js";
 
 const { stream, defaultModel } = createStreamFn();
 const context: Context = {
@@ -210,7 +210,7 @@ interface ToolCall {
 
 ```text
 content  → 模型可见的文本（写入 Provider wire payload）
-details  → 程序可见的结构化数据（留在 Session / UI / 内存）
+details  → 程序可见的结构化数据（留在 Session / 调用方 / 内存）
 ```
 
 Provider adapter 只投影对应 Provider 需要的字段，`details` 永远不进网络请求：
@@ -223,7 +223,7 @@ messages.push({ role: "user", content: [
 ```
 
 因此凡是模型下一轮需要知道的状态都必须出现在 `content`；`details` 只提供同一事实的
-结构化表示，供 Session、UI 和程序消费。
+结构化表示，供 Session 和其他程序逻辑消费。
 
 ### Stream chunk
 
@@ -276,6 +276,6 @@ type StreamChunk =
 
 - `@anthropic-ai/sdk`、`openai`、`@google/genai`
 - `typebox`
-- 项目内部的 `utils/timeout`
+- 仅供 core 内部使用的 `core/util`（错误与 timeout helper）
 
 本包不依赖 agent、harness 或 CLI。

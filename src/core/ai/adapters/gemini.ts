@@ -11,7 +11,7 @@ import type {
   Tool,
   ToolCall,
 } from "../types.js";
-import { mergeSignals } from "../../utils/timeout.js";
+import { errorMessage, mergeSignals } from "../../util/index.js";
 
 // ── Message conversion ──
 
@@ -182,7 +182,7 @@ export class GeminiAdapter implements Adapter {
           content: [],
           model: usedModel,
           stopReason: "error",
-          errorMessage: err instanceof Error ? err.message : String(err),
+          errorMessage: errorMessage(err),
           latencyMs: Math.round(performance.now() - started),
         },
       };

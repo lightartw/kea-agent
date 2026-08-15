@@ -6,15 +6,15 @@ import {
   AgentTool,
   AgentToolRegistry,
   runAgentLoop,
-} from "../src/agent/index.js";
+} from "../src/core/agent/index.js";
 
-import { Events } from "../src/events/index.js";
+import { Events } from "../src/core/events/index.js";
 
 import {
   AgentHarness,
   Session,
   SessionRepository,
-} from "../src/harness/index.js";
+} from "../src/core/harness/index.js";
 
 import {
   CodingToolPresentationRegistry,
@@ -27,14 +27,14 @@ import type {
   AgentRunIdentity,
   AgentToolCall,
   AgentToolResult,
-} from "../src/agent/index.js";
+} from "../src/core/agent/index.js";
 
 import type {
   CreateSessionInput,
   HarnessConfig,
   SessionHeader,
   SessionInfo,
-} from "../src/harness/index.js";
+} from "../src/core/harness/index.js";
 
 import type {
   CodingAgentInteractions,
@@ -46,9 +46,9 @@ import type {
   ToolPresentationInput,
 } from "../src/coding-agent/index.js";
 
-import type { StreamChunk } from "../src/ai/index.js";
+import type { StreamChunk } from "../src/core/ai/index.js";
 
-import type { EventMap } from "../src/events/index.js";
+import type { EventMap } from "../src/core/events/index.js";
 
 void [
   Events,

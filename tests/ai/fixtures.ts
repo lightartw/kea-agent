@@ -4,7 +4,7 @@ import type {
   Message,
   StreamChunk,
   StreamFn,
-} from "../../src/ai/types.js";
+} from "../../src/core/ai/types.js";
 
 export const testModel = { provider: "anthropic", model: "test-model" };
 

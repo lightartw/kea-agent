@@ -1,4 +1,4 @@
-import type { Events } from "../events/events.js";
+import type { Events } from "../core/events/events.js";
 import type { ToolPresentationInput } from "../coding-agent/ui/presentation.js";
 
 const LARGE_OUTPUT_THRESHOLD = 100_000;

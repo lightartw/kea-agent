@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createStreamFn, lazyAdapter } from "../../src/ai/factory.js";
-import type { ProviderConfig } from "../../src/ai/factory.js";
+import { createStreamFn, lazyAdapter } from "../../src/core/ai/factory.js";
+import type { ProviderConfig } from "../../src/core/ai/factory.js";
 
 test("no provider configured rejects", () => {
   assert.throws(

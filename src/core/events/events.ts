@@ -1,40 +1,39 @@
-import type { EventMap } from "./types.js";
+import type { EmitEvent, EventMap, InterceptEvent } from "./types.js";
 
 type EventName = keyof EventMap & string;
-type ContractOf<TName extends EventName> = EventMap[TName];
 
-type FactEventName = {
-  [TName in EventName]: Parameters<ContractOf<TName>> extends [infer TInput]
-    ? ReturnType<ContractOf<TName>> extends void | Promise<void>
-      ? TName
-      : never
-    : never;
-}[EventName];
-
-type InterceptEventName = {
-  [TName in EventName]: Parameters<ContractOf<TName>> extends [
-    unknown,
-    unknown,
-    ...unknown[],
-  ]
+type EmitEventName = {
+  [TName in EventName]: EventMap[TName] extends EmitEvent<unknown>
     ? TName
     : never;
 }[EventName];
 
-type FactInput<TName extends EventName> =
-  Parameters<ContractOf<TName>> extends [infer TInput]
+type InterceptEventName = {
+  [TName in EventName]: EventMap[TName] extends InterceptEvent<unknown, unknown>
+    ? TName
+    : never;
+}[EventName];
+
+type EventInput<TName extends EventName> =
+  EventMap[TName] extends { readonly input: infer TInput }
     ? TInput
     : never;
 
-type InterceptInput<TName extends EventName> =
-  Parameters<ContractOf<TName>> extends [infer TInput, unknown, ...unknown[]]
-    ? TInput
+type EventResult<TName extends EventName> =
+  EventMap[TName] extends InterceptEvent<unknown, infer TResult>
+    ? TResult
     : never;
 
-type InterceptResult<TName extends EventName> =
-  ReturnType<ContractOf<TName>> extends infer TResult
-    ? Awaited<TResult>
-    : never;
+type ListenerOf<TName extends EventName> =
+  EventMap[TName] extends EmitEvent<infer TInput>
+    ? (input: TInput) => void | Promise<void>
+    : EventMap[TName] extends InterceptEvent<infer TInput, infer TResult>
+      ? (
+          input: TInput,
+          proceed: (input: TInput) => Promise<TResult>,
+          signal?: AbortSignal,
+        ) => TResult | Promise<TResult>
+      : never;
 
 type AnyListener = (...args: never[]) => unknown;
 
@@ -61,7 +60,7 @@ export class Events {
 
   on<TName extends EventName>(
     name: TName,
-    listener: EventMap[TName],
+    listener: ListenerOf<TName>,
   ): () => void {
     let registrations = this.#listeners.get(name);
     if (registrations === undefined) {
@@ -80,9 +79,9 @@ export class Events {
     };
   }
 
-  async emit<TName extends FactEventName>(
+  async emit<TName extends EmitEventName>(
     name: TName,
-    input: FactInput<TName>,
+    input: EventInput<TName>,
   ): Promise<void> {
     const snapshot = [...(this.#listeners.get(name) ?? [])];
     for (const registration of snapshot) {
@@ -96,29 +95,29 @@ export class Events {
 
   async intercept<TName extends InterceptEventName>(
     name: TName,
-    input: InterceptInput<TName>,
+    input: EventInput<TName>,
     handler: (
-      input: InterceptInput<TName>,
-    ) => InterceptResult<TName> | Promise<InterceptResult<TName>>,
+      input: EventInput<TName>,
+    ) => EventResult<TName> | Promise<EventResult<TName>>,
     signal?: AbortSignal,
-  ): Promise<InterceptResult<TName>> {
+  ): Promise<EventResult<TName>> {
     signal?.throwIfAborted();
     const snapshot = [...(this.#listeners.get(name) ?? [])];
     const run = async (
       index: number,
-      value: InterceptInput<TName>,
-    ): Promise<InterceptResult<TName>> => {
+      value: EventInput<TName>,
+    ): Promise<EventResult<TName>> => {
       signal?.throwIfAborted();
       const registration = snapshot[index];
       if (registration === undefined) {
-        const result = await handler(value as InterceptInput<TName>);
+        const result = await handler(value as EventInput<TName>);
         signal?.throwIfAborted();
-        return result as InterceptResult<TName>;
+        return result as EventResult<TName>;
       }
       let proceedCalled = false;
       const proceed = (
-        changedInput: InterceptInput<TName>,
-      ): Promise<InterceptResult<TName>> => {
+        changedInput: EventInput<TName>,
+      ): Promise<EventResult<TName>> => {
         if (proceedCalled) {
           throw new Error(`intercept listener for ${name} called proceed() more than once`);
         }
@@ -131,7 +130,7 @@ export class Events {
         signal as never,
       );
       signal?.throwIfAborted();
-      return returned as InterceptResult<TName>;
+      return returned as EventResult<TName>;
     };
     return run(0, input);
   }
@@ -140,7 +139,7 @@ export class Events {
     try {
       this.#onListenerError?.(error, name, input);
     } catch {
-      // The diagnostic boundary cannot change fact delivery.
+      // The error handler cannot change emit delivery.
     }
   }
 }

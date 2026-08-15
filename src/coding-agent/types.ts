@@ -1,5 +1,5 @@
-import type { ModelConfig, StreamFn } from "../ai/types.js";
-import type { SystemPromptBuilder } from "../harness/types.js";
+import type { ModelConfig, StreamFn } from "../core/ai/types.js";
+import type { SystemPromptBuilder } from "../core/harness/types.js";
 import type { CodingAgentInteractions } from "./ui/interactions.js";
 
 export interface CreateProjectConfig {

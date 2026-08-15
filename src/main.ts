@@ -6,7 +6,7 @@ import { config as loadDotenv } from "dotenv";
 
 import { CliFrontend } from "./ui/cli-frontend.js";
 import { createProject } from "./coding-agent/factory.js";
-import { createStreamFn } from "./ai/factory.js";
+import { createStreamFn } from "./core/ai/factory.js";
 
 export async function asyncMain(): Promise<void> {
   loadDotenv({ override: true });
