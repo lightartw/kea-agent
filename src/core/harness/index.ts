@@ -14,9 +14,7 @@ export type {
   SystemPromptContext,
 } from "./types.js";
 export type {
-  CreateSessionInput,
-  SessionContext,
   SessionErrorCode,
-  SessionHeader,
-  SessionInfo,
+  SessionMetadata,
+  SessionNode,
 } from "./session/types.js";

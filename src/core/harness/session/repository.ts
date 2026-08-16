@@ -2,15 +2,15 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import { Session, sessionsDir } from "./session.js";
-import { SessionError, type CreateSessionInput, type SessionInfo } from "./types.js";
+import { SessionError, type SessionMetadata } from "./types.js";
 
 const SESSION_FILE_RE = /^[A-Za-z0-9_-]+\.jsonl$/;
 
 export class SessionRepository {
   constructor(readonly storageDir: string) {}
 
-  create(input: CreateSessionInput): Promise<Session> {
-    return Session.create(this.storageDir, input);
+  create(options: { readonly cwd: string }): Promise<Session> {
+    return Session.create(this.storageDir, options);
   }
 
   open(sessionId: string): Promise<Session> {
@@ -18,7 +18,7 @@ export class SessionRepository {
   }
 
   /** List all Sessions by stored metadata, newest first. */
-  async list(): Promise<readonly SessionInfo[]> {
+  async list(): Promise<readonly SessionMetadata[]> {
     const dir = sessionsDir(this.storageDir);
     let entries: string[];
 
@@ -41,7 +41,7 @@ export class SessionRepository {
     const sessions = await Promise.all(
       jsonlFiles.map(async (filename) => {
         const session = await Session.open(this.storageDir, filename.replace(/\.jsonl$/, ""));
-        return session.info;
+        return session.metadata;
       }),
     );
 

@@ -52,19 +52,19 @@ export class AgentHarness {
   private titleRequested = false;
 
   constructor(config: HarnessConfig) {
-    const context = config.session.buildContext();
+    const messages = config.session.messages();
     this.session = config.session;
     this.toolRegistry = config.toolRegistry;
     this.buildSystemPrompt = config.systemPrompt;
     this.cwd = config.cwd;
     this._streamFn = config.streamFn;
-    this.currentModel = context.model ?? config.model;
-    this._messages = [...context.messages];
+    this.currentModel = config.session.modelSelection() ?? config.model;
+    this._messages = [...messages];
     this.events = config.events;
     this.titleGenerator = config.titleGenerator;
     this.titleEligible = config.titleGenerator !== undefined &&
-      this.session.info.title === "unknown" &&
-      !context.messages.some((message) => message.role === "user");
+      this.session.metadata.title === "unknown" &&
+      !messages.some((message) => message.role === "user");
   }
 
   // ── Private helpers ──
@@ -152,7 +152,7 @@ export class AgentHarness {
             messages: this._messages,
             tools: this.toolRegistry,
             appendMessage: async (message) => {
-              await this.session.appendMessage(message);
+              await this.session.append({ type: "message", message });
               this._messages.push(message);
               this.maybeStartTitle();
             },
@@ -198,7 +198,7 @@ export class AgentHarness {
 
   async switchModel(model: ModelConfig): Promise<void> {
     this.assertIdle();
-    await this.session.appendModelChange(model);
+    await this.session.append({ type: "model_selection", selection: model });
     this.currentModel = model;
   }
 
@@ -221,7 +221,7 @@ export class AgentHarness {
   }
 
   get title(): string {
-    return this.session.info.title;
+    return this.session.metadata.title;
   }
 
   setTitle(title: string): Promise<void> {

@@ -30,10 +30,9 @@ import type {
 } from "../src/core/agent/index.js";
 
 import type {
-  CreateSessionInput,
   HarnessConfig,
-  SessionHeader,
-  SessionInfo,
+  SessionMetadata,
+  SessionNode,
 } from "../src/core/harness/index.js";
 
 import type {
@@ -72,9 +71,8 @@ type PublicAgentTypes = [
 
 type PublicHarnessTypes = [
   HarnessConfig,
-  CreateSessionInput,
-  SessionHeader,
-  SessionInfo,
+  SessionMetadata,
+  SessionNode,
 ];
 
 type PublicCodingAgentTypes = [

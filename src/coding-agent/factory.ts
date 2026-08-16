@@ -1,10 +1,10 @@
-import { relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { stat } from "node:fs/promises";
 
 import { AgentHarness } from "../core/harness/agent-harness.js";
 import { SessionRepository } from "../core/harness/session/repository.js";
 import type { Session } from "../core/harness/session/session.js";
-import type { SessionInfo } from "../core/harness/session/types.js";
+import type { SessionMetadata } from "../core/harness/session/types.js";
 import { Events } from "../core/events/events.js";
 import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
 import { defaultSystemPrompt } from "../core/harness/system-prompt.js";
@@ -47,11 +47,6 @@ function isInside(path: string, directory: string): boolean {
     path.startsWith(normalized + "/");
 }
 
-function relativeCwd(directory: string, absolutePath: string): string {
-  const rel = relative(resolve(directory), resolve(absolutePath));
-  return rel === "" ? "." : rel.replaceAll("\\", "/");
-}
-
 function selectContainingDirectory(
   directories: readonly string[],
   absolutePath: string,
@@ -79,7 +74,7 @@ function createHarness(
   events: Events,
 ): AgentHarness {
   const toolContext: CodingToolContext = {
-    cwd: resolve(session.info.directory, session.info.cwd),
+    cwd: session.metadata.cwd,
     directories,
   };
   return new AgentHarness({
@@ -142,45 +137,30 @@ export async function createProject(config: CreateProjectConfig): Promise<Projec
   );
 
   const createSessionCwd = (options?: CreateSessionOptions): string => {
-    if (options?.cwd === undefined) return ".";
-    const absolute = resolve(current.primaryDirectory, options.cwd);
-    const containing = selectContainingDirectory(current.directories, absolute);
-    return relativeCwd(containing, absolute);
+    const cwd = resolve(current.primaryDirectory, options?.cwd ?? ".");
+    selectContainingDirectory(current.directories, cwd);
+    return cwd;
   };
 
   return {
     ...current,
     events,
-    listSessions: async (): Promise<readonly SessionInfo[]> => repository.list(),
+    listSessions: async (): Promise<readonly SessionMetadata[]> => repository.list(),
     createSession: async (options?: CreateSessionOptions) =>
-      bindSession(await repository.create({
-        projectId: current.id,
-        directory: current.primaryDirectory,
-        cwd: createSessionCwd(options),
-      })),
+      bindSession(await repository.create({ cwd: createSessionCwd(options) })),
     openSession: async (sessionId) => {
       const session = await repository.open(sessionId);
-      if (session.info.projectId !== current.id) {
-        throw new Error("Session belongs to a different Project");
-      }
-      if (!current.directories.includes(session.info.directory)) {
-        throw new Error("Session directory is not registered to this Project");
-      }
-      const resolvedCwd = resolve(session.info.directory, session.info.cwd);
-      const stats = await stat(resolvedCwd).catch(() => undefined);
+      const stats = await stat(session.metadata.cwd).catch(() => undefined);
       if (stats === undefined || !stats.isDirectory()) {
-        throw new Error(`Session cwd does not exist: ${resolvedCwd}`);
+        throw new Error(`Session cwd does not exist: ${session.metadata.cwd}`);
       }
+      selectContainingDirectory(current.directories, session.metadata.cwd);
       return bindSession(session);
     },
     continueRecent: async () => {
       const [latest] = await repository.list();
       if (latest !== undefined) return bindSession(await repository.open(latest.id));
-      return bindSession(await repository.create({
-        projectId: current.id,
-        directory: current.primaryDirectory,
-        cwd: relativeCwd(current.primaryDirectory, initialCwd),
-      }));
+      return bindSession(await repository.create({ cwd: initialCwd }));
     },
     update: async (input: UpdateProjectInput): Promise<ProjectInfo> => {
       const next = applyProjectUpdate(current, input);

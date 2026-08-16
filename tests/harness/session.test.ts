@@ -8,7 +8,7 @@ import test from "node:test";
 import type { AgentMessage } from "../../src/core/agent/types.js";
 import type { ModelConfig } from "../../src/core/ai/types.js";
 import { Session, sessionsDir } from "../../src/core/harness/session/session.js";
-import { SessionError, type CreateSessionInput } from "../../src/core/harness/session/types.js";
+import { SessionError } from "../../src/core/harness/session/types.js";
 import { detailedToolResult } from "../ai/fixtures.js";
 
 const modelA: ModelConfig = { provider: "test-a", model: "model-a" };
@@ -29,20 +29,11 @@ async function tempStorage(): Promise<string> {
   return path;
 }
 
-function input(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {
-  return {
-    projectId: "project_test",
-    directory: process.cwd(),
-    cwd: ".",
-    ...overrides,
-  };
-}
-
 function memorySession(): Session {
-  return Session.inMemory(input());
+  return Session.inMemory({ cwd: process.cwd() });
 }
 
-async function readRecords(storageDir: string, sessionId: string): Promise<unknown[]> {
+async function readRows(storageDir: string, sessionId: string): Promise<unknown[]> {
   const path = join(sessionsDir(storageDir), `${sessionId}.jsonl`);
   return (await readFile(path, "utf8"))
     .trim()
@@ -54,54 +45,71 @@ async function readRecords(storageDir: string, sessionId: string): Promise<unkno
 const isInvalidSession = (error: unknown): boolean =>
   error instanceof SessionError && error.code === "invalid_session";
 
+const isInvalidEntry = (error: unknown): boolean =>
+  error instanceof SessionError && error.code === "invalid_entry";
+
 test("create immediately writes an unknown-title Session header", async () => {
   const storageDir = await tempStorage();
   try {
-    const session = await Session.create(storageDir, input({ cwd: "src" }));
-    const records = await readRecords(storageDir, session.id);
-    assert.equal(records.length, 1);
-    assert.deepEqual(records[0], {
+    const session = await Session.create(storageDir, { cwd: process.cwd() });
+    const rows = await readRows(storageDir, session.id);
+    assert.equal(rows.length, 1);
+    assert.deepEqual(rows[0], {
       type: "session",
-      version: 1,
+      version: 2,
       id: session.id,
-      projectId: input().projectId,
       title: "unknown",
-      directory: resolve(input().directory),
-      cwd: "src",
-      createdAt: session.info.createdAt,
+      cwd: resolve(process.cwd()),
+      createdAt: session.metadata.createdAt,
     });
-    assert.equal(session.info.updatedAt, session.info.createdAt);
+    assert.equal(session.metadata.updatedAt, session.metadata.createdAt);
+    assert.equal(session.headId, null);
+    assert.deepEqual(session.nodes, []);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
 });
 
-test("in-memory session rebuilds messages and latest model", async () => {
+test("append generates node identity and common fields", async () => {
   const session = memorySession();
-  await session.appendModelChange(modelA);
-  await session.appendMessage(user);
-  await session.appendModelChange(modelB);
-  await session.appendMessage(assistant);
+  const id = await session.append({ type: "message", message: user });
+  assert.equal(id, session.headId);
 
-  assert.deepEqual(session.buildContext(), {
-    messages: [user, assistant],
-    model: modelB,
-  });
+  const node = session.nodes[0];
+  assert.ok(node);
+  assert.equal(node.type, "message");
+  assert.equal(node.id, id);
+  assert.equal(node.parentId, null);
+  assert.ok(!Number.isNaN(Date.parse(node.createdAt)));
+  assert.deepEqual(node.message, user);
 });
 
-test("persistent session appends and reopens records", async () => {
+test("in-memory session projects messages and latest model", async () => {
+  const session = memorySession();
+  await session.append({ type: "model_selection", selection: modelA });
+  await session.append({ type: "message", message: user });
+  await session.append({ type: "model_selection", selection: modelB });
+  await session.append({ type: "message", message: assistant });
+
+  assert.deepEqual(session.messages(), [user, assistant]);
+  assert.deepEqual(session.modelSelection(), modelB);
+  assert.deepEqual(session.nodes.map((node) => node.type), [
+    "model_selection", "message", "model_selection", "message",
+  ]);
+});
+
+test("persistent session appends and reopens nodes", async () => {
   const storageDir = await tempStorage();
   try {
-    const session = await Session.create(storageDir, input());
-    await session.appendMessage(user);
-    await session.appendMessage(assistant);
-    await session.appendModelChange(modelB);
+    const session = await Session.create(storageDir, { cwd: process.cwd() });
+    await session.append({ type: "message", message: user });
+    await session.append({ type: "message", message: assistant });
+    await session.append({ type: "model_selection", selection: modelB });
 
     const reopened = await Session.open(storageDir, session.id);
-    assert.deepEqual(reopened.buildContext(), {
-      messages: [user, assistant],
-      model: modelB,
-    });
+    assert.deepEqual(reopened.messages(), [user, assistant]);
+    assert.deepEqual(reopened.modelSelection(), modelB);
+    assert.equal(reopened.headId, session.headId);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
@@ -111,20 +119,18 @@ test("concurrent appends persist one ordered parent chain", async () => {
   const storageDir = await tempStorage();
   const followUp: AgentMessage = { role: "user", content: "follow up" };
   try {
-    const session = await Session.create(storageDir, input());
-    await session.appendMessage(user);
-    await session.appendMessage(assistant);
+    const session = await Session.create(storageDir, { cwd: process.cwd() });
+    await session.append({ type: "message", message: user });
+    await session.append({ type: "message", message: assistant });
 
     await Promise.all([
-      session.appendMessage(followUp),
-      session.appendModelChange(modelB),
+      session.append({ type: "message", message: followUp }),
+      session.append({ type: "model_selection", selection: modelB }),
     ]);
 
     const reopened = await Session.open(storageDir, session.id);
-    assert.deepEqual(reopened.buildContext(), {
-      messages: [user, assistant, followUp],
-      model: modelB,
-    });
+    assert.deepEqual(reopened.messages(), [user, assistant, followUp]);
+    assert.deepEqual(reopened.modelSelection(), modelB);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
@@ -145,7 +151,7 @@ test("open rejects a headerless old Session", async () => {
   }
 });
 
-test("open rejects missing, empty, malformed, and invalid-entry sessions", async () => {
+test("open rejects missing, empty, malformed, version-1, and invalid-row sessions", async () => {
   const storageDir = await tempStorage();
   const dir = sessionsDir(storageDir);
   try {
@@ -164,21 +170,21 @@ test("open rejects missing, empty, malformed, and invalid-entry sessions", async
 
     await writeFile(
       join(dir, "bad-header.jsonl"),
-      `${JSON.stringify({ type: "session", version: 1, id: "other", projectId: "p", directory: ".", cwd: ".", title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n`,
+      `${JSON.stringify({ type: "session", version: 2, id: "other", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n`,
     );
     await assert.rejects(
       Session.open(storageDir, "bad-header"),
       (error: unknown) => error instanceof SessionError && error.code === "invalid_session",
     );
 
-    await writeFile(join(dir, "unsupported.jsonl"),
-      `${JSON.stringify({ type: "session", version: 2, id: "unsupported", projectId: "p", directory: ".", cwd: ".", title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n`);
-    await assert.rejects(Session.open(storageDir, "unsupported"), isInvalidSession);
+    await writeFile(join(dir, "version-1.jsonl"),
+      `${JSON.stringify({ type: "session", version: 1, id: "version-1", projectId: "p", directory: ".", cwd: ".", title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n`);
+    await assert.rejects(Session.open(storageDir, "version-1"), isInvalidSession);
 
-    await writeFile(join(dir, "bad-record.jsonl"),
-      `${JSON.stringify({ type: "session", version: 1, id: "bad-record", projectId: "p", directory: ".", cwd: ".", title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${JSON.stringify({ type: "unknown", id: "y", parentId: null, createdAt: "2026-01-01T00:00:00.000Z" })}\n`);
+    await writeFile(join(dir, "bad-row.jsonl"),
+      `${JSON.stringify({ type: "session", version: 2, id: "bad-row", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${JSON.stringify({ type: "unknown", id: "y", parentId: null, createdAt: "2026-01-01T00:00:00.000Z" })}\n`);
     await assert.rejects(
-      Session.open(storageDir, "bad-record"),
+      Session.open(storageDir, "bad-row"),
       (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
     );
   } finally {
@@ -198,22 +204,21 @@ test("open rejects session ids that can escape the sessions directory", async ()
   }
 });
 
-test("failed append after external session-file deletion rolls back the new entry", async () => {
+test("failed append after external session-file deletion rolls back node and head", async () => {
   const storageDir = await tempStorage();
   try {
-    const session = await Session.create(storageDir, input());
-    await session.appendMessage(user);
-    await session.appendMessage(assistant);
+    const session = await Session.create(storageDir, { cwd: process.cwd() });
+    await session.append({ type: "message", message: user });
+    await session.append({ type: "message", message: assistant });
     await rm(join(sessionsDir(storageDir), `${session.id}.jsonl`));
 
     await assert.rejects(
-      session.appendModelChange(modelB),
+      session.append({ type: "model_selection", selection: modelB }),
       (error: unknown) => error instanceof SessionError && error.code === "storage",
     );
-    assert.deepEqual(session.buildContext(), {
-      messages: [user, assistant],
-      model: null,
-    });
+    assert.deepEqual(session.messages(), [user, assistant]);
+    assert.equal(session.modelSelection(), null);
+    assert.equal(session.headId, session.nodes.at(-1)?.id);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
@@ -221,25 +226,31 @@ test("failed append after external session-file deletion rolls back the new entr
 
 test("append rejects invalid runtime entries without changing the session", async () => {
   const invalidAppends: Array<{
-    readonly append: (session: Session) => Promise<void>;
+    readonly append: (session: Session) => Promise<unknown>;
     readonly name: string;
   }> = [
     {
       name: "NaN assistant latency",
-      append: (session) => session.appendMessage({ ...assistant, latencyMs: Number.NaN }),
+      append: (session) => session.append({
+        type: "message",
+        message: { ...assistant, latencyMs: Number.NaN },
+      }),
     },
     {
       name: "infinite assistant token count",
-      append: (session) => session.appendMessage({
-        ...assistant,
-        usage: { inputTokens: 1, outputTokens: Infinity, totalTokens: 2 },
+      append: (session) => session.append({
+        type: "message",
+        message: {
+          ...assistant,
+          usage: { inputTokens: 1, outputTokens: Infinity, totalTokens: 2 },
+        },
       }),
     },
     {
       name: "non-string model ID",
-      append: (session) => session.appendModelChange({
-        provider: "test",
-        model: null as unknown as string,
+      append: (session) => session.append({
+        type: "model_selection",
+        selection: { provider: "test", model: null as unknown as string },
       }),
     },
   ];
@@ -251,22 +262,29 @@ test("append rejects invalid runtime entries without changing the session", asyn
         append(session),
         (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
       );
-      assert.deepEqual(session.buildContext(), { messages: [], model: null });
+      assert.deepEqual(session.messages(), []);
+      assert.equal(session.modelSelection(), null);
+      assert.equal(session.headId, null);
+      assert.deepEqual(session.nodes, []);
     });
   }
 });
 
 test("a failed queued append does not block a later valid append", async () => {
   const session = memorySession();
-  const failed = session.appendMessage({ ...assistant, latencyMs: Number.NaN });
-  const succeeded = session.appendMessage(user);
+  const failed = session.append({
+    type: "message",
+    message: { ...assistant, latencyMs: Number.NaN },
+  });
+  const succeeded = session.append({ type: "message", message: user });
 
   await assert.rejects(
     failed,
     (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
   );
   await succeeded;
-  assert.deepEqual(session.buildContext(), { messages: [user], model: null });
+  assert.deepEqual(session.messages(), [user]);
+  assert.equal(session.modelSelection(), null);
 });
 
 test("open rejects duplicate IDs, missing parents, and multiple roots", async () => {
@@ -302,7 +320,7 @@ test("open rejects duplicate IDs, missing parents, and multiple roots", async ()
     for (const { name, entries } of invalidTrees) {
       await writeFile(
         join(dir, `${name}.jsonl`),
-        `${JSON.stringify({ type: "session", version: 1, id: name, projectId: "p", directory: ".", cwd: ".", title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+        `${JSON.stringify({ type: "session", version: 2, id: name, cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
       );
       await assert.rejects(
         Session.open(storageDir, name),
@@ -314,15 +332,15 @@ test("open rejects duplicate IDs, missing parents, and multiple roots", async ()
   }
 });
 
-test("buildContext returns a new messages array", async () => {
+test("messages returns a fresh array", async () => {
   const session = memorySession();
-  await session.appendMessage(user);
-  const first = session.buildContext();
-  first.messages.push(assistant);
-  assert.deepEqual(session.buildContext().messages, [user]);
+  await session.append({ type: "message", message: user });
+  const first = session.messages();
+  assert.notEqual(session.messages(), first);
+  assert.deepEqual(session.messages(), [user]);
 });
 
-test("buildContext follows the current leaf parent chain", async () => {
+test("path follows the head parent chain and skips abandoned nodes", async () => {
   const storageDir = await tempStorage();
   const dir = sessionsDir(storageDir);
   const currentAssistant: AgentMessage = {
@@ -338,56 +356,89 @@ test("buildContext follows the current leaf parent chain", async () => {
     ];
     await writeFile(
       join(dir, "branched.jsonl"),
-      `${JSON.stringify({ type: "session", version: 1, id: "branched", projectId: "p", directory: ".", cwd: ".", title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      `${JSON.stringify({ type: "session", version: 2, id: "branched", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
     );
 
     const session = await Session.open(storageDir, "branched");
-    assert.deepEqual(session.buildContext().messages, [user, currentAssistant]);
+    assert.equal(session.headId, "current");
+    assert.deepEqual(session.messages(), [user, currentAssistant]);
+    assert.deepEqual(session.path().map((node) => node.id), ["root", "current"]);
+    assert.deepEqual(session.path("root").map((node) => node.id), ["root"]);
+    assert.deepEqual(session.path(null), []);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
 });
 
-test("title records do not change the conversation tree", async () => {
+test("path rejects unknown node IDs", async () => {
+  const session = memorySession();
+  await session.append({ type: "message", message: user });
+  assert.throws(() => session.path("missing"), isInvalidEntry);
+});
+
+test("modelSelection scans the selected path newest first", async () => {
+  const session = memorySession();
+  const messageId = await session.append({ type: "message", message: user });
+  const selectionId = await session.append({ type: "model_selection", selection: modelA });
+  await session.append({ type: "message", message: assistant });
+
+  assert.deepEqual(session.modelSelection(), modelA);
+  assert.deepEqual(session.modelSelection(selectionId), modelA);
+  assert.equal(session.modelSelection(messageId), null);
+  assert.equal(session.modelSelection(null), null);
+});
+
+test("nodes excludes title rows and title changes never touch the tree", async () => {
   const session = memorySession();
   await session.setTitle("First title");
+  await session.append({ type: "message", message: user });
+  await session.append({ type: "model_selection", selection: modelA });
   await session.setTitle("Renamed");
-  assert.equal(session.info.title, "Renamed");
-  assert.deepEqual(session.buildContext().messages, []);
+
+  assert.equal(session.metadata.title, "Renamed");
+  assert.deepEqual(session.nodes.map((node) => node.type), ["message", "model_selection"]);
+  assert.deepEqual(session.messages(), [user]);
+  assert.equal(session.headId, session.nodes.at(-1)?.id);
 });
 
 test("setTitleIfUnknown does not overwrite a queued manual title", async () => {
   const session = memorySession();
   await session.setTitle("Manual");
   assert.equal(await session.setTitleIfUnknown("Generated"), false);
-  assert.equal(session.info.title, "Manual");
+  assert.equal(session.metadata.title, "Manual");
 });
 
 test("setTitleIfUnknown sets the first generated title", async () => {
   const session = memorySession();
   assert.equal(await session.setTitleIfUnknown("Generated"), true);
-  assert.equal(session.info.title, "Generated");
+  assert.equal(session.metadata.title, "Generated");
 });
 
-test("title records roll back with the tree on failed persistence", async () => {
+test("title rows roll back on failed persistence", async () => {
   const storageDir = await tempStorage();
   try {
-    const session = await Session.create(storageDir, input());
-    await session.appendMessage(user);
+    const session = await Session.create(storageDir, { cwd: process.cwd() });
+    await session.append({ type: "message", message: user });
     await rm(join(sessionsDir(storageDir), `${session.id}.jsonl`));
 
     await assert.rejects(session.setTitle("new title"));
-    assert.equal(session.info.title, "unknown");
-    assert.deepEqual(session.buildContext().messages, [user]);
+    assert.equal(session.metadata.title, "unknown");
+    assert.deepEqual(session.messages(), [user]);
+    assert.equal(session.headId, session.nodes.at(-1)?.id);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
 });
 
+test("inMemory resolves cwd to an absolute path", () => {
+  const session = Session.inMemory({ cwd: "." });
+  assert.equal(session.metadata.cwd, resolve("."));
+});
+
 test("tool message details round-trip and non-JSON details are rejected", async () => {
   const session = memorySession();
-  await session.appendMessage(detailedToolResult);
-  assert.deepEqual(session.buildContext().messages.at(-1), detailedToolResult);
+  await session.append({ type: "message", message: detailedToolResult });
+  assert.deepEqual(session.messages().at(-1), detailedToolResult);
 
   const invalidDetails: AgentMessage = {
     role: "tool",
@@ -398,7 +449,7 @@ test("tool message details round-trip and non-JSON details are rejected", async 
     isError: false,
   };
   await assert.rejects(
-    session.appendMessage(invalidDetails),
+    session.append({ type: "message", message: invalidDetails }),
     /invalid/,
   );
 });
@@ -406,7 +457,7 @@ test("tool message details round-trip and non-JSON details are rejected", async 
 test("JSONL session persists nested JSON-safe details", async () => {
   const storageDir = await tempStorage();
   try {
-    const session = await Session.create(storageDir, input());
+    const session = await Session.create(storageDir, { cwd: process.cwd() });
     const detailed: AgentMessage = {
       role: "tool",
       toolCallId: "call-9",
@@ -419,12 +470,12 @@ test("JSONL session persists nested JSON-safe details", async () => {
       },
       isError: false,
     };
-    await session.appendMessage(user);
-    await session.appendMessage(assistant);
-    await session.appendMessage(detailed);
+    await session.append({ type: "message", message: user });
+    await session.append({ type: "message", message: assistant });
+    await session.append({ type: "message", message: detailed });
 
     const reopened = await Session.open(storageDir, session.id);
-    assert.deepEqual(reopened.buildContext().messages.at(-1), detailed);
+    assert.deepEqual(reopened.messages().at(-1), detailed);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }

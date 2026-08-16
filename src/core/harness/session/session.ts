@@ -1,17 +1,11 @@
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { AgentMessage } from "../../agent/types.js";
 import type { ModelConfig } from "../../ai/types.js";
 import {
-  type CreateSessionInput,
-  type SessionContext,
-  type SessionHeader,
-  type SessionInfo,
-  type SessionMessageEntry,
-  type SessionModelChangeEntry,
-  type SessionRecord,
-  type SessionTitleEntry,
+  type SessionMetadata,
+  type SessionNode,
   SessionError,
 } from "./types.js";
 
@@ -96,6 +90,10 @@ function isAgentMessage(value: unknown): value is AgentMessage {
   }
 }
 
+function isModelSelection(value: unknown): value is ModelConfig {
+  return isRecord(value) && isString(value.provider) && isString(value.model);
+}
+
 function invalidEntry(message: string): never {
   throw new SessionError("invalid_entry", message);
 }
@@ -104,40 +102,27 @@ function invalidSession(message: string): never {
   throw new SessionError("invalid_session", message);
 }
 
-function validateCwd(directory: string, cwd: string): void {
-  if (isAbsolute(cwd)) {
-    invalidEntry("Session cwd must be relative");
-  }
-  const resolved = resolve(directory, cwd);
-  const fromDirectory = resolve(directory);
-  if (resolved !== fromDirectory && !resolved.startsWith(fromDirectory + sep)) {
-    invalidEntry("Session cwd escapes its directory");
-  }
-}
-
-function parseHeader(raw: unknown): SessionHeader {
-  if (!isRecord(raw) || raw.type !== "session" || raw.version !== 1 ||
+function parseHeader(raw: unknown): StoredSessionHeader {
+  if (!isRecord(raw) || raw.type !== "session" || raw.version !== 2 ||
     !isString(raw.id) || !SESSION_ID_PATTERN.test(raw.id) ||
-    !isString(raw.projectId) || !isString(raw.directory) ||
-    !isString(raw.cwd) || !isString(raw.title) ||
-    !isTimestamp(raw.createdAt)) {
+    !isString(raw.cwd) || !isAbsolute(raw.cwd) ||
+    !isString(raw.title) || !isTimestamp(raw.createdAt) ||
+    (raw.parentSessionId !== undefined &&
+      (!isString(raw.parentSessionId) || !SESSION_ID_PATTERN.test(raw.parentSessionId)))) {
     invalidSession("Session header is invalid");
   }
-  const directory = resolve(raw.directory);
-  validateCwd(directory, raw.cwd);
   return {
     type: "session",
-    version: 1,
+    version: 2,
     id: raw.id,
-    projectId: raw.projectId,
-    directory,
-    cwd: raw.cwd,
+    cwd: resolve(raw.cwd),
     title: raw.title,
     createdAt: raw.createdAt,
+    ...(raw.parentSessionId !== undefined ? { parentSessionId: raw.parentSessionId } : {}),
   };
 }
 
-function parseRecord(raw: unknown): SessionRecord {
+function parseRow(raw: unknown): StoredSessionRow {
   if (!isRecord(raw) || !isString(raw.type) || !isTimestamp(raw.createdAt)) {
     return invalidEntry("Session record has invalid metadata");
   }
@@ -157,19 +142,18 @@ function parseRecord(raw: unknown): SessionRecord {
     };
   }
 
-  if (raw.type === "model_change") {
+  if (raw.type === "model_selection") {
     if (!isString(raw.id) || !SESSION_ID_PATTERN.test(raw.id) ||
       (raw.parentId !== null && (!isString(raw.parentId) || !SESSION_ID_PATTERN.test(raw.parentId))) ||
-      !isString(raw.provider) || !isString(raw.modelId)) {
-      return invalidEntry("Session model change record is invalid");
+      !isModelSelection(raw.selection)) {
+      return invalidEntry("Session model selection record is invalid");
     }
     return {
-      type: "model_change",
+      type: "model_selection",
       id: raw.id,
       parentId: raw.parentId as string | null,
       createdAt: raw.createdAt,
-      provider: raw.provider,
-      modelId: raw.modelId,
+      selection: raw.selection,
     };
   }
 
@@ -187,28 +171,25 @@ function parseRecord(raw: unknown): SessionRecord {
   return invalidEntry("Session record has an unknown type");
 }
 
-function validateTree(records: readonly SessionRecord[]): void {
+function validateTree(nodes: readonly SessionNode[]): void {
   const byId = new Set<string>();
   let rootCount = 0;
-  let treeCount = 0;
 
-  for (const record of records) {
-    if (record.type === "session_title") continue;
-    treeCount += 1;
-    if (byId.has(record.id)) {
-      invalidEntry("Session contains duplicate entry IDs");
+  for (const node of nodes) {
+    if (byId.has(node.id)) {
+      invalidEntry("Session contains duplicate node IDs");
     }
-    if (record.parentId === null) {
+    if (node.parentId === null) {
       rootCount += 1;
-    } else if (!byId.has(record.parentId)) {
-      invalidEntry("Session entry references a missing parent");
+    } else if (!byId.has(node.parentId)) {
+      invalidEntry("Session node references a missing parent");
     }
-    byId.add(record.id);
+    byId.add(node.id);
   }
 
-  // A fresh Session may contain only a header and no tree records yet.
-  if (treeCount > 0 && rootCount !== 1) {
-    invalidEntry("Session entries must form one rooted tree");
+  // A fresh Session may contain only a header and no nodes yet.
+  if (nodes.length > 0 && rootCount !== 1) {
+    invalidEntry("Session nodes must form one rooted tree");
   }
 }
 
@@ -228,29 +209,47 @@ function asStorageError(message: string, error: unknown): SessionError {
   return new SessionError("storage", message, { cause: error });
 }
 
+interface StoredSessionHeader {
+  readonly type: "session";
+  readonly version: 2;
+  readonly id: string;
+  readonly title: string;
+  readonly cwd: string;
+  readonly createdAt: string;
+  readonly parentSessionId?: string;
+}
+
+interface StoredTitleChange {
+  readonly type: "session_title";
+  readonly createdAt: string;
+  readonly title: string;
+}
+
+type StoredSessionRow = SessionNode | StoredTitleChange;
+
+type AppendNode =
+  | { readonly type: "message"; readonly message: AgentMessage }
+  | { readonly type: "model_selection"; readonly selection: ModelConfig };
+
 export class Session {
-  private records: SessionRecord[] = [];
-  private leafId: string | null = null;
+  private readonly storedRows: StoredSessionRow[] = [];
+  private readonly nodeById = new Map<string, SessionNode>();
+  private _headId: string | null = null;
   private pending = Promise.resolve();
 
   private constructor(
     readonly id: string,
     private readonly persistPath: string | null,
-    private readonly header: SessionHeader,
+    private readonly header: StoredSessionHeader,
   ) {}
 
-  static async create(storageDir: string, input: CreateSessionInput): Promise<Session> {
-    const directory = resolve(input.directory);
-    validateCwd(directory, input.cwd);
-
+  static async create(storageDir: string, input: { readonly cwd: string }): Promise<Session> {
     const id = newId();
-    const header: SessionHeader = {
+    const header: StoredSessionHeader = {
       type: "session",
-      version: 1,
+      version: 2,
       id,
-      projectId: input.projectId,
-      directory,
-      cwd: input.cwd,
+      cwd: resolve(input.cwd),
       title: "unknown",
       createdAt: new Date().toISOString(),
     };
@@ -288,59 +287,141 @@ export class Session {
       invalidSession("Session header ID does not match the filename");
     }
 
-    const records: SessionRecord[] = [];
+    const rows: StoredSessionRow[] = [];
     for (let index = 1; index < lines.length; index++) {
-      records.push(parseRecord(parseJson(lines[index]!, path)));
+      rows.push(parseRow(parseJson(lines[index]!, path)));
     }
-    validateTree(records);
+    const nodes = rows.filter((row): row is SessionNode => row.type !== "session_title");
+    validateTree(nodes);
 
     const session = new Session(sessionId, path, header);
-    for (const record of records) {
-      session.push(record);
+    session.storedRows.push(...rows);
+    for (const node of nodes) {
+      session.nodeById.set(node.id, node);
     }
+    session._headId = nodes.at(-1)?.id ?? null;
     return session;
   }
 
-  static inMemory(input: CreateSessionInput): Session {
-    const directory = resolve(input.directory);
-    validateCwd(directory, input.cwd);
-    const header: SessionHeader = {
+  static inMemory(options: { readonly cwd: string }): Session {
+    const header: StoredSessionHeader = {
       type: "session",
-      version: 1,
+      version: 2,
       id: newId(),
-      projectId: input.projectId,
-      directory,
-      cwd: input.cwd,
+      cwd: resolve(options.cwd),
       title: "unknown",
       createdAt: new Date().toISOString(),
     };
     return new Session(header.id, null, header);
   }
 
-  private push(record: SessionRecord): void {
-    this.records.push(record);
-    if (record.type !== "session_title") {
-      this.leafId = record.id;
+  get metadata(): SessionMetadata {
+    let title = this.header.title;
+    let updatedAt = this.header.createdAt;
+    for (const row of this.storedRows) {
+      if (row.createdAt > updatedAt) updatedAt = row.createdAt;
+      if (row.type === "session_title") title = row.title;
     }
+    return {
+      id: this.id,
+      title,
+      cwd: this.header.cwd,
+      createdAt: this.header.createdAt,
+      updatedAt,
+      ...(this.header.parentSessionId !== undefined
+        ? { parentSessionId: this.header.parentSessionId }
+        : {}),
+    };
   }
 
-  private rollback(record: SessionRecord, previousLeafId: string | null): void {
-    const popped = this.records.pop();
-    if (popped !== record) {
-      throw new Error("Session append rollback lost the appended entry");
-    }
-    if (record.type !== "session_title") {
-      this.leafId = previousLeafId;
-    }
+  get headId(): string | null {
+    return this._headId;
   }
 
-  private async persist(record: SessionRecord): Promise<void> {
+  get nodes(): readonly SessionNode[] {
+    return this.storedRows.filter((row): row is SessionNode => row.type !== "session_title");
+  }
+
+  path(nodeId: string | null | undefined = this._headId): readonly SessionNode[] {
+    if (nodeId === null) return [];
+    const path: SessionNode[] = [];
+    let cursor: string | null = nodeId;
+    while (cursor !== null) {
+      const node = this.nodeById.get(cursor);
+      if (node === undefined) {
+        throw new SessionError("invalid_entry", `Session node ${cursor} was not found`);
+      }
+      path.push(node);
+      cursor = node.parentId;
+    }
+    return path.reverse();
+  }
+
+  messages(nodeId?: string | null): readonly AgentMessage[] {
+    return this.path(nodeId)
+      .filter((node): node is Extract<SessionNode, { type: "message" }> => node.type === "message")
+      .map((node) => node.message);
+  }
+
+  modelSelection(nodeId?: string | null): ModelConfig | null {
+    const path = this.path(nodeId);
+    for (let index = path.length - 1; index >= 0; index--) {
+      const node = path[index]!;
+      if (node.type === "model_selection") return node.selection;
+    }
+    return null;
+  }
+
+  async append(node: AppendNode): Promise<string> {
+    return this.enqueue(() => this.appendNode(node));
+  }
+
+  private async appendNode(input: AppendNode): Promise<string> {
+    const node: SessionNode = input.type === "message"
+      ? {
+          type: "message",
+          id: newId(),
+          parentId: this._headId,
+          createdAt: new Date().toISOString(),
+          message: input.message,
+        }
+      : {
+          type: "model_selection",
+          id: newId(),
+          parentId: this._headId,
+          createdAt: new Date().toISOString(),
+          selection: input.selection,
+        };
+    const validated = parseRow(node) as SessionNode;
+    const previousHeadId = this._headId;
+    this.storedRows.push(validated);
+    this.nodeById.set(validated.id, validated);
+    this._headId = validated.id;
+    try {
+      await this.persist(validated);
+    } catch (error) {
+      this.rollback(validated, previousHeadId);
+      throw error;
+    }
+    return validated.id;
+  }
+
+  private rollback(node: SessionNode, previousHeadId: string | null): void {
+    const popped = this.storedRows.pop();
+    if (popped !== node) {
+      throw new Error("Session append rollback lost the appended node");
+    }
+    this.nodeById.delete(node.id);
+    this._headId = previousHeadId;
+  }
+
+  private async persist(row: StoredSessionRow): Promise<void> {
     if (this.persistPath === null) return;
     try {
       const file = await open(this.persistPath, "r+");
       try {
         const { size } = await file.stat();
-        const contents = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
+        const contents = Buffer.from(`${JSON.stringify(row)}\n`, "utf8");
         let offset = 0;
         while (offset < contents.length) {
           const { bytesWritten } = await file.write(
@@ -358,19 +439,7 @@ export class Session {
         await file.close();
       }
     } catch (error) {
-      throw asStorageError("Could not persist session entry", error);
-    }
-  }
-
-  private async append(record: SessionRecord): Promise<void> {
-    const validated = parseRecord(record);
-    const previousLeafId = this.leafId;
-    this.push(validated);
-    try {
-      await this.persist(validated);
-    } catch (error) {
-      this.rollback(validated, previousLeafId);
-      throw error;
+      throw asStorageError("Could not persist session row", error);
     }
   }
 
@@ -383,27 +452,6 @@ export class Session {
     return result;
   }
 
-  async appendMessage(message: AgentMessage): Promise<void> {
-    await this.enqueue(() => this.append({
-      type: "message",
-      id: newId(),
-      parentId: this.leafId,
-      createdAt: new Date().toISOString(),
-      message,
-    } satisfies SessionMessageEntry));
-  }
-
-  async appendModelChange(model: ModelConfig): Promise<void> {
-    await this.enqueue(() => this.append({
-      type: "model_change",
-      id: newId(),
-      parentId: this.leafId,
-      createdAt: new Date().toISOString(),
-      provider: model.provider,
-      modelId: model.model,
-    } satisfies SessionModelChangeEntry));
-  }
-
   private normalizeTitle(title: string): string {
     const trimmed = title.trim();
     if (trimmed === "" || trimmed.includes("\n")) {
@@ -414,72 +462,34 @@ export class Session {
 
   async setTitle(title: string): Promise<void> {
     const normalized = this.normalizeTitle(title);
-    await this.enqueue(() => this.append({
+    await this.enqueue(() => this.appendTitle(normalized));
+  }
+
+  private async appendTitle(title: string): Promise<void> {
+    const row: StoredTitleChange = {
       type: "session_title",
       createdAt: new Date().toISOString(),
-      title: normalized,
-    } satisfies SessionTitleEntry));
+      title,
+    };
+    this.storedRows.push(row);
+    try {
+      await this.persist(row);
+    } catch (error) {
+      const popped = this.storedRows.pop();
+      if (popped !== row) {
+        throw new Error("Session title rollback lost the appended row");
+      }
+      throw error;
+    }
   }
 
   async setTitleIfUnknown(title: string): Promise<boolean> {
     return this.enqueue(async () => {
-      if (this.info.title !== "unknown") return false;
+      if (this.metadata.title !== "unknown") return false;
       const normalized = this.normalizeTitle(title);
-      await this.append({
-        type: "session_title",
-        createdAt: new Date().toISOString(),
-        title: normalized,
-      } satisfies SessionTitleEntry);
+      await this.appendTitle(normalized);
       return true;
     });
-  }
-
-  private branch(): (SessionMessageEntry | SessionModelChangeEntry)[] {
-    const branch: (SessionMessageEntry | SessionModelChangeEntry)[] = [];
-    let cursor = this.leafId;
-    while (cursor !== null) {
-      const record = this.records.find((candidate): candidate is SessionMessageEntry | SessionModelChangeEntry =>
-        candidate.type !== "session_title" && candidate.id === cursor);
-      if (record === undefined) {
-        throw new SessionError("invalid_entry", "Session leaf points to a missing entry");
-      }
-      branch.push(record);
-      cursor = record.parentId;
-    }
-    return branch.reverse();
-  }
-
-  buildContext(): SessionContext {
-    const messages: AgentMessage[] = [];
-    let model: ModelConfig | null = null;
-
-    for (const entry of this.branch()) {
-      if (entry.type === "message") {
-        messages.push(entry.message);
-      } else {
-        model = { provider: entry.provider, model: entry.modelId };
-      }
-    }
-
-    return { messages, model };
-  }
-
-  get info(): SessionInfo {
-    let title = this.header.title;
-    let updatedAt = this.header.createdAt;
-    for (const record of this.records) {
-      if (record.createdAt > updatedAt) updatedAt = record.createdAt;
-      if (record.type === "session_title") title = record.title;
-    }
-    return {
-      id: this.id,
-      projectId: this.header.projectId,
-      directory: this.header.directory,
-      cwd: this.header.cwd,
-      title,
-      createdAt: this.header.createdAt,
-      updatedAt,
-    };
   }
 }
 

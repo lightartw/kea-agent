@@ -7,7 +7,6 @@ import { randomUUID } from "node:crypto";
 
 import { AgentHarness } from "../../src/core/harness/agent-harness.js";
 import { Session } from "../../src/core/harness/session/session.js";
-import type { CreateSessionInput } from "../../src/core/harness/session/types.js";
 import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
 import { AgentTool } from "../../src/core/agent/tools/types.js";
 import { Events } from "../../src/core/events/events.js";
@@ -35,17 +34,8 @@ const stream: StreamFn = async function* () {
   yield { type: "done", message: assistant };
 };
 
-function sessionInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {
-  return {
-    projectId: "project_test",
-    directory: process.cwd(),
-    cwd: ".",
-    ...overrides,
-  };
-}
-
 function memorySession(): Session {
-  return Session.inMemory(sessionInput());
+  return Session.inMemory({ cwd: process.cwd() });
 }
 
 function makeHarness(options: {
@@ -119,7 +109,7 @@ test("messages are in Session before terminal facts are observed", async () => {
   events.on("agent/turn-start", (input) => {
     if (input.sessionId === harness.sessionId) {
       assert.deepEqual(
-        session.buildContext().messages.map((message) => message.role),
+        session.messages().map((message) => message.role),
         ["user"],
       );
     }
@@ -127,7 +117,7 @@ test("messages are in Session before terminal facts are observed", async () => {
   events.on("agent/turn-end", (input) => {
     if (input.sessionId === harness.sessionId) {
       assert.deepEqual(
-        session.buildContext().messages.map((message) => message.role),
+        session.messages().map((message) => message.role),
         ["user", "assistant"],
       );
     }
@@ -197,7 +187,7 @@ test("abort from run-start prevents the Agent execution", async () => {
 
 test("persistence failure still publishes one run_end error", async () => {
   const session = memorySession();
-  session.appendMessage = async () => {
+  session.append = async () => {
     throw new Error("storage failed");
   };
   const { harness, events } = makeHarness({ session });
@@ -218,7 +208,7 @@ test("persistence failure still publishes one run_end error", async () => {
 test("abort concurrent with storage failure still rejects the Run", async () => {
   const session = memorySession();
   let aborted = false;
-  session.appendMessage = async () => {
+  session.append = async () => {
     if (!aborted) {
       aborted = true;
       harness.abort();
@@ -336,19 +326,19 @@ test("abort during prompt preparation prevents the Agent run", async () => {
 
 test("restores Session model and persists later switches", async () => {
   const session = memorySession();
-  await session.appendModelChange(modelB);
+  await session.append({ type: "model_selection", selection: modelB });
   const { harness } = makeHarness({ session });
   assert.deepEqual(harness.model, modelB);
 
   await harness.switchModel(modelA);
   assert.deepEqual(harness.model, modelA);
-  assert.deepEqual(session.buildContext().model, modelA);
+  assert.deepEqual(session.modelSelection(), modelA);
 });
 
 test("failed model persistence leaves current model unchanged", async () => {
   const session = memorySession();
   const { harness } = makeHarness({ session });
-  session.appendModelChange = async () => {
+  session.append = async () => {
     throw new Error("storage failed");
   };
 
@@ -484,7 +474,7 @@ test("exactly one run-end follows every observed run-start", async () => {
 
   {
     const session = memorySession();
-    session.appendMessage = async () => { throw new Error("storage failed"); };
+    session.append = async () => { throw new Error("storage failed"); };
     const { harness, boundaries } = boundaryHarness({ session });
     await assert.rejects(harness.prompt("hello"), /storage failed/);
     assert.equal(boundaries.filter((entry) => entry === "run_start").length, 1, "error");
@@ -638,7 +628,7 @@ test("tool-result subscriber sees the persisted result message", async () => {
   const observed: Array<{ type: string; matches: boolean }> = [];
   events.on("agent/tool-result", (input) => {
     if (input.sessionId !== harness.sessionId) return;
-    const message = session.buildContext().messages.find(
+    const message = session.messages().find(
       (entry) => entry.role === "tool" && entry.toolCallId === "c1",
     );
     const matches = message !== undefined && message.role === "tool" &&
@@ -687,7 +677,7 @@ test("tool-result subscriber sees the persisted synthetic message for an unknown
   const observed: Array<{ type: string; matches: boolean }> = [];
   events.on("agent/tool-result", (input) => {
     if (input.sessionId !== harness.sessionId) return;
-    const message = session.buildContext().messages.find(
+    const message = session.messages().find(
       (entry) => entry.role === "tool" && entry.toolCallId === "c1",
     );
     const matches = message !== undefined &&
@@ -724,7 +714,7 @@ test("first persisted user message starts title generation beside the response",
     titleGenerator: async (prompt, titleModel) => {
       assert.equal(prompt, "design sessions");
       assert.deepEqual(titleModel, modelA);
-      assert.equal(session.buildContext().messages[0]?.role, "user");
+      assert.equal(session.messages()[0]?.role, "user");
       titleStarted.resolve();
       await releaseTitle.promise;
       return "Session design";
@@ -757,7 +747,7 @@ test("blocked first prompts do not start title generation", async () => {
   });
 
   await harness.prompt("hello");
-  assert.equal(session.buildContext().messages.filter((message) => message.role === "user").length, 0);
+  assert.equal(session.messages().filter((message) => message.role === "user").length, 0);
   assert.equal(titleCalls, 0);
   assert.equal(harness.title, "unknown");
 });
@@ -816,7 +806,7 @@ test("reopened unknown-title Session with an existing user message is not regene
   const storageDir = join(tmpdir(), `kea-harness-title-${randomUUID()}`);
   await mkdir(storageDir, { recursive: true });
   try {
-    const first = await Session.create(storageDir, sessionInput());
+    const first = await Session.create(storageDir, { cwd: process.cwd() });
     const { harness: firstHarness } = makeHarness({
       session: first,
       titleGenerator: async () => "First title",

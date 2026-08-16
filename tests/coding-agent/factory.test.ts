@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { createProject } from "../../src/coding-agent/factory.js";
-import type { SessionInfo } from "../../src/core/harness/session/types.js";
+import type { SessionMetadata } from "../../src/core/harness/session/types.js";
 import type {
   AssistantMessage,
   ModelConfig,
@@ -68,8 +68,7 @@ test("createSession uses the primary directory with cwd .", async () => {
     const session = await project.createSession();
     const [info] = await project.listSessions();
     assert.equal(info?.id, session.sessionId);
-    assert.equal(info?.directory, project.primaryDirectory);
-    assert.equal(info?.cwd, ".");
+    assert.equal(info?.cwd, resolve(dir));
   } finally {
     await rm(keaHome, { recursive: true, force: true });
     await rm(dir, { recursive: true, force: true });
@@ -87,8 +86,7 @@ test("continueRecent creates a Session at the startup cwd when empty", async () 
     const harness = await project.continueRecent();
     const [info] = await project.listSessions();
     assert.equal(info?.id, harness.sessionId);
-    assert.equal(info?.directory, resolve(dir));
-    assert.equal(info?.cwd, "src");
+    assert.equal(info?.cwd, resolve(sub));
   } finally {
     await rm(keaHome, { recursive: true, force: true });
     await rm(dir, { recursive: true, force: true });
@@ -135,14 +133,14 @@ test("switching primaryDirectory changes later createSession but not old headers
     const project = await createProjectAt(keaHome, dirA);
     const first = await project.createSession();
     const [firstInfo] = await project.listSessions();
-    assert.equal(firstInfo?.directory, resolve(dirA));
+    assert.equal(firstInfo?.cwd, resolve(dirA));
 
     await project.update({ primaryDirectory: resolve(dirB), directories: [resolve(dirA), resolve(dirB)] });
     const second = await project.createSession();
     const [secondInfo, ...rest] = await project.listSessions();
-    assert.equal(secondInfo?.directory, resolve(dirB));
+    assert.equal(secondInfo?.cwd, resolve(dirB));
     assert.equal(rest[0]?.id, first.sessionId);
-    assert.equal(rest[0]?.directory, resolve(dirA));
+    assert.equal(rest[0]?.cwd, resolve(dirA));
   } finally {
     await rm(keaHome, { recursive: true, force: true });
     await rm(dirA, { recursive: true, force: true });
@@ -173,37 +171,12 @@ test("Project.update survives a second createProject call", async () => {
   }
 });
 
-test("openSession rejects foreign projectId, removed directories, and missing cwd", async () => {
+test("openSession rejects removed directories and missing cwd", async () => {
   const keaHome = await tempDir();
   const dirA = await tempDir();
   const dirB = await tempDir();
   try {
     const projectA = await createProjectAt(keaHome, dirA);
-    const session = await projectA.createSession();
-    const sid = session.sessionId;
-
-    // Foreign projectId: craft a session file whose header belongs to another Project.
-    const foreignStorage = join(keaHome, "projects", projectA.id, "sessions");
-    const foreignId = "foreignsession";
-    await writeFile(
-      join(foreignStorage, `${foreignId}.jsonl`),
-      `${JSON.stringify({
-        type: "session",
-        version: 1,
-        id: foreignId,
-        projectId: "some_other_project",
-        directory: resolve(dirA),
-        cwd: ".",
-        title: "unknown",
-        createdAt: "2026-08-13T00:00:00.000Z",
-      })}\n`,
-      "utf8",
-    );
-    await assert.rejects(
-      projectA.openSession(foreignId),
-      /different Project/,
-    );
-    await rm(join(foreignStorage, `${foreignId}.jsonl`), { force: true });
 
     // Directory removed from the Project after the Session was created.
     const beforeRemove = await projectA.createSession();
@@ -215,7 +188,7 @@ test("openSession rejects foreign projectId, removed directories, and missing cw
     });
     await assert.rejects(
       projectA.openSession(removedId),
-      /not registered/,
+      /escapes the Project directories/,
     );
 
     // Resolved cwd no longer exists on disk.
