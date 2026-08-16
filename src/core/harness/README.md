@@ -279,8 +279,9 @@ Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 
 - `types.ts`：`HarnessConfig` 与 system prompt 类型；
 - `system-prompt.ts`：默认 builder 与模板格式化；
 - `events.ts`：Run 边界事件契约；
-- `session/session.ts`：单份 Session 的数据和持久化；
-- `session/repository.ts`：多份 Session 的 `create/open/list/fork/delete`；
+- `session/session.ts`：单份 Session 的节点与投影逻辑（存储无关）；
+- `session/storage.ts`：内部 `SessionStorage` 端口和 JSONL 后端（不对外导出）；
+- `session/repository.ts`：多份 Session 的 `create/open/list/fork/delete` 生命周期；
 - `session/types.ts`：`SessionMetadata`、`SessionNode`、错误类型。
 
 ## 完整公开导出

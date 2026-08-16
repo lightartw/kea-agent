@@ -1,15 +1,11 @@
-import { readdir, rm } from "node:fs/promises";
-
+import type { Session } from "./session.js";
 import {
   createPersistentSession,
+  deleteSession,
+  listSessions,
   openPersistentSession,
-  sessionPath,
-  sessionsDir,
-  type Session,
-} from "./session.js";
-import { SessionError, type SessionMetadata } from "./types.js";
-
-const SESSION_FILE_RE = /^[A-Za-z0-9_-]+\.jsonl$/;
+} from "./storage.js";
+import type { SessionMetadata } from "./types.js";
 
 export class SessionRepository {
   constructor(readonly storageDir: string) {}
@@ -23,39 +19,8 @@ export class SessionRepository {
   }
 
   /** List all Sessions by stored metadata, newest first. */
-  async list(): Promise<readonly SessionMetadata[]> {
-    const dir = sessionsDir(this.storageDir);
-    let entries: string[];
-
-    try {
-      entries = await readdir(dir);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return [];
-      }
-      throw new SessionError("storage", "Could not read sessions directory", {
-        cause: error,
-      });
-    }
-
-    const jsonlFiles = entries.filter(
-      (entry) =>
-        SESSION_FILE_RE.test(entry) && !entry.startsWith("."),
-    );
-
-    const sessions = await Promise.all(
-      jsonlFiles.map(async (filename) => {
-        const session = await openPersistentSession(this.storageDir, filename.replace(/\.jsonl$/, ""));
-        return session.metadata;
-      }),
-    );
-
-    sessions.sort((a, b) => {
-      const byUpdated = b.updatedAt.localeCompare(a.updatedAt);
-      return byUpdated !== 0 ? byUpdated : b.id.localeCompare(a.id);
-    });
-
-    return sessions;
+  list(): Promise<readonly SessionMetadata[]> {
+    return listSessions(this.storageDir);
   }
 
   /**
@@ -75,14 +40,7 @@ export class SessionRepository {
   }
 
   /** Delete one Session file; a missing Session is already deleted. */
-  async delete(sessionId: string): Promise<void> {
-    const path = sessionPath(this.storageDir, sessionId);
-    try {
-      await rm(path, { force: true });
-    } catch (error) {
-      throw new SessionError("storage", "Could not delete session storage", {
-        cause: error,
-      });
-    }
+  delete(sessionId: string): Promise<void> {
+    return deleteSession(this.storageDir, sessionId);
   }
 }

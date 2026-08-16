@@ -1,35 +1,40 @@
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { isAbsolute, join, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { AgentMessage } from "../../agent/types.js";
 import type { ModelConfig } from "../../ai/types.js";
+import type { SessionStorage, StoredSessionRow, StoredTitleChange } from "./storage.js";
 import {
   type SessionMetadata,
   type SessionNode,
   SessionError,
 } from "./types.js";
 
-const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+/** @internal */
+export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const STOP_REASONS = new Set(["stop", "length", "toolUse", "error", "aborted"]);
 
-function newId(): string {
+/** @internal */
+export function newId(): string {
   return randomUUID().slice(0, 12);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+/** @internal */
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isString(value: unknown): value is string {
+/** @internal */
+export function isString(value: unknown): value is string {
   return typeof value === "string";
+}
+
+/** @internal */
+export function isTimestamp(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
-}
-
-function isTimestamp(value: unknown): value is string {
-  return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }
 
 function isJsonValue(value: unknown, seen = new Set<object>()): boolean {
@@ -98,31 +103,14 @@ function invalidEntry(message: string): never {
   throw new SessionError("invalid_entry", message);
 }
 
-function invalidSession(message: string): never {
-  throw new SessionError("invalid_session", message);
-}
-
-function parseHeader(raw: unknown): StoredSessionHeader {
-  if (!isRecord(raw) || raw.type !== "session" || raw.version !== 2 ||
-    !isString(raw.id) || !SESSION_ID_PATTERN.test(raw.id) ||
-    !isString(raw.cwd) || !isAbsolute(raw.cwd) ||
-    !isString(raw.title) || !isTimestamp(raw.createdAt) ||
-    (raw.parentSessionId !== undefined &&
-      (!isString(raw.parentSessionId) || !SESSION_ID_PATTERN.test(raw.parentSessionId)))) {
-    invalidSession("Session header is invalid");
-  }
-  return {
-    type: "session",
-    version: 2,
-    id: raw.id,
-    cwd: resolve(raw.cwd),
-    title: raw.title,
-    createdAt: raw.createdAt,
-    ...(raw.parentSessionId !== undefined ? { parentSessionId: raw.parentSessionId } : {}),
-  };
-}
-
-function parseRow(raw: unknown): StoredSessionRow {
+/**
+ * Validate a node shape and return the normalized node. Both append() and the
+ * JSONL backend decode rows through this; malformed entries reject with
+ * `invalid_entry`.
+ *
+ * @internal
+ */
+export function parseNode(raw: unknown): SessionNode {
   if (!isRecord(raw) || !isString(raw.type) || !isTimestamp(raw.createdAt)) {
     return invalidEntry("Session record has invalid metadata");
   }
@@ -157,21 +145,11 @@ function parseRow(raw: unknown): StoredSessionRow {
     };
   }
 
-  if (raw.type === "session_title") {
-    if (raw.title === undefined || !isString(raw.title)) {
-      return invalidEntry("Session title record is invalid");
-    }
-    return {
-      type: "session_title",
-      createdAt: raw.createdAt,
-      title: raw.title,
-    };
-  }
-
   return invalidEntry("Session record has an unknown type");
 }
 
-function validateTree(nodes: readonly SessionNode[]): void {
+/** @internal */
+export function validateTree(nodes: readonly SessionNode[]): void {
   const byId = new Set<string>();
   let rootCount = 0;
 
@@ -193,40 +171,11 @@ function validateTree(nodes: readonly SessionNode[]): void {
   }
 }
 
-/** Directory where one project's session files live, relative to its storageDir. */
-export function sessionsDir(storageDir: string): string {
-  return join(storageDir, "sessions");
-}
-
-/** @internal */
-export function sessionPath(storageDir: string, sessionId: string): string {
-  if (!SESSION_ID_PATTERN.test(sessionId)) {
-    throw new SessionError("invalid_session", "Session ID is invalid");
-  }
-  return join(sessionsDir(storageDir), `${sessionId}.jsonl`);
-}
-
-function asStorageError(message: string, error: unknown): SessionError {
-  return new SessionError("storage", message, { cause: error });
-}
-
-interface StoredSessionHeader {
-  readonly type: "session";
-  readonly version: 2;
-  readonly id: string;
-  readonly title: string;
-  readonly cwd: string;
-  readonly createdAt: string;
-  readonly parentSessionId?: string;
-}
-
-interface StoredTitleChange {
-  readonly type: "session_title";
-  readonly createdAt: string;
-  readonly title: string;
-}
-
-type StoredSessionRow = SessionNode | StoredTitleChange;
+/** A storage that accepts everything, used by in-memory Sessions. */
+const NOOP_STORAGE: SessionStorage = {
+  appendNode: async () => {},
+  setTitle: async () => {},
+};
 
 type AppendNode =
   | { readonly type: "message"; readonly message: AgentMessage }
@@ -240,61 +189,57 @@ export class Session {
 
   private constructor(
     readonly id: string,
-    private readonly persistPath: string | null,
-    private readonly header: StoredSessionHeader,
+    private readonly cwd: string,
+    readonly createdAt: string,
+    private readonly parentSessionId: string | undefined,
+    private title: string,
+    private updatedAt: string,
+    private readonly storage: SessionStorage,
   ) {}
 
-  static inMemory(options: { readonly cwd: string }): Session {
-    const header: StoredSessionHeader = {
-      type: "session",
-      version: 2,
-      id: newId(),
-      cwd: resolve(options.cwd),
-      title: "unknown",
-      createdAt: new Date().toISOString(),
-    };
-    return new Session(header.id, null, header);
-  }
-
   /**
-   * Rebuild a Session from validated stored rows. Only the Repository
-   * helpers use this; the constructor stays private so Session state changes
-   * exclusively through append() after construction.
+   * Rebuild a Session from validated nodes and storage-carried metadata. Only
+   * the JSONL backend and tests use this; the constructor stays private so
+   * Session state changes exclusively through append() after construction.
    *
    * @internal
    */
-  static fromStoredRows(
-    id: string,
-    persistPath: string | null,
-    header: StoredSessionHeader,
-    rows: readonly StoredSessionRow[],
+  static fromStorage(
+    metadata: SessionMetadata,
+    nodes: readonly SessionNode[],
+    storage: SessionStorage,
   ): Session {
-    const session = new Session(id, persistPath, header);
-    session.storedRows.push(...rows);
-    for (const row of rows) {
-      if (row.type !== "session_title") {
-        session.nodeById.set(row.id, row);
-      }
+    const session = new Session(
+      metadata.id,
+      metadata.cwd,
+      metadata.createdAt,
+      metadata.parentSessionId,
+      metadata.title,
+      metadata.updatedAt,
+      storage,
+    );
+    for (const node of nodes) {
+      session.storedRows.push(node);
+      session.nodeById.set(node.id, node);
     }
-    session._headId = session.nodes.at(-1)?.id ?? null;
+    session._headId = nodes.at(-1)?.id ?? null;
     return session;
   }
 
+  static inMemory(options: { readonly cwd: string }): Session {
+    const now = new Date().toISOString();
+    return new Session(newId(), resolve(options.cwd), now, undefined, "unknown", now, NOOP_STORAGE);
+  }
+
   get metadata(): SessionMetadata {
-    let title = this.header.title;
-    let updatedAt = this.header.createdAt;
-    for (const row of this.storedRows) {
-      if (row.createdAt > updatedAt) updatedAt = row.createdAt;
-      if (row.type === "session_title") title = row.title;
-    }
     return {
       id: this.id,
-      title,
-      cwd: this.header.cwd,
-      createdAt: this.header.createdAt,
-      updatedAt,
-      ...(this.header.parentSessionId !== undefined
-        ? { parentSessionId: this.header.parentSessionId }
+      title: this.title,
+      cwd: this.cwd,
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt,
+      ...(this.parentSessionId !== undefined
+        ? { parentSessionId: this.parentSessionId }
         : {}),
     };
   }
@@ -338,74 +283,30 @@ export class Session {
   }
 
   async append(node: AppendNode): Promise<string> {
-    return this.enqueue(() => this.appendNode(node));
-  }
-
-  private async appendNode(input: AppendNode): Promise<string> {
-    const node: SessionNode = input.type === "message"
-      ? {
-          type: "message",
-          id: newId(),
-          parentId: this._headId,
-          createdAt: new Date().toISOString(),
-          message: input.message,
-        }
-      : {
-          type: "model_selection",
-          id: newId(),
-          parentId: this._headId,
-          createdAt: new Date().toISOString(),
-          selection: input.selection,
-        };
-    const validated = parseRow(node) as SessionNode;
-    const previousHeadId = this._headId;
-    this.storedRows.push(validated);
-    this.nodeById.set(validated.id, validated);
-    this._headId = validated.id;
-    try {
-      await this.persist(validated);
-    } catch (error) {
-      this.rollback(validated, previousHeadId);
-      throw error;
-    }
-    return validated.id;
-  }
-
-  private rollback(node: SessionNode, previousHeadId: string | null): void {
-    const popped = this.storedRows.pop();
-    if (popped !== node) {
-      throw new Error("Session append rollback lost the appended node");
-    }
-    this.nodeById.delete(node.id);
-    this._headId = previousHeadId;
-  }
-
-  private async persist(row: StoredSessionRow): Promise<void> {
-    if (this.persistPath === null) return;
-    try {
-      const file = await open(this.persistPath, "r+");
-      try {
-        const { size } = await file.stat();
-        const contents = Buffer.from(`${JSON.stringify(row)}\n`, "utf8");
-        let offset = 0;
-        while (offset < contents.length) {
-          const { bytesWritten } = await file.write(
-            contents,
-            offset,
-            contents.length - offset,
-            size + offset,
-          );
-          if (bytesWritten === 0) {
-            throw new Error("Session append wrote zero bytes");
+    return this.enqueue(async () => {
+      const full: SessionNode = node.type === "message"
+        ? {
+            type: "message",
+            id: newId(),
+            parentId: this._headId,
+            createdAt: new Date().toISOString(),
+            message: node.message,
           }
-          offset += bytesWritten;
-        }
-      } finally {
-        await file.close();
-      }
-    } catch (error) {
-      throw asStorageError("Could not persist session row", error);
-    }
+        : {
+            type: "model_selection",
+            id: newId(),
+            parentId: this._headId,
+            createdAt: new Date().toISOString(),
+            selection: node.selection,
+          };
+      parseNode(full);
+      await this.storage.appendNode(full);
+      this.storedRows.push(full);
+      this.nodeById.set(full.id, full);
+      this._headId = full.id;
+      this.updatedAt = full.createdAt;
+      return full.id;
+    });
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -431,137 +332,18 @@ export class Session {
   }
 
   private async appendTitle(title: string): Promise<void> {
-    const row: StoredTitleChange = {
-      type: "session_title",
-      createdAt: new Date().toISOString(),
-      title,
-    };
-    this.storedRows.push(row);
-    try {
-      await this.persist(row);
-    } catch (error) {
-      const popped = this.storedRows.pop();
-      if (popped !== row) {
-        throw new Error("Session title rollback lost the appended row");
-      }
-      throw error;
-    }
+    const createdAt = new Date().toISOString();
+    await this.storage.setTitle(title, createdAt);
+    this.storedRows.push({ type: "session_title", createdAt, title });
+    this.title = title;
+    this.updatedAt = createdAt;
   }
 
   async setTitleIfUnknown(title: string): Promise<boolean> {
     return this.enqueue(async () => {
-      if (this.metadata.title !== "unknown") return false;
-      const normalized = this.normalizeTitle(title);
-      await this.appendTitle(normalized);
+      if (this.title !== "unknown") return false;
+      await this.appendTitle(this.normalizeTitle(title));
       return true;
     });
   }
-}
-
-function parseJson(line: string, path: string): unknown {
-  try {
-    return JSON.parse(line);
-  } catch (error) {
-    throw new SessionError("invalid_session", "Session file contains invalid JSON", {
-      cause: error,
-    });
-  }
-}
-
-/**
- * Create a persistent Session on disk. Only the SessionRepository uses this
- * helper; a fresh Session writes its header with `wx` so a colliding file is
- * rejected, while a fork publishes copied nodes atomically via a temp file.
- *
- * @internal
- */
-export async function createPersistentSession(
-  storageDir: string,
-  options: {
-    readonly cwd: string;
-    readonly parentSessionId?: string;
-    readonly nodes?: readonly SessionNode[];
-  },
-): Promise<Session> {
-  const id = newId();
-  const header: StoredSessionHeader = {
-    type: "session",
-    version: 2,
-    id,
-    cwd: resolve(options.cwd),
-    title: "unknown",
-    createdAt: new Date().toISOString(),
-    ...(options.parentSessionId !== undefined
-      ? { parentSessionId: options.parentSessionId }
-      : {}),
-  };
-  const nodes = options.nodes ?? [];
-  const path = sessionPath(storageDir, id);
-  try {
-    await mkdir(sessionsDir(storageDir), { recursive: true });
-    if (nodes.length === 0) {
-      await writeFile(path, `${JSON.stringify(header)}\n`, { encoding: "utf8", flag: "wx" });
-    } else {
-      const contents = [
-        JSON.stringify(header),
-        ...nodes.map((node) => JSON.stringify(node)),
-        "",
-      ].join("\n");
-      const tempPath = join(sessionsDir(storageDir), `.tmp-${id}.jsonl`);
-      try {
-        await writeFile(tempPath, contents, { encoding: "utf8", flag: "wx" });
-        await rename(tempPath, path);
-      } catch (error) {
-        await rm(tempPath, { force: true }).catch(() => undefined);
-        throw error;
-      }
-    }
-  } catch (error) {
-    throw asStorageError("Could not create session storage", error);
-  }
-  return Session.fromStoredRows(id, path, header, nodes);
-}
-
-/**
- * Restore a persistent Session from its JSONL file, validating the header,
- * every stored row, and the node topology. Only the SessionRepository uses
- * this helper.
- *
- * @internal
- */
-export async function openPersistentSession(
-  storageDir: string,
-  sessionId: string,
-): Promise<Session> {
-  const path = sessionPath(storageDir, sessionId);
-  let contents: string;
-  try {
-    contents = await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new SessionError("not_found", `Session ${sessionId} was not found`, {
-        cause: error,
-      });
-    }
-    throw asStorageError("Could not read session storage", error);
-  }
-
-  if (contents.trim() === "") {
-    invalidSession("Session file is empty");
-  }
-
-  const lines = contents.split(/\r?\n/).filter((line) => line.trim() !== "");
-  const header = parseHeader(parseJson(lines[0]!, path));
-  if (header.id !== sessionId) {
-    invalidSession("Session header ID does not match the filename");
-  }
-
-  const rows: StoredSessionRow[] = [];
-  for (let index = 1; index < lines.length; index++) {
-    rows.push(parseRow(parseJson(lines[index]!, path)));
-  }
-  const nodes = rows.filter((row): row is SessionNode => row.type !== "session_title");
-  validateTree(nodes);
-
-  return Session.fromStoredRows(sessionId, path, header, rows);
 }

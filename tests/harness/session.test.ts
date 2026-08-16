@@ -8,8 +8,9 @@ import test from "node:test";
 
 import type { AgentMessage } from "../../src/core/agent/types.js";
 import type { ModelConfig } from "../../src/core/ai/types.js";
-import { Session, sessionsDir } from "../../src/core/harness/session/session.js";
+import { Session } from "../../src/core/harness/session/session.js";
 import { SessionRepository } from "../../src/core/harness/session/repository.js";
+import { sessionsDir, type SessionStorage } from "../../src/core/harness/session/storage.js";
 import { SessionError } from "../../src/core/harness/session/types.js";
 import { detailedToolResult } from "../ai/fixtures.js";
 
@@ -338,4 +339,32 @@ test("JSONL session persists nested JSON-safe details", async () => {
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
+});
+
+test("append publishes nothing when storage rejects", async () => {
+  const storage: SessionStorage = {
+    appendNode: async () => {
+      throw new SessionError("storage", "storage failed");
+    },
+    setTitle: async () => {},
+  };
+  const session = Session.fromStorage(
+    {
+      id: "s1",
+      title: "unknown",
+      cwd: process.cwd(),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    },
+    [],
+    storage,
+  );
+
+  await assert.rejects(
+    session.append({ type: "message", message: user }),
+    (error: unknown) => error instanceof SessionError && error.code === "storage",
+  );
+  assert.equal(session.headId, null);
+  assert.deepEqual(session.nodes, []);
+  assert.deepEqual(session.messages(), []);
 });

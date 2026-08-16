@@ -7,7 +7,7 @@ import test from "node:test";
 
 import type { AgentMessage } from "../../src/core/agent/types.js";
 import type { ModelConfig } from "../../src/core/ai/types.js";
-import { sessionsDir } from "../../src/core/harness/session/session.js";
+import { sessionsDir } from "../../src/core/harness/session/storage.js";
 import { SessionRepository } from "../../src/core/harness/session/repository.js";
 import { SessionError } from "../../src/core/harness/session/types.js";
 
