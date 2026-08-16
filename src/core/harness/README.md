@@ -93,7 +93,7 @@ Run，空闲时调用则不产生效果。中止信号优先于迟到的 listene
 
 `session.nodes` 只包含 `message` 和 `model_selection` 节点（标题不是节点）。`session.headId`
 是当前端点；`session.path(nodeId)` 沿 `parentId` 从根到该节点返回路径，`null` 返回空路径，
-未知 ID 抛 `invalid_entry`。节点由 Session 生成 `id`、`parentId` 和 `createdAt`，追加后不可
+未知 ID 抛 `not_found`。节点由 Session 生成 `id`、`parentId` 和 `createdAt`，追加后不可
 修改。
 
 ### 消息与模型选择
@@ -145,18 +145,42 @@ const fork = await sessions.fork(session.metadata.id, session.headId);
 `AgentHarness` 不持有 Repository。应用先用 Repository 取得 Session，再把该 Session 交给新的
 Harness。`harness.sessionId` 标识 Harness 当前绑定的 Session，但不暴露可写的 Session 对象。
 
-### JSONL 持久化
+### 持久化边界
+
+`Session` 拥有自己的一份内存状态：全部 `SessionRecord`、节点索引、`headId` 和元数据投影。
+一个 Project 拥有一个 `SessionRepository`；Repository 拥有一个 `SessionStorage` 后端；该后端
+为多份 Session 提供持久化的 `create/load/list/append/delete`。Repository 把两者组合起来：
+先让 Storage 持久接受数据，再用同一份数据构造 `Session`。`SessionStorage` 与
+`JsonlSessionStorage` 是内部实现边界，不是应用概念，也不从 Harness 包入口导出。
+
+唯一的内部持久化单元是 `SessionRecord`：树记录是 `SessionNode`，Session 级的标题变更是
+非节点记录（`session_title`），它永远不会出现在 `session.nodes` 中。
+
+create 数据流：
+
+1. Repository 构造 `{ metadata, records: [] }`；
+2. `Storage.create()` 持久发布该值；
+3. `Session.fromStorage()` 从同一值构建内存。
+
+append 数据流：
+
+1. Session 构造并校验一条完整 `SessionRecord`；
+2. `Storage.append()` 持久接受它；
+3. Session 把它应用到 records、head 和元数据投影。
+
+因此持久化失败时内存状态保持不变：记录先被 Storage 持久接受，Session 才发布到内存。
+
+### JSONL 后端
 
 文件位于 `<storageDir>/sessions/<sessionId>.jsonl`。第一行是 version-2 header
 （`type: "session"`、`version: 2`、`id`、`cwd`、`title`、`createdAt`，fork 时还有
-`parentSessionId`）；后续行是节点（`message`、`model_selection`）和私有的 `session_title`
-行。`session_title` 是追加式存储行，永远不会出现在 `session.nodes` 中；version-1 文件被显式
-拒绝。
+`parentSessionId`）；后续每行是一条 `SessionRecord`。version-1 文件被显式拒绝。
 
-JSONL 复制是当前后端行为，不是公开语义。Session 通过内部的 `SessionStorage` 端口
-（`session/storage.ts`，不对外导出）接收存储；Session 先等端口接受节点或标题，再发布内存
-状态，因此端口换成未来共享的不可变节点存储时，公开 API 和逻辑语义保持不变。`SessionError.code`
-说明失败类别：`not_found`、`invalid_session`、`invalid_entry` 或 `storage`。
+并发模型与所有权：不同 Session ID 可以并发写入；同一 Session ID 的操作串行执行，并且同一
+ID 只有一个权威的可写 Session；同一 ID 的多写者协作编辑不受支持。JSONL 复制 fork 的节点路径
+是当前后端行为，不是公开语义；未来共享不可变节点后端可以在不改变公开 API 的前提下替换它。
+`SessionError.code` 说明失败类别：`not_found`、`invalid_session`、`invalid_record` 或
+`storage`。
 
 ### 与 AgentHarness 的边界
 
@@ -280,10 +304,11 @@ Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 
 - `types.ts`：`HarnessConfig` 与 system prompt 类型；
 - `system-prompt.ts`：默认 builder 与模板格式化；
 - `events.ts`：Run 边界事件契约；
-- `session/session.ts`：单份 Session 的节点与投影逻辑（存储无关）；
-- `session/storage.ts`：内部 `SessionStorage` 端口和 JSONL 后端（不对外导出）；
-- `session/repository.ts`：多份 Session 的 `create/open/list/fork/delete` 生命周期；
-- `session/types.ts`：`SessionMetadata`、`SessionNode`、错误类型。
+- `session/types.ts`：公开契约，以及内部的 `SessionRecord`/`SessionStorage` 契约；
+- `session/records.ts`：纯解析、脱离、ID 生成与树校验；
+- `session/session.ts`：单份 Session 的内存状态与行为；
+- `session/storage.ts`：一个 Repository 内所有 Session 的 JSONL 持久化；
+- `session/repository.ts`：公开的生命周期编排。
 
 ## 完整公开导出
 
