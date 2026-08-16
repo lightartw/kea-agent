@@ -228,6 +228,12 @@ is not re-exported by the Harness package.
 /** Decode and detach one untrusted value. */
 export function parseSessionRecord(raw: unknown): SessionRecord;
 
+/** Generate one ID valid for a Session or SessionNode. */
+export function newId(): string;
+
+/** Validate an untrusted Session ID before resolving a storage path. */
+export function parseSessionId(raw: unknown): string;
+
 /** Validate IDs, parent-before-child ordering, one root, and no missing parent. */
 export function validateSessionRecords(records: readonly SessionRecord[]): void;
 
@@ -237,8 +243,9 @@ export function isSessionNode(record: SessionRecord): record is SessionNode;
 
 Private helpers validate timestamps, Agent messages, model selections, and
 JSON-safe tool details. `isRecord`, `isString`, and similar predicates remain
-private here. `SESSION_ID_PATTERN` is also private to this module; callers use
-the validating functions instead of importing the regular expression.
+private here. `SESSION_ID_PATTERN` is also private to this module; Session and
+Repository call `newId`, while Storage calls `parseSessionId`, instead of any
+caller importing or duplicating the regular expression.
 
 ### `session/session.ts`
 
