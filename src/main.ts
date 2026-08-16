@@ -6,18 +6,18 @@ import { config as loadDotenv } from "dotenv";
 
 import { CliFrontend } from "./ui/cli-frontend.js";
 import { createProject } from "./coding-agent/factory.js";
-import { createStreamFn } from "./core/ai/factory.js";
+import { createModelRuntime } from "./core/ai/factory.js";
 
 export async function asyncMain(): Promise<void> {
   loadDotenv({ override: true });
   const cli = new CliFrontend();
   try {
-    const { stream, defaultModel } = createStreamFn();
+    const { runtime, modelConfig } = createModelRuntime();
     const keaHome = process.env.KEA_HOME ?? resolve(homedir(), ".kea");
     const project = await createProject({
       keaHome,
-      streamFn: stream,
-      model: defaultModel,
+      runtime,
+      modelConfig,
       interactions: cli.interactions,
     });
     const harness = await project.continueRecent();

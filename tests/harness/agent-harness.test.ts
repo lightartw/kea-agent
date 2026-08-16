@@ -9,8 +9,8 @@ import { Events } from "../../src/core/events/events.js";
 import type {
   AssistantMessage,
   ModelConfig,
-  StreamFn,
 } from "../../src/core/ai/types.js";
+import { runtimeFromStream, type TestStream } from "../fixtures/model-runtime.js";
 import { Type } from "typebox";
 
 const modelA: ModelConfig = { provider: "test", model: "model-a" };
@@ -24,7 +24,7 @@ const assistant: AssistantMessage = {
   latencyMs: 0,
 };
 
-const stream: StreamFn = async function* () {
+const stream: TestStream = async function* () {
   yield { type: "text_delta", text: "done" };
   yield { type: "done", message: assistant };
 };
@@ -35,15 +35,15 @@ function memorySession(): Session {
 
 function makeHarness(options: {
   session?: Session;
-  streamFn?: StreamFn;
+  stream?: TestStream;
   systemPrompt?: string;
   events?: Events;
 } = {}): { harness: AgentHarness; events: Events } {
   const events = options.events ?? new Events();
   const harness = new AgentHarness({
     session: options.session ?? memorySession(),
-    model: modelA,
-    streamFn: options.streamFn ?? stream,
+    runtime: runtimeFromStream(options.stream ?? stream),
+    modelConfig: modelA,
     toolRegistry: new AgentToolRegistry(),
     systemPrompt: options.systemPrompt ?? "system",
     events,
@@ -155,7 +155,7 @@ test("emit listener failure is isolated and does not reject prompt", async () =>
 test("abort from run-start prevents the Agent execution", async () => {
   let streamCalls = 0;
   const { harness, events } = makeHarness({
-    streamFn: async function* () {
+    stream: async function* () {
       streamCalls++;
       yield { type: "done", message: assistant };
     },
@@ -298,12 +298,12 @@ test("system prompt and tool changes reach the Agent run", async () => {
   })();
   const harness = new AgentHarness({
     session: memorySession(),
-    model: modelA,
-    streamFn: async function* (_model, context) {
+    runtime: runtimeFromStream(async function* (_model, context) {
       seenTools = context.tools?.map((entry) => entry.name) ?? [];
       seenPrompt = context.systemPrompt ?? "";
       yield { type: "done", message: assistant };
-    },
+    }),
+    modelConfig: modelA,
     toolRegistry: registry,
     systemPrompt: "system",
     events: new Events(),
@@ -329,7 +329,7 @@ test("abort during Agent streaming settles the Harness run", async () => {
     errorMessage: "aborted",
   };
   const { harness, events } = makeHarness({
-    streamFn: async function* (_model, _context, options) {
+    stream: async function* (_model, _context, options) {
       const signal = options?.signal;
       assert.ok(signal);
       started.resolve();
@@ -369,7 +369,7 @@ test("abort during Agent streaming settles the Harness run", async () => {
 test("exactly one run-end follows every observed run-start", async () => {
   const boundaryHarness = (options: {
     session?: Session;
-    streamFn?: StreamFn;
+    stream?: TestStream;
   } = {}) => {
     const { harness, events } = makeHarness(options);
     const boundaries: string[] = [];
@@ -393,7 +393,7 @@ test("exactly one run-end follows every observed run-start", async () => {
     const started = deferred();
     const release = deferred();
     const { harness, boundaries } = boundaryHarness({
-      streamFn: async function* () {
+      stream: async function* () {
         started.resolve();
         await release.promise;
         yield { type: "done", message: assistant };
@@ -420,7 +420,7 @@ test("exactly one run-end follows every observed run-start", async () => {
 
 test("an AbortSignal fired while Permission awaits confirmation wins over the answer", async () => {
   const { harness, events } = makeHarness({
-    streamFn: streamFnWithToolCall(),
+    stream: streamWithToolCall(),
   });
   const signal: AbortSignal[] = [];
   let resolvePermission: (value: boolean) => void = () => undefined;
@@ -448,7 +448,7 @@ test("an AbortSignal fired while Permission awaits confirmation wins over the an
   assert.equal(results[0]?.isError, true);
 });
 
-function streamFnWithToolCall(): StreamFn {
+function streamWithToolCall(): TestStream {
   const tc = { type: "toolCall" as const, id: "c1", name: "echo", arguments: {} };
   const toolTurn: AssistantMessage = {
     role: "assistant",
@@ -483,7 +483,10 @@ test("Harness shares one Events instance with Agent Loop", async () => {
     calls.push("context");
     return proceed(input);
   });
-  events.on("agent/stopping", () => { calls.push("stopping"); });
+  events.on("agent/stopping", (input, proceed) => {
+    calls.push("stopping");
+    return proceed(input);
+  });
 
   const { harness } = makeHarness({ events });
   await harness.prompt("hello");
@@ -540,7 +543,7 @@ test("tool-result subscriber sees the persisted result message", async () => {
     latencyMs: 0,
   };
   let turn = 0;
-  const streamFn: StreamFn = async function* () {
+  const stream: TestStream = async function* () {
     turn += 1;
     if (turn === 1) {
       yield { type: "toolcall_start", id: "c1", name: "echo" };
@@ -553,8 +556,8 @@ test("tool-result subscriber sees the persisted result message", async () => {
   const events = new Events();
   const harness = new AgentHarness({
     session,
-    model: modelA,
-    streamFn,
+    runtime: runtimeFromStream(stream),
+    modelConfig: modelA,
     toolRegistry: registry,
     systemPrompt: "system",
     events,
@@ -588,7 +591,7 @@ test("tool-result subscriber sees the persisted synthetic message for an unknown
     latencyMs: 0,
   };
   let turn = 0;
-  const streamFn: StreamFn = async function* () {
+  const stream: TestStream = async function* () {
     turn += 1;
     if (turn === 1) {
       yield { type: "toolcall_start", id: "c1", name: "missing" };
@@ -601,8 +604,8 @@ test("tool-result subscriber sees the persisted synthetic message for an unknown
   const events = new Events();
   const harness = new AgentHarness({
     session,
-    model: modelA,
-    streamFn,
+    runtime: runtimeFromStream(stream),
+    modelConfig: modelA,
     toolRegistry: registry,
     systemPrompt: "system",
     events,

@@ -6,7 +6,8 @@ import { AgentHarness } from "../src/core/harness/agent-harness.js";
 import { Session } from "../src/core/harness/session/session.js";
 import { AgentToolRegistry } from "../src/core/agent/tools/registry.js";
 import { Events } from "../src/core/events/events.js";
-import type { AssistantMessage, StreamFn } from "../src/core/ai/types.js";
+import type { AssistantMessage } from "../src/core/ai/types.js";
+import { runtimeFromStream, type TestStream } from "./fixtures/model-runtime.js";
 
 const message: AssistantMessage = {
   role: "assistant",
@@ -20,15 +21,15 @@ const message: AssistantMessage = {
 test("Harness renders through one subscription while prompt returns a Promise", async () => {
   const rendered: string[] = [];
   const logs: string[] = [];
-  const stream: StreamFn = async function* () {
+  const stream: TestStream = async function* () {
     yield { type: "text_delta", text: "hello" };
     yield { type: "done", message };
   };
   const events = new Events();
   const harness = new AgentHarness({
     session: Session.inMemory({ cwd: process.cwd() }),
-    model: { provider: "test", model: "test" },
-    streamFn: stream,
+    runtime: runtimeFromStream(stream),
+    modelConfig: { provider: "test", model: "test" },
     toolRegistry: new AgentToolRegistry(),
     systemPrompt: "",
     events,

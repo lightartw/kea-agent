@@ -76,8 +76,8 @@ function createHarness(
   };
   return new AgentHarness({
     session,
-    model: config.model,
-    streamFn: config.streamFn,
+    runtime: config.runtime,
+    modelConfig: config.modelConfig,
     toolRegistry: createAgentToolRegistry(definitions, toolContext),
     systemPrompt: formatSystemPrompt(
       config.systemPrompt ?? CODING_SYSTEM_PROMPT,

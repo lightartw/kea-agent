@@ -5,7 +5,7 @@ import type { AgentLoopConfig, AgentMessage, AgentRunIdentity } from "../agent/t
 import type { AgentTool } from "../agent/tools/types.js";
 import type { AgentToolRegistry } from "../agent/tools/registry.js";
 import type { Events } from "../events/events.js";
-import type { ModelConfig, StreamFn } from "../ai/types.js";
+import type { ModelConfig, ModelRuntime } from "../ai/types.js";
 import { errorMessage } from "../util/index.js";
 import type { HarnessRunEnd } from "./events.js";
 import { Session } from "./session/session.js";
@@ -30,7 +30,7 @@ export class AgentHarness {
   private readonly events: Events;
 
   private activeRun: ActiveRun | undefined;
-  private _streamFn: StreamFn;
+  private readonly runtime: ModelRuntime;
 
   // Model
   private currentModel: ModelConfig;
@@ -43,8 +43,8 @@ export class AgentHarness {
     this.session = config.session;
     this.toolRegistry = config.toolRegistry;
     this.systemPrompt = config.systemPrompt;
-    this._streamFn = config.streamFn;
-    this.currentModel = config.session.modelSelection() ?? config.model;
+    this.runtime = config.runtime;
+    this.currentModel = config.session.modelSelection() ?? config.modelConfig;
     this.events = config.events;
   }
 
@@ -99,7 +99,7 @@ export class AgentHarness {
             },
           },
           config,
-          this._streamFn,
+          this.runtime,
           abortController.signal,
         );
       }

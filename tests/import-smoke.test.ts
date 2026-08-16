@@ -45,7 +45,7 @@ import type {
   ToolPresentationInput,
 } from "../src/coding-agent/index.js";
 
-import type { StreamChunk } from "../src/core/ai/index.js";
+import type { ModelRuntime, StreamChunk } from "../src/core/ai/index.js";
 
 import type { EventMap } from "../src/core/events/index.js";
 
@@ -86,7 +86,7 @@ type PublicCodingAgentTypes = [
 ];
 
 type PublicEventTypes = [EventMap];
-type PublicAiTypes = [StreamChunk];
+type PublicAiTypes = [ModelRuntime, StreamChunk];
 
 void (null as PublicAgentTypes | null);
 void (null as PublicHarnessTypes | null);
