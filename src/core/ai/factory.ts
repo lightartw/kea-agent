@@ -1,4 +1,10 @@
-import type { Context, ModelConfig, StreamChunk, StreamFn, StreamOptions } from "./types.js";
+import type {
+  Context,
+  ModelConfig,
+  ModelRuntime,
+  StreamChunk,
+  StreamOptions,
+} from "./types.js";
 
 const DEFAULT_TIMEOUT = 120;
 const DEFAULT_MAX_TOKENS = 8000;
@@ -90,13 +96,13 @@ const BUILTIN_PROVIDERS: readonly ProviderConfig[] = [
   },
 ];
 
-// ── StreamFn factory ──
+// ── Model runtime factory ──
 
 export type Environment = Readonly<Record<string, string | undefined>>;
 
-export function createStreamFn(
+export function createModelRuntime(
   options?: { providers?: ProviderConfig[]; env?: Environment },
-): { stream: StreamFn; defaultModel: ModelConfig } {
+): { runtime: ModelRuntime; modelConfig: ModelConfig } {
   const env = options?.env ?? process.env;
   const allProviders = [...BUILTIN_PROVIDERS, ...(options?.providers ?? [])];
 
@@ -128,14 +134,31 @@ export function createStreamFn(
     return adapter;
   }
 
-  const stream: StreamFn = async function* (
-    model: ModelConfig,
+  const stream = async function* (
+    modelConfig: ModelConfig,
     context: Context,
     options?: Partial<StreamOptions>,
   ): AsyncIterable<StreamChunk> {
-    const adapter = getAdapter(model.provider);
-    yield* adapter.stream(model.model, context, resolveOptions(options));
+    const adapter = getAdapter(modelConfig.provider);
+    yield* adapter.stream(modelConfig.model, context, resolveOptions(options));
   };
 
-  return { stream, defaultModel: { provider: defaultProvider, model: modelId } };
+  const runtime: ModelRuntime = {
+    stream,
+    async complete(modelConfig, context, options) {
+      for await (const event of stream(modelConfig, context, options)) {
+        if (event.type === "done" || event.type === "error") {
+          return event.message;
+        }
+      }
+      throw new Error(
+        "Model stream ended without a done or error terminal chunk",
+      );
+    },
+  };
+
+  return {
+    runtime,
+    modelConfig: { provider: defaultProvider, model: modelId },
+  };
 }

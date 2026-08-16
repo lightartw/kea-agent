@@ -3,7 +3,6 @@ import type {
   Context,
   Message,
   StreamChunk,
-  StreamFn,
 } from "../../src/core/ai/types.js";
 
 export const testModel = { provider: "anthropic", model: "test-model" };
@@ -54,11 +53,6 @@ export function makeAssistantMessage(
 export const textMessage: AssistantMessage = makeAssistantMessage([
   { type: "text", text: "ok" },
 ]);
-
-export const fakeStreamFn: StreamFn = async function* () {
-  yield { type: "text_delta", text: "ok" };
-  yield { type: "done", message: textMessage };
-};
 
 export async function* asyncItems<T>(items: readonly T[]): AsyncIterable<T> {
   for (const item of items) yield item;

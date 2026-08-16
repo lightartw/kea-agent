@@ -103,10 +103,18 @@ export interface ModelConfig {
   readonly model: string;
 }
 
-// ── Stream function (replaces LLMClient interface) ──
+// ── Model runtime ──
 
-export type StreamFn = (
-  model: ModelConfig,
-  context: Context,
-  options?: Partial<StreamOptions>,
-) => AsyncIterable<StreamChunk>;
+export interface ModelRuntime {
+  stream(
+    modelConfig: ModelConfig,
+    context: Context,
+    options?: Partial<StreamOptions>,
+  ): AsyncIterable<StreamChunk>;
+
+  complete(
+    modelConfig: ModelConfig,
+    context: Context,
+    options?: Partial<StreamOptions>,
+  ): Promise<AssistantMessage>;
+}

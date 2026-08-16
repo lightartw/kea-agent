@@ -4,9 +4,9 @@ export type {
   Context,
   Message,
   ModelConfig,
+  ModelRuntime,
   StopReason,
   StreamChunk,
-  StreamFn,
   StreamOptions,
   TextBlock,
   ThinkingBlock,
@@ -16,5 +16,5 @@ export type {
   ToolResultMessage,
   UserMessage,
 } from "./types.js";
-export { createStreamFn } from "./factory.js";
+export { createModelRuntime } from "./factory.js";
 export type { ProviderConfig } from "./factory.js";
