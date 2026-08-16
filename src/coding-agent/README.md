@@ -43,14 +43,14 @@ Project 注册会报错。
 ## 2. 创建并继续最近的 Session
 
 ```ts
-import { createStreamFn } from "../core/ai/index.js";
+import { createModelRuntime } from "../core/ai/index.js";
 import { createProject } from "./index.js";
 
-const { stream, defaultModel } = createStreamFn();
+const { runtime, modelConfig } = createModelRuntime();
 const project = await createProject({
   keaHome: process.env.KEA_HOME,
-  streamFn: stream,
-  model: defaultModel,
+  runtime,
+  modelConfig,
 });
 
 const harness = await project.continueRecent();
@@ -142,7 +142,7 @@ project.events.on("agent/turn-end", (input) => {
    Todo 建立新的 `AgentToolRegistry`；
 2. 复用 Project 共享的 `Events`（Permission 等 coding listener 已注册其上）；
 3. 把 system prompt 模板中的 `{{cwd}}`、`{{date}}` 替换成当前值；
-4. 把选中的 Session、模型、stream、最终 system prompt、Tool Registry 和 Events 交给新的
+4. 把选中的 Session、Runtime、模型配置、最终 system prompt、Tool Registry 和 Events 交给新的
    `AgentHarness`。
 
 ## 7. Bash、文件与 Glob

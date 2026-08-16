@@ -1,11 +1,11 @@
 # Harness
 
-`ai` 提供一次 LLM 请求所需的 `StreamFn`，`agent` 提供一次完整运行所需的
+`ai` 提供一次 LLM 请求所需的 `ModelRuntime`，`agent` 提供一次完整运行所需的
 `runAgentLoop()`，`events` 提供共享事件通道。Harness 把它们和一个 Session 组合起来：
 `AgentHarness` 在同一份会话历史中反复运行 Agent，并把每次运行的边界发布到调用方提供的
 `Events`。
 
-本章只解释 Harness 新增的职责。`StreamFn`、`runAgentLoop()`、Tool Registry、`Events` 和
+本章只解释 Harness 新增的职责。`ModelRuntime`、`runAgentLoop()`、Tool Registry、`Events` 和
 `EventMap` 的基础规则不再重复，请先阅读各自模块的 README。
 
 ## 最小用法
@@ -13,18 +13,18 @@
 下面的 Session 只存在于内存中。调用方订阅 `events` 后，`prompt()` 启动一次完整的 Run：
 
 ```ts
-import { createStreamFn } from "../ai/index.js";
+import { createModelRuntime } from "../ai/index.js";
 import { AgentToolRegistry } from "../agent/index.js";
 import { Events } from "../events/index.js";
 import { AgentHarness, Session } from "./index.js";
 
-const { stream, defaultModel } = createStreamFn();
+const { runtime, modelConfig } = createModelRuntime();
 const session = Session.inMemory({ cwd: process.cwd() });
 const events = new Events();
 const harness = new AgentHarness({
   session,
-  model: defaultModel,
-  streamFn: stream,
+  runtime,
+  modelConfig,
   toolRegistry: new AgentToolRegistry(),
   systemPrompt: "You are a helpful assistant.",
   events,
@@ -79,27 +79,29 @@ events.on("agent/turn-end", (input) => {
 ```ts
 interface HarnessConfig {
   readonly session: Session;
-  readonly model: ModelConfig;
-  readonly streamFn: StreamFn;
+  readonly runtime: ModelRuntime;
+  readonly modelConfig: ModelConfig;
   readonly toolRegistry: AgentToolRegistry;
   readonly systemPrompt: string;
   readonly events: Events;
 }
 ```
 
-- `session` 提供历史并接收新增消息和模型变更；Session 已保存的模型优先于 `model`；
-- `model` 是 Session 没有保存模型时的初始 `ModelConfig`；
-- `streamFn` 完成一次对指定 provider/model 的流式 LLM 请求；
+- `session` 提供历史并接收新增消息和模型变更；Session 已保存的模型优先于 `modelConfig`；
+- `runtime` 提供 provider 路由和对指定 provider/model 的 LLM 请求；它不保存当前模型；
+- `modelConfig` 是 Session 没有保存模型时的初始 `ModelConfig`；
 - `toolRegistry` 提供本次 Agent 可以看见和执行的 Tool；
 - `systemPrompt` 是直接交给 Agent 的最终字符串；
 - `events` 是共享的 `Events` 实例，Harness 发布 `harness/*` 并把同一实例传给 Agent。
 
 构造时，如果 Session 中保存过模型选择，Harness 从 Session 恢复模型，否则使用配置中的
-`model`。消息仍由 Session 持有，Harness 在每次 `prompt()` 开始时取得当前路径的消息。
+`modelConfig`。消息仍由 Session 持有，Harness 在每次 `prompt()` 开始时取得当前路径的消息。
+构造后 `currentModel` 是运行时的权威模型；`model_selection` 是 Session 的持久记录，用于恢复
+这项权威状态，`ModelRuntime` 永远不拥有它。
 
 ### `prompt()`：一次完整的 Run
 
-一次 `prompt()` 对应一次 `runAgentLoop()`，不等于一次 `StreamFn` 调用。模型可能先请求 Tool，
+一次 `prompt()` 对应一次 `runAgentLoop()`，不等于一次 `runtime.stream()` 调用。模型可能先请求 Tool，
 再根据 Tool Result 继续请求模型，因此一次 Run 内可以发生多次 LLM 请求。
 
 `prompt(input)` 的执行顺序如下：
@@ -365,7 +367,7 @@ Session 只更新 `metadataState`。
 
 ## 包边界和源码位置
 
-Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 提供
+Harness 组合下层能力：`ai` 提供 `ModelRuntime` 与 `ModelConfig`；`agent` 提供
 `runAgentLoop()`、消息、`AgentRunIdentity` 和 Tool Registry；`events` 提供共享 dispatcher。
 具体 Tool 和项目级组装属于 Harness 上层。Harness 还通过仅供 core 内部使用的 `core/util`
 复用通用错误处理。

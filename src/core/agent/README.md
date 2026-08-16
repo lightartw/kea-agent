@@ -1,6 +1,6 @@
 # agent
 
-`agent` 在 `ai.StreamFn` 之上实现多 turn 工具循环。
+`agent` 在 `ai.ModelRuntime` 之上实现多 turn 工具循环。
 
 一次 `runAgentLoop()` 调用是一个 **Agent Run**；每次调用 LLM 是一个 **Turn**。当 assistant 消息
 带 tool call 时，Agent 顺序执行工具、保存结果并开始下一 turn；没有 tool call 时结束。Harness
@@ -17,10 +17,10 @@ agent 包分为两部分：
 
 ## 1. 一次 AI 请求与一次 Agent Run
 
-一次 `StreamFn` 调用完成一次 LLM 请求。一次 Agent Run 可能包含多次 LLM 请求：模型先输出
+一次 `runtime.stream()` 调用完成一次 LLM 请求。一次 Agent Run 可能包含多次 LLM 请求：模型先输出
 assistant message，Agent 执行其中请求的 Tool，把 Tool Result 写回历史，再请求一次模型让它
 读取结果。`runAgentLoop()` 驱动这整个过程；通常在模型不再请求 Tool 时结束，
-`agent/stopping` listener 也可以提交一条消息并开始下一 Turn。
+每个正常 Turn 后都由 `agent/stopping` 判断是否继续。
 
 ## 2. 类型
 
@@ -29,7 +29,7 @@ function runAgentLoop(
   input: string,
   context: AgentContext,
   config: AgentLoopConfig,
-  streamFn: StreamFn,
+  runtime: ModelRuntime,
   signal?: AbortSignal,
 ): Promise<void>;
 
@@ -42,6 +42,8 @@ interface AgentContext {
 
 interface AgentLoopConfig {
   readonly model: ModelConfig;
+  /** 一次 Run 已完成模型 Turn 的硬上限。 */
+  readonly maxTurns?: number;
   readonly convertToLlm: (
     messages: readonly AgentMessage[],
   ) => readonly Message[];
@@ -155,11 +157,12 @@ tools/execute
 tools/post-execute
 agent/tool-result
 agent/turn-end
+maxTurns hard-limit check
+agent/stopping -> boolean
 ```
 
 四个流式事实只在 provider 产生对应片段时发生。Tool 拦截五行对每个 Tool Call 重复一次。若
-`shouldContinue()` 决定继续，下一个 `agent/turn-start` 开始新一轮；否则 Loop 拦截
-`agent/stopping` 作为最后一个扩展点。
+`maxTurns` 未达到且 `agent/stopping` 返回 `false`，下一个 `agent/turn-start` 开始新一轮。
 
 ## 7. Agent 控制事件
 
@@ -168,11 +171,13 @@ Agent 有三个 `intercept()` 控制点：
 - **`agent/user-prompt`**：user message 写入前，listener 可返回修改后的 prompt，或返回
   `undefined` 阻止 Run；
 - **`agent/context`**：每次模型请求前整理消息快照，不改写 Session 历史；
-- **`agent/stopping`**：仅当 Loop 即将停止时拦截，listener 可返回一条消息以开始下一 Turn。
+- **`agent/stopping`**：每个正常 Turn 的 `agent/turn-end` 后拦截，输入本轮完整 assistant
+  message、全部 Tool Result 和当前消息历史，返回 `boolean` 表示是否停止。
 
-`shouldContinue()` 是 Loop 内部的决策（`toolResults` 非空且未 Abort 时继续），不产生事件。
-`agent/stopping` 是正常 Turn 没有 Tool Result、Loop 即将停止时的扩展点。AI `error` 终止块会
-直接结束 Run；已经取消的信号也不会进入 stopping listener。
+默认 stopping 策略在 `toolResults.length === 0` 时返回 `true`。listener 可以返回不同的布尔值；
+未来若需要 AI 判断，可在 listener 的闭包中调用 `runtime.complete()`，但 core 当前没有注册该
+listener。`maxTurns` 是 Loop 在 dispatch 前执行的硬限制，listener 不能覆盖它。AI `error` 终止块
+会直接结束 Run；已经取消的信号也不会进入 stopping listener。
 
 ## 8. 与 Harness 的关系
 
@@ -198,7 +203,7 @@ agent 只从相邻 ai 层直接依赖：
 
 | ai 接口 | agent 用途 |
 |---------|-----------|
-| `StreamFn` | 注入 LLM 能力 |
+| `ModelRuntime` | 注入 provider 路由和 LLM 请求能力；Loop 只调用其 `stream()` |
 | `ModelConfig` | model/provider 选择 |
 | `Message` | `AgentMessage` 和转换结果 |
 | `Context` | 调用 LLM 前临时构造 |

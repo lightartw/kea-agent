@@ -122,8 +122,8 @@ tools/execute
 tools/post-execute
 agent/tool-result
 agent/turn-end
-shouldContinue() decides internally
-agent/stopping (only when the loop would otherwise stop)
+maxTurns hard-limit check
+agent/stopping -> boolean
 harness/run-end
 ```
 
@@ -135,8 +135,10 @@ harness/run-end
   各重复一次，顺序与模型生成顺序一致；
 - 未知、无效、被阻止、已中止或失败的 Tool Call 跳过无法执行的阶段，但仍然以恰好一个
   `agent/tool-result` 结束；
-- `shouldContinue()` 是 Agent Loop 内部的决策，不产生事件；只有 Loop 将要停止时才分发
-  `agent/stopping`。
+- `agent/stopping` 是一个 Intercept event：每个正常 Turn 的 `agent/turn-end` 后，Agent Loop
+  先检查不可绕过的 `maxTurns`，再把完整 assistant message、Tool Result 和当前历史交给 listener。
+  默认处理在没有 Tool Result 时返回 `true`；listener 返回的 `boolean` 控制是否开始下一 Turn。
+  它不是事实观察，也不再注入消息。
 
 ## 10. 公共接口
 

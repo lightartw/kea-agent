@@ -1,32 +1,41 @@
 # ai
 
-`ai` 是 LLM 传输层：它把不同 provider 的一次流式调用统一为 `StreamFn`。
-调用者每次传入完整上下文；本包不保存历史、不执行工具，也不控制 agent loop。
+`ai` 是 LLM 请求边界。它统一 provider 的流式协议，并提供无状态的
+`ModelRuntime`。调用者每次显式传入模型配置和完整上下文；本包不保存模型选择、历史、
+Session 或 Agent Run，也不执行工具或控制 agent loop。
 
 ## 用法
 
 ```ts
-import { createStreamFn, type Context } from "./core/ai/index.js";
+import { createModelRuntime, type Context } from "./core/ai/index.js";
 
-const { stream, defaultModel } = createStreamFn();
+const { runtime, modelConfig } = createModelRuntime();
 const context: Context = {
   systemPrompt: "You are helpful.",
   messages: [{ role: "user", content: "Hello" }],
 };
 
-for await (const event of stream(defaultModel, context)) {
+for await (const event of runtime.stream(modelConfig, context)) {
   if (event.type === "text_delta") process.stdout.write(event.text);
   if (event.type === "error") console.error(event.message.errorMessage);
 }
 ```
 
-一次 `StreamFn` 调用是一个 LLM turn。tool call 只是输出协议；调用者执行工具后，
+`ModelRuntime` 是“怎样请求模型”的能力：它拥有 provider 路由和 lazy adapter。
+`ModelConfig` 是“这次请求选择哪个模型”的值。因此 Runtime 不保存当前模型或默认模型；
+同一个 Runtime 可服务多个 provider、Session 和模型切换。
+
+一次 `runtime.stream()` 调用是一个 LLM turn。tool call 只是输出协议；调用者执行工具后，
 把 `ToolResultMessage` 加入下一次调用的 `Context.messages`。
+
+`runtime.complete()` 消费同一条 stream 路由，并返回 `done` 或 `error` 终止块中的完整
+assistant message。流没有终止块时它会拒绝。它不承担标题生成、compaction 或停止判断；这些是
+调用方的策略，当前 core 尚未实现 AI 标题、压缩或 AI stopping listener。
 
 ## Provider 与模型切换
 
-`createStreamFn()` 找出所有已配置 provider，为它们创建 lazy adapter，并返回同一个
-路由函数。内置配置如下：
+`createModelRuntime()` 找出所有已配置 provider，为它们创建 lazy adapter，并返回同一个
+Runtime。内置配置如下：
 
 | Provider | API key | 可选 base URL |
 |---|---|---|
@@ -35,10 +44,10 @@ for await (const event of stream(defaultModel, context)) {
 | Gemini | `GEMINI_API_KEY` | `GEMINI_BASE_URL` |
 
 `MODEL_ID` 必须提供。只有一家 provider 时自动作为默认；多家时必须设置
-`DEFAULT_PROVIDER`。默认项只决定 `defaultModel`，不限制其他已配置 provider。
+`DEFAULT_PROVIDER`。默认项只决定 factory 返回的启动 `modelConfig`，不限制其他已配置 provider。
 
 ```ts
-const { stream, defaultModel } = createStreamFn({
+const { runtime } = createModelRuntime({
   env: {
     ANTHROPIC_API_KEY: "...",
     OPENAI_API_KEY: "...",
@@ -47,8 +56,8 @@ const { stream, defaultModel } = createStreamFn({
   },
 });
 
-// 切换 model/provider 不需要重建 stream。
-for await (const event of stream(
+// 切换 model/provider 不需要重建 Runtime。
+for await (const event of runtime.stream(
   { provider: "openai", model: "gpt-5" },
   context,
 )) {
@@ -70,7 +79,7 @@ const deepseek: ProviderConfig = {
   createAdapter: (key, url) => new MyAdapter(key, url),
 };
 
-const { stream } = createStreamFn({ providers: [deepseek] });
+const { runtime, modelConfig } = createModelRuntime({ providers: [deepseek] });
 ```
 
 ## 完整公开接口
@@ -91,12 +100,12 @@ interface ProviderConfig {
   ) => Adapter;
 }
 
-function createStreamFn(options?: {
+function createModelRuntime(options?: {
   providers?: ProviderConfig[];
   env?: Readonly<Record<string, string | undefined>>;
 }): {
-  stream: StreamFn;
-  defaultModel: ModelConfig;
+  runtime: ModelRuntime;
+  modelConfig: ModelConfig;
 };
 ```
 
@@ -126,11 +135,19 @@ interface StreamOptions {
   readonly signal?: AbortSignal;
 }
 
-type StreamFn = (
-  model: ModelConfig,
-  context: Context,
-  options?: Partial<StreamOptions>,
-) => AsyncIterable<StreamChunk>;
+interface ModelRuntime {
+  stream(
+    modelConfig: ModelConfig,
+    context: Context,
+    options?: Partial<StreamOptions>,
+  ): AsyncIterable<StreamChunk>;
+
+  complete(
+    modelConfig: ModelConfig,
+    context: Context,
+    options?: Partial<StreamOptions>,
+  ): Promise<AssistantMessage>;
+}
 ```
 
 ### Message
@@ -252,9 +269,9 @@ type StreamChunk =
 
 | 导出 | 建议范围 |
 |---|---|
-| `createStreamFn`, `ProviderConfig` | 应用组合根配置 ai 能力 |
-| `StreamFn` | ai 核心能力；直接注入相邻 agent 层 |
-| `ModelConfig` | ai 的模型句柄；agent 和模型选择界面可直接使用 |
+| `createModelRuntime`, `ProviderConfig` | 应用组合根配置 ai 能力 |
+| `ModelRuntime` | provider 路由和请求能力；直接注入相邻 agent 层 |
+| `ModelConfig` | 一次请求的模型选择；agent 和模型选择界面可直接使用 |
 | `Context`, `StreamChunk` | ai 调用边界；agent 内部消费，不继续向上透传 |
 | `StreamOptions` | ai 直接调用选项 |
 | `Message` | 传入 agent 后使用领域名 `AgentMessage` |
