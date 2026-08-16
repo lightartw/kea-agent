@@ -360,22 +360,26 @@ test("fork ignores abandoned branches and title rows", async () => {
     ...assistant,
     content: [{ type: "text", text: "abandoned branch" }],
   };
+  const current: AgentMessage = {
+    ...assistant,
+    content: [{ type: "text", text: "current branch" }],
+  };
   try {
     await mkdir(dir, { recursive: true });
-    const repo = repository(storageDir);
-    const source = await repo.create({ cwd: process.cwd() });
-    await source.append({ type: "message", message: user });
-    await source.append({ type: "message", message: abandoned });
-    await source.setTitle("Source title");
-    const currentId = await source.append({ type: "message", message: assistant });
-    await source.setTitle("Another title");
+    await writeFile(
+      join(dir, "branched.jsonl"),
+      `${JSON.stringify({ type: "session", version: 2, id: "branched", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n` +
+        `${JSON.stringify({ type: "message", id: "root", parentId: null, createdAt: "2026-01-01T00:00:00.000Z", message: user })}\n` +
+        `${JSON.stringify({ type: "message", id: "abandoned", parentId: "root", createdAt: "2026-01-01T00:00:00.000Z", message: abandoned })}\n` +
+        `${JSON.stringify({ type: "message", id: "current", parentId: "root", createdAt: "2026-01-01T00:00:00.000Z", message: current })}\n` +
+        `${JSON.stringify({ type: "session_title", createdAt: "2026-01-01T00:00:00.000Z", title: "Source title" })}\n`,
+    );
 
-    const fork = await repo.fork(source.metadata.id, currentId);
-    assert.deepEqual(fork.messages(), [user, assistant]);
-    assert.deepEqual(fork.nodes.map((node) => node.id), [
-      source.nodes[0]!.id,
-      currentId,
-    ]);
+    const repo = repository(storageDir);
+    const source = await repo.open("branched");
+    const fork = await repo.fork(source.metadata.id, "current");
+    assert.deepEqual(fork.messages(), [user, current]);
+    assert.deepEqual(fork.nodes.map((node) => node.id), ["root", "current"]);
     assert.equal(fork.metadata.title, "unknown");
   } finally {
     await rm(storageDir, { recursive: true, force: true });
