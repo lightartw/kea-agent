@@ -10,7 +10,7 @@ import type { AgentMessage } from "../../src/core/agent/types.js";
 import type { ModelConfig } from "../../src/core/ai/types.js";
 import { Session } from "../../src/core/harness/session/session.js";
 import { SessionRepository } from "../../src/core/harness/session/repository.js";
-import { sessionsDir, type SessionStorage } from "../../src/core/harness/session/storage.js";
+import type { SessionStorage } from "../../src/core/harness/session/types.js";
 import { SessionError } from "../../src/core/harness/session/types.js";
 import { detailedToolResult } from "../ai/fixtures.js";
 
@@ -32,6 +32,11 @@ async function tempStorage(): Promise<string> {
   return path;
 }
 
+// Backend paths are private to JsonlSessionStorage; tests define them locally.
+const sessionsDir = (storageDir: string): string => join(storageDir, "sessions");
+const sessionPath = (storageDir: string, id: string): string =>
+  join(sessionsDir(storageDir), `${id}.jsonl`);
+
 function memorySession(): Session {
   return Session.inMemory({ cwd: process.cwd() });
 }
@@ -40,8 +45,11 @@ function persistentSession(storageDir: string): Promise<Session> {
   return new SessionRepository(storageDir).create({ cwd: process.cwd() });
 }
 
-const isInvalidEntry = (error: unknown): boolean =>
-  error instanceof SessionError && error.code === "invalid_entry";
+const isInvalidRecord = (error: unknown): boolean =>
+  error instanceof SessionError && error.code === "invalid_record";
+
+const isNotFound = (error: unknown): boolean =>
+  error instanceof SessionError && error.code === "not_found";
 
 test("append generates node identity and common fields", async () => {
   const session = memorySession();
@@ -115,7 +123,7 @@ test("failed append after external session-file deletion rolls back node and hea
     const session = await persistentSession(storageDir);
     await session.append({ type: "message", message: user });
     await session.append({ type: "message", message: assistant });
-    await rm(join(sessionsDir(storageDir), `${session.id}.jsonl`));
+    await rm(sessionPath(storageDir, session.id));
 
     await assert.rejects(
       session.append({ type: "model_selection", selection: modelB }),
@@ -165,7 +173,7 @@ test("append rejects invalid runtime entries without changing the session", asyn
       const session = memorySession();
       await assert.rejects(
         append(session),
-        (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
+        isInvalidRecord,
       );
       assert.deepEqual(session.messages(), []);
       assert.equal(session.modelSelection(), null);
@@ -185,7 +193,7 @@ test("a failed queued append does not block a later valid append", async () => {
 
   await assert.rejects(
     failed,
-    (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
+    isInvalidRecord,
   );
   await succeeded;
   assert.deepEqual(session.messages(), [user]);
@@ -233,7 +241,7 @@ test("path follows the head parent chain and skips abandoned nodes", async () =>
 test("path rejects unknown node IDs", async () => {
   const session = memorySession();
   await session.append({ type: "message", message: user });
-  assert.throws(() => session.path("missing"), isInvalidEntry);
+  assert.throws(() => session.path("missing"), isNotFound);
 });
 
 test("modelSelection scans the selected path newest first", async () => {
@@ -279,7 +287,7 @@ test("title rows roll back on failed persistence", async () => {
   try {
     const session = await persistentSession(storageDir);
     await session.append({ type: "message", message: user });
-    await rm(join(sessionsDir(storageDir), `${session.id}.jsonl`));
+    await rm(sessionPath(storageDir, session.id));
 
     await assert.rejects(session.setTitle("new title"));
     assert.equal(session.metadata.title, "unknown");
@@ -342,27 +350,35 @@ test("JSONL session persists nested JSON-safe details", async () => {
 });
 
 test("append publishes nothing when storage rejects", async () => {
+  const failure = new Error("storage rejected append");
   const storage: SessionStorage = {
-    appendNode: async () => {
-      throw new SessionError("storage", "storage failed");
+    create: async () => {},
+    load: async () => {
+      throw new Error("unused load");
     },
-    setTitle: async () => {},
+    list: async () => [],
+    append: async () => {
+      throw failure;
+    },
+    delete: async () => {},
   };
   const session = Session.fromStorage(
     {
-      id: "s1",
-      title: "unknown",
-      cwd: process.cwd(),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      updatedAt: "2026-01-01T00:00:00.000Z",
+      metadata: {
+        id: "s1",
+        title: "unknown",
+        cwd: process.cwd(),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      records: [],
     },
-    [],
     storage,
   );
 
   await assert.rejects(
     session.append({ type: "message", message: user }),
-    (error: unknown) => error instanceof SessionError && error.code === "storage",
+    (error: unknown) => error === failure,
   );
   assert.equal(session.headId, null);
   assert.deepEqual(session.nodes, []);

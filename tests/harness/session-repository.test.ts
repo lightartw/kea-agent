@@ -7,10 +7,8 @@ import test from "node:test";
 
 import type { AgentMessage } from "../../src/core/agent/types.js";
 import type { ModelConfig } from "../../src/core/ai/types.js";
-import { sessionsDir } from "../../src/core/harness/session/storage.js";
 import { SessionRepository } from "../../src/core/harness/session/repository.js";
 import { SessionError } from "../../src/core/harness/session/types.js";
-
 const user: AgentMessage = { role: "user", content: "hello" };
 const followUp: AgentMessage = { role: "user", content: "follow up" };
 const assistant: AgentMessage = {
@@ -29,6 +27,11 @@ async function tempStorage(): Promise<string> {
   return path;
 }
 
+// Backend paths are private to JsonlSessionStorage; tests define them locally.
+const sessionsDir = (storageDir: string): string => join(storageDir, "sessions");
+const sessionPath = (storageDir: string, id: string): string =>
+  join(sessionsDir(storageDir), `${id}.jsonl`);
+
 function repository(storageDir: string): SessionRepository {
   return new SessionRepository(storageDir);
 }
@@ -44,11 +47,14 @@ async function createPersistedSession(storageDir: string): Promise<{
   return { repo, sessionId: session.metadata.id };
 }
 
-const isNotValid = (error: unknown): boolean =>
-  error instanceof SessionError && error.code === "invalid_entry";
+const isInvalidRecord = (error: unknown): boolean =>
+  error instanceof SessionError && error.code === "invalid_record";
 
 const isInvalidSession = (error: unknown): boolean =>
   error instanceof SessionError && error.code === "invalid_session";
+
+const isNotFound = (error: unknown): boolean =>
+  error instanceof SessionError && error.code === "not_found";
 
 test("list returns empty when sessions directory does not exist", async () => {
   const storageDir = await tempStorage();
@@ -64,7 +70,7 @@ test("create writes an unknown-title version-2 header and is immediately listed"
   try {
     const repo = repository(storageDir);
     const session = await repo.create({ cwd: process.cwd() });
-    const path = join(sessionsDir(storageDir), `${session.metadata.id}.jsonl`);
+    const path = sessionPath(storageDir, session.metadata.id);
     const rows = (await readFile(path, "utf8"))
       .trim()
       .split("\n")
@@ -106,6 +112,32 @@ test("open restores nodes, title, cwd, selection, and head", async () => {
     assert.deepEqual(opened.messages(), [user, assistant]);
     assert.deepEqual(opened.modelSelection(), modelB);
     assert.equal(opened.headId, created.headId);
+  } finally {
+    await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
+test("different Session IDs can append concurrently and both reopen", async () => {
+  const storageDir = await tempStorage();
+  try {
+    const repo = repository(storageDir);
+    const [first, second] = await Promise.all([
+      repo.create({ cwd: process.cwd() }),
+      repo.create({ cwd: process.cwd() }),
+    ]);
+
+    await Promise.all([
+      first.append({ type: "message", message: user }),
+      second.append({ type: "message", message: followUp }),
+      first.append({ type: "model_selection", selection: modelB }),
+      second.append({ type: "message", message: assistant }),
+    ]);
+
+    const reopenedFirst = await repo.open(first.metadata.id);
+    const reopenedSecond = await repo.open(second.metadata.id);
+    assert.deepEqual(reopenedFirst.messages(), [user]);
+    assert.deepEqual(reopenedFirst.modelSelection(), modelB);
+    assert.deepEqual(reopenedSecond.messages(), [followUp, assistant]);
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
@@ -240,7 +272,7 @@ test("open rejects missing, empty, malformed, headerless, and version-1 sessions
     );
     await assert.rejects(
       repo.open("bad-row"),
-      (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
+      isInvalidRecord,
     );
   } finally {
     await rm(storageDir, { recursive: true, force: true });
@@ -296,7 +328,7 @@ test("open rejects duplicate IDs, missing parents, and multiple roots", async ()
       );
       await assert.rejects(
         repository(storageDir).open(name),
-        (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
+        isInvalidRecord,
       );
     }
   } finally {
@@ -414,7 +446,7 @@ test("fork of an unknown node is invalid", async () => {
 
     await assert.rejects(
       repo.fork(source.metadata.id, "missing-node"),
-      isNotValid,
+      isNotFound,
     );
   } finally {
     await rm(storageDir, { recursive: true, force: true });
