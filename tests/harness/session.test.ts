@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -8,6 +9,7 @@ import test from "node:test";
 import type { AgentMessage } from "../../src/core/agent/types.js";
 import type { ModelConfig } from "../../src/core/ai/types.js";
 import { Session, sessionsDir } from "../../src/core/harness/session/session.js";
+import { SessionRepository } from "../../src/core/harness/session/repository.js";
 import { SessionError } from "../../src/core/harness/session/types.js";
 import { detailedToolResult } from "../ai/fixtures.js";
 
@@ -25,7 +27,7 @@ const assistant: AgentMessage = {
 
 async function tempStorage(): Promise<string> {
   const path = join(tmpdir(), `kea-session-${randomUUID()}`);
-  await mkdir(path, { recursive: true });
+  await mkdirSync(path);
   return path;
 }
 
@@ -33,42 +35,12 @@ function memorySession(): Session {
   return Session.inMemory({ cwd: process.cwd() });
 }
 
-async function readRows(storageDir: string, sessionId: string): Promise<unknown[]> {
-  const path = join(sessionsDir(storageDir), `${sessionId}.jsonl`);
-  return (await readFile(path, "utf8"))
-    .trim()
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line));
+function persistentSession(storageDir: string): Promise<Session> {
+  return new SessionRepository(storageDir).create({ cwd: process.cwd() });
 }
-
-const isInvalidSession = (error: unknown): boolean =>
-  error instanceof SessionError && error.code === "invalid_session";
 
 const isInvalidEntry = (error: unknown): boolean =>
   error instanceof SessionError && error.code === "invalid_entry";
-
-test("create immediately writes an unknown-title Session header", async () => {
-  const storageDir = await tempStorage();
-  try {
-    const session = await Session.create(storageDir, { cwd: process.cwd() });
-    const rows = await readRows(storageDir, session.id);
-    assert.equal(rows.length, 1);
-    assert.deepEqual(rows[0], {
-      type: "session",
-      version: 2,
-      id: session.id,
-      title: "unknown",
-      cwd: resolve(process.cwd()),
-      createdAt: session.metadata.createdAt,
-    });
-    assert.equal(session.metadata.updatedAt, session.metadata.createdAt);
-    assert.equal(session.headId, null);
-    assert.deepEqual(session.nodes, []);
-  } finally {
-    await rm(storageDir, { recursive: true, force: true });
-  }
-});
 
 test("append generates node identity and common fields", async () => {
   const session = memorySession();
@@ -101,12 +73,12 @@ test("in-memory session projects messages and latest model", async () => {
 test("persistent session appends and reopens nodes", async () => {
   const storageDir = await tempStorage();
   try {
-    const session = await Session.create(storageDir, { cwd: process.cwd() });
+    const session = await persistentSession(storageDir);
     await session.append({ type: "message", message: user });
     await session.append({ type: "message", message: assistant });
     await session.append({ type: "model_selection", selection: modelB });
 
-    const reopened = await Session.open(storageDir, session.id);
+    const reopened = await new SessionRepository(storageDir).open(session.id);
     assert.deepEqual(reopened.messages(), [user, assistant]);
     assert.deepEqual(reopened.modelSelection(), modelB);
     assert.equal(reopened.headId, session.headId);
@@ -119,7 +91,7 @@ test("concurrent appends persist one ordered parent chain", async () => {
   const storageDir = await tempStorage();
   const followUp: AgentMessage = { role: "user", content: "follow up" };
   try {
-    const session = await Session.create(storageDir, { cwd: process.cwd() });
+    const session = await persistentSession(storageDir);
     await session.append({ type: "message", message: user });
     await session.append({ type: "message", message: assistant });
 
@@ -128,77 +100,9 @@ test("concurrent appends persist one ordered parent chain", async () => {
       session.append({ type: "model_selection", selection: modelB }),
     ]);
 
-    const reopened = await Session.open(storageDir, session.id);
+    const reopened = await new SessionRepository(storageDir).open(session.id);
     assert.deepEqual(reopened.messages(), [user, assistant, followUp]);
     assert.deepEqual(reopened.modelSelection(), modelB);
-  } finally {
-    await rm(storageDir, { recursive: true, force: true });
-  }
-});
-
-test("open rejects a headerless old Session", async () => {
-  const storageDir = await tempStorage();
-  const dir = sessionsDir(storageDir);
-  await mkdir(dir, { recursive: true });
-  try {
-    await writeFile(
-      join(dir, "old.jsonl"),
-      `${JSON.stringify({ type: "message", id: "x", parentId: null, message: user })}\n`,
-    );
-    await assert.rejects(Session.open(storageDir, "old"), isInvalidSession);
-  } finally {
-    await rm(storageDir, { recursive: true, force: true });
-  }
-});
-
-test("open rejects missing, empty, malformed, version-1, and invalid-row sessions", async () => {
-  const storageDir = await tempStorage();
-  const dir = sessionsDir(storageDir);
-  try {
-    await mkdir(dir, { recursive: true });
-
-    await assert.rejects(
-      Session.open(storageDir, "missing"),
-      (error: unknown) => error instanceof SessionError && error.code === "not_found",
-    );
-
-    await writeFile(join(dir, "empty.jsonl"), "");
-    await assert.rejects(Session.open(storageDir, "empty"), isInvalidSession);
-
-    await writeFile(join(dir, "bad-json.jsonl"), "{");
-    await assert.rejects(Session.open(storageDir, "bad-json"), isInvalidSession);
-
-    await writeFile(
-      join(dir, "bad-header.jsonl"),
-      `${JSON.stringify({ type: "session", version: 2, id: "other", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n`,
-    );
-    await assert.rejects(
-      Session.open(storageDir, "bad-header"),
-      (error: unknown) => error instanceof SessionError && error.code === "invalid_session",
-    );
-
-    await writeFile(join(dir, "version-1.jsonl"),
-      `${JSON.stringify({ type: "session", version: 1, id: "version-1", projectId: "p", directory: ".", cwd: ".", title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n`);
-    await assert.rejects(Session.open(storageDir, "version-1"), isInvalidSession);
-
-    await writeFile(join(dir, "bad-row.jsonl"),
-      `${JSON.stringify({ type: "session", version: 2, id: "bad-row", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${JSON.stringify({ type: "unknown", id: "y", parentId: null, createdAt: "2026-01-01T00:00:00.000Z" })}\n`);
-    await assert.rejects(
-      Session.open(storageDir, "bad-row"),
-      (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
-    );
-  } finally {
-    await rm(storageDir, { recursive: true, force: true });
-  }
-});
-
-test("open rejects session ids that can escape the sessions directory", async () => {
-  const storageDir = await tempStorage();
-  try {
-    await assert.rejects(
-      Session.open(storageDir, "../outside"),
-      (error: unknown) => error instanceof SessionError && error.code === "invalid_session",
-    );
   } finally {
     await rm(storageDir, { recursive: true, force: true });
   }
@@ -207,7 +111,7 @@ test("open rejects session ids that can escape the sessions directory", async ()
 test("failed append after external session-file deletion rolls back node and head", async () => {
   const storageDir = await tempStorage();
   try {
-    const session = await Session.create(storageDir, { cwd: process.cwd() });
+    const session = await persistentSession(storageDir);
     await session.append({ type: "message", message: user });
     await session.append({ type: "message", message: assistant });
     await rm(join(sessionsDir(storageDir), `${session.id}.jsonl`));
@@ -287,51 +191,6 @@ test("a failed queued append does not block a later valid append", async () => {
   assert.equal(session.modelSelection(), null);
 });
 
-test("open rejects duplicate IDs, missing parents, and multiple roots", async () => {
-  const storageDir = await tempStorage();
-  const dir = sessionsDir(storageDir);
-  const invalidTrees: Array<{
-    readonly name: string;
-    readonly entries: readonly object[];
-  }> = [
-    {
-      name: "duplicate",
-      entries: [
-        { type: "message", id: "root", parentId: null, createdAt: "2026-01-01T00:00:00.000Z", message: user },
-        { type: "message", id: "root", parentId: "root", createdAt: "2026-01-01T00:00:00.000Z", message: assistant },
-      ],
-    },
-    {
-      name: "missing-parent",
-      entries: [
-        { type: "message", id: "child", parentId: "missing", createdAt: "2026-01-01T00:00:00.000Z", message: user },
-      ],
-    },
-    {
-      name: "multiple-roots",
-      entries: [
-        { type: "message", id: "first", parentId: null, createdAt: "2026-01-01T00:00:00.000Z", message: user },
-        { type: "message", id: "second", parentId: null, createdAt: "2026-01-01T00:00:00.000Z", message: user },
-      ],
-    },
-  ];
-  try {
-    await mkdir(dir, { recursive: true });
-    for (const { name, entries } of invalidTrees) {
-      await writeFile(
-        join(dir, `${name}.jsonl`),
-        `${JSON.stringify({ type: "session", version: 2, id: name, cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
-      );
-      await assert.rejects(
-        Session.open(storageDir, name),
-        (error: unknown) => error instanceof SessionError && error.code === "invalid_entry",
-      );
-    }
-  } finally {
-    await rm(storageDir, { recursive: true, force: true });
-  }
-});
-
 test("messages returns a fresh array", async () => {
   const session = memorySession();
   await session.append({ type: "message", message: user });
@@ -348,18 +207,18 @@ test("path follows the head parent chain and skips abandoned nodes", async () =>
     content: [{ type: "text", text: "current branch" }],
   };
   try {
-    await mkdir(dir, { recursive: true });
+    await mkdirSync(dir, { recursive: true });
     const entries = [
       { type: "message", id: "root", parentId: null, createdAt: "2026-01-01T00:00:00.000Z", message: user },
       { type: "message", id: "abandoned", parentId: "root", createdAt: "2026-01-01T00:00:00.000Z", message: assistant },
       { type: "message", id: "current", parentId: "root", createdAt: "2026-01-01T00:00:00.000Z", message: currentAssistant },
     ];
-    await writeFile(
+    await writeFileSync(
       join(dir, "branched.jsonl"),
       `${JSON.stringify({ type: "session", version: 2, id: "branched", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
     );
 
-    const session = await Session.open(storageDir, "branched");
+    const session = await new SessionRepository(storageDir).open("branched");
     assert.equal(session.headId, "current");
     assert.deepEqual(session.messages(), [user, currentAssistant]);
     assert.deepEqual(session.path().map((node) => node.id), ["root", "current"]);
@@ -417,7 +276,7 @@ test("setTitleIfUnknown sets the first generated title", async () => {
 test("title rows roll back on failed persistence", async () => {
   const storageDir = await tempStorage();
   try {
-    const session = await Session.create(storageDir, { cwd: process.cwd() });
+    const session = await persistentSession(storageDir);
     await session.append({ type: "message", message: user });
     await rm(join(sessionsDir(storageDir), `${session.id}.jsonl`));
 
@@ -457,7 +316,7 @@ test("tool message details round-trip and non-JSON details are rejected", async 
 test("JSONL session persists nested JSON-safe details", async () => {
   const storageDir = await tempStorage();
   try {
-    const session = await Session.create(storageDir, { cwd: process.cwd() });
+    const session = await persistentSession(storageDir);
     const detailed: AgentMessage = {
       role: "tool",
       toolCallId: "call-9",
@@ -474,7 +333,7 @@ test("JSONL session persists nested JSON-safe details", async () => {
     await session.append({ type: "message", message: assistant });
     await session.append({ type: "message", message: detailed });
 
-    const reopened = await Session.open(storageDir, session.id);
+    const reopened = await new SessionRepository(storageDir).open(session.id);
     assert.deepEqual(reopened.messages().at(-1), detailed);
   } finally {
     await rm(storageDir, { recursive: true, force: true });

@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 
 import { AgentHarness } from "../../src/core/harness/agent-harness.js";
 import { Session } from "../../src/core/harness/session/session.js";
+import { SessionRepository } from "../../src/core/harness/session/repository.js";
 import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
 import { AgentTool } from "../../src/core/agent/tools/types.js";
 import { Events } from "../../src/core/events/events.js";
@@ -806,7 +807,8 @@ test("reopened unknown-title Session with an existing user message is not regene
   const storageDir = join(tmpdir(), `kea-harness-title-${randomUUID()}`);
   await mkdir(storageDir, { recursive: true });
   try {
-    const first = await Session.create(storageDir, { cwd: process.cwd() });
+    const repository = new SessionRepository(storageDir);
+    const first = await repository.create({ cwd: process.cwd() });
     const { harness: firstHarness } = makeHarness({
       session: first,
       titleGenerator: async () => "First title",
@@ -814,7 +816,7 @@ test("reopened unknown-title Session with an existing user message is not regene
     await firstHarness.prompt("hello");
     await eventually(() => assert.equal(firstHarness.title, "First title"));
 
-    const reopened = await Session.open(storageDir, first.id);
+    const reopened = await repository.open(first.metadata.id);
     let titleCalls = 0;
     const { harness: reopenedHarness } = makeHarness({
       session: reopened,
