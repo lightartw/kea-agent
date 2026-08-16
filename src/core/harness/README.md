@@ -153,9 +153,10 @@ Harness。`harness.sessionId` 标识 Harness 当前绑定的 Session，但不暴
 行。`session_title` 是追加式存储行，永远不会出现在 `session.nodes` 中；version-1 文件被显式
 拒绝。
 
-JSONL 复制是当前后端行为，不是公开语义：公开 API 和逻辑语义保持与未来共享不可变节点存储
-的兼容。`SessionError.code` 说明失败类别：`not_found`、`invalid_session`、`invalid_entry`
-或 `storage`。
+JSONL 复制是当前后端行为，不是公开语义。Session 通过内部的 `SessionStorage` 端口
+（`session/storage.ts`，不对外导出）接收存储；Session 先等端口接受节点或标题，再发布内存
+状态，因此端口换成未来共享的不可变节点存储时，公开 API 和逻辑语义保持不变。`SessionError.code`
+说明失败类别：`not_found`、`invalid_session`、`invalid_entry` 或 `storage`。
 
 ### 与 AgentHarness 的边界
 
