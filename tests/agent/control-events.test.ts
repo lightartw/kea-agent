@@ -20,8 +20,8 @@ import type {
   Message,
   ModelConfig,
   StreamChunk,
-  StreamFn,
 } from "../../src/core/ai/types.js";
+import { runtimeFromStream, type TestStream } from "../fixtures/model-runtime.js";
 
 const run = { sessionId: "session-1", runId: "run-1" } as const;
 
@@ -73,10 +73,10 @@ function assistantMsg(
   };
 }
 
-function streamFnWithEvents(
+function streamWithEvents(
   streams: readonly (readonly StreamChunk[])[],
   beforeStream?: (context: Context, index: number) => void,
-): StreamFn {
+): TestStream {
   let index = 0;
   return async function* (_model, context) {
     const current = index;
@@ -86,8 +86,8 @@ function streamFnWithEvents(
   };
 }
 
-function streamForToolCall(call: AgentToolCall): StreamFn {
-  return streamFnWithEvents([
+function streamForToolCall(call: AgentToolCall): TestStream {
+  return streamWithEvents([
     [
       { type: "toolcall_start", id: call.id, name: call.name },
       { type: "toolcall_end", toolCall: call },
@@ -140,10 +140,10 @@ test("agent/user-prompt blocking prevents message insertion and model calls", as
     "secret",
     context,
     makeConfig(events),
-    async function* () {
+    runtimeFromStream(async function* () {
       streams++;
       yield { type: "done", message: assistantMsg("unused") };
-    },
+    }),
   );
 
   assert.equal(streams, 0);
@@ -161,9 +161,9 @@ test("agent/user-prompt a returned prompt runs the Run", async () => {
     "hello",
     context,
     makeConfig(events),
-    async function* () {
+    runtimeFromStream(async function* () {
       yield { type: "done", message: assistantMsg("done") };
-    },
+    }),
   );
 
   assert.deepEqual(history.map((message) => message.role), ["user", "assistant"]);
@@ -183,10 +183,10 @@ test("agent/user-prompt transformation reaches persisted history and the model r
     "hello",
     context,
     makeConfig(events),
-    async function* (_model, context) {
+    runtimeFromStream(async function* (_model, context) {
       requestMessages = [...context.messages];
       yield { type: "done", message: assistantMsg("done") };
-    },
+    }),
   );
 
   const userContent = (message: Message): string | null =>
@@ -215,10 +215,10 @@ test("agent/context intercept reaches the model without replacing history", asyn
     "real",
     context,
     makeConfig(events),
-    async function* (_model, context) {
+    runtimeFromStream(async function* (_model, context) {
       requestMessages = [...context.messages];
       yield { type: "done", message: assistantMsg("done") };
-    },
+    }),
   );
 
   assert.deepEqual(
@@ -253,7 +253,12 @@ test("tools/pre-execute does not replace arguments before validation", async () 
     arguments: { value: "fixed" },
   }));
 
-  await runAgentLoop("run", memoryContext(tools), makeConfig(events), streamForToolCall(call));
+  await runAgentLoop(
+    "run",
+    memoryContext(tools),
+    makeConfig(events),
+    runtimeFromStream(streamForToolCall(call)),
+  );
   assert.equal(tool.ran, false);
 });
 
@@ -276,7 +281,12 @@ test("tools/pre-execute can block execution", async () => {
     if (input.sessionId === "session-1") results.push(input.result);
   });
 
-  await runAgentLoop("run", context, makeConfig(events), streamForToolCall(call));
+  await runAgentLoop(
+    "run",
+    context,
+    makeConfig(events),
+    runtimeFromStream(streamForToolCall(call)),
+  );
 
   assert.equal(tool.ran, false);
   assert.equal(results.length, 1);
@@ -298,7 +308,7 @@ test("tools/post-execute transformed result is identical in tool message and nex
     result: { content: "patched", isError: true },
   }));
   let secondRequest: readonly Message[] = [];
-  const stream = streamFnWithEvents([
+  const stream = streamWithEvents([
     [
       { type: "toolcall_start", id: call.id, name: call.name },
       { type: "toolcall_end", toolCall: call },
@@ -313,7 +323,7 @@ test("tools/post-execute transformed result is identical in tool message and nex
     if (input.sessionId === "session-1") results.push(input.result);
   });
 
-  await runAgentLoop("run", context, makeConfig(events), stream);
+  await runAgentLoop("run", context, makeConfig(events), runtimeFromStream(stream));
 
   assert.deepEqual(results[0], { content: "patched", isError: true });
   assert.deepEqual(history[2], {
@@ -328,35 +338,97 @@ test("tools/post-execute transformed result is identical in tool message and nex
 
 // ── agent/stopping ──
 
-test("agent/stopping continues when it returns a message", async () => {
+test("agent/stopping can override the default stop decision", async () => {
   const events = new Events();
-  let stops = 0;
-  events.on("agent/stopping", () => {
-    stops += 1;
-    return stops === 1
-      ? { role: "user", content: "continue" }
-      : undefined;
+  let checks = 0;
+  events.on("agent/stopping", async (input, proceed) => {
+    checks += 1;
+    const defaultDecision = await proceed(input);
+    return checks === 1 ? false : defaultDecision;
   });
   const history: AgentMessage[] = [];
   const context = memoryContext(undefined, history);
-  let streams = 0;
+  let requests = 0;
 
   await runAgentLoop(
     "start",
     context,
     makeConfig(events),
-    async function* () {
-      streams++;
-      yield { type: "done", message: assistantMsg(`answer-${streams}`) };
-    },
+    runtimeFromStream(async function* () {
+      requests += 1;
+      yield { type: "done", message: assistantMsg(`answer-${requests}`) };
+    }),
   );
 
-  assert.equal(streams, 2);
-  assert.equal(stops, 2);
+  assert.equal(requests, 2);
+  assert.equal(checks, 2);
   assert.deepEqual(history.map((message) => message.role), [
-    "user", "assistant", "user", "assistant",
+    "user", "assistant", "assistant",
   ]);
-  assert.equal(history[2]?.role === "user" ? history[2].content : "", "continue");
+});
+
+test("agent/stopping can stop after a tool Turn", async () => {
+  const events = new Events();
+  events.on("agent/stopping", () => true);
+  const tool = new NoopTool();
+  const tools = new AgentToolRegistry();
+  tools.register(tool);
+  const call = {
+    type: "toolCall" as const,
+    id: "c1",
+    name: "noop",
+    arguments: {},
+  };
+  let requests = 0;
+
+  await runAgentLoop(
+    "run",
+    memoryContext(tools),
+    makeConfig(events),
+    runtimeFromStream(async function* () {
+      requests += 1;
+      yield { type: "toolcall_start", id: call.id, name: call.name };
+      yield { type: "toolcall_end", toolCall: call };
+      yield { type: "done", message: assistantMsg("", [call]) };
+    }),
+  );
+
+  assert.equal(requests, 1);
+  assert.equal(tool.ran, true);
+});
+
+test("agent/stopping receives the completed Turn and history", async () => {
+  const events = new Events();
+  const seen: Array<{
+    message: AgentMessage;
+    toolResults: readonly AgentMessage[];
+    messages: readonly AgentMessage[];
+  }> = [];
+  events.on("agent/stopping", (input, proceed) => {
+    seen.push({
+      message: input.message,
+      toolResults: input.toolResults,
+      messages: input.messages,
+    });
+    return proceed(input);
+  });
+
+  await runAgentLoop(
+    "hello",
+    memoryContext(),
+    makeConfig(events),
+    runtimeFromStream(streamWithEvents([
+      [{ type: "done", message: assistantMsg("done") }],
+    ])),
+  );
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.message.role, "assistant");
+  assert.deepEqual(seen[0]?.toolResults, []);
+  assert.deepEqual(
+    seen[0]?.messages.map((message) => message.role),
+    ["user", "assistant"],
+  );
 });
 
 // ── shared signal ──
@@ -372,8 +444,9 @@ test("the same AbortSignal reaches every control listener", async () => {
     seen.push({ type: "context", signal });
     return proceed(input);
   });
-  events.on("agent/stopping", (_input, _proceed, signal) => {
+  events.on("agent/stopping", (input, proceed, signal) => {
     seen.push({ type: "stopping", signal });
+    return proceed(input);
   });
 
   const tool = new NoopTool();
@@ -388,13 +461,14 @@ test("the same AbortSignal reaches every control listener", async () => {
     "run",
     memoryContext(tools),
     makeConfig(events),
-    streamForToolCall(call),
+    runtimeFromStream(streamForToolCall(call)),
     controller.signal,
   );
 
   assert.deepEqual(seen.map(({ type }) => type), [
     "user_prompt",
     "context",
+    "stopping",
     "context",
     "stopping",
   ]);

@@ -1,8 +1,8 @@
 import type {
   Context,
   Message,
+  ModelRuntime,
   StreamChunk,
-  StreamFn,
 } from "../ai/types.js";
 import type { AgentContext, AgentLoopConfig, AgentMessage } from "./types.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
@@ -34,13 +34,6 @@ function toToolResultMessage(
   };
 }
 
-function shouldContinue(
-  toolResults: readonly AgentMessage[],
-  signal?: AbortSignal,
-): boolean {
-  return !signal?.aborted && toolResults.length > 0;
-}
-
 /**
  * Run one Agent Run from a user input. Complete messages are committed
  * through `context.appendMessage()` before their events are emitted.
@@ -49,9 +42,10 @@ export async function runAgentLoop(
   input: string,
   context: AgentContext,
   config: AgentLoopConfig,
-  streamFn: StreamFn,
+  runtime: ModelRuntime,
   signal?: AbortSignal,
 ): Promise<void> {
+  const stream = runtime.stream.bind(runtime);
   // ── agent/user-prompt (intercept) ──
   const prompt = await config.events.intercept(
     "agent/user-prompt",
@@ -64,6 +58,7 @@ export async function runAgentLoop(
   await context.appendMessage({ role: "user", content: prompt });
 
   // ── Main loop ──
+  let completedTurns = 0;
   while (true) {
     if (signal?.aborted) return;
 
@@ -87,7 +82,11 @@ export async function runAgentLoop(
     const toolCalls: AgentToolCall[] = [];
     let turnMessage: AgentMessage | undefined;
 
-    for await (const event of streamFn(config.model, llmContext, signal === undefined ? {} : { signal })) {
+    for await (const event of stream(
+      config.model,
+      llmContext,
+      signal === undefined ? {} : { signal },
+    )) {
       aiEventToToolCalls(event, toolCalls);
 
       switch (event.type) {
@@ -145,17 +144,22 @@ export async function runAgentLoop(
       toolResults,
     });
 
-    // ── Decide whether to continue with another Turn ──
-    if (!shouldContinue(toolResults, signal)) {
-      const continueWith = await config.events.intercept(
-        "agent/stopping",
-        { ...config.run, messages: [...context.messages] },
-        async () => undefined,
-        signal,
-      );
-      if (continueWith === undefined) return;
-      await context.appendMessage(continueWith);
-      continue;
+    completedTurns += 1;
+    if (config.maxTurns !== undefined && completedTurns >= config.maxTurns) {
+      return;
     }
+
+    const shouldStop = await config.events.intercept(
+      "agent/stopping",
+      {
+        ...config.run,
+        message: turnMessage,
+        toolResults,
+        messages: [...context.messages],
+      },
+      async (value) => value.toolResults.length === 0,
+      signal,
+    );
+    if (shouldStop) return;
   }
 }

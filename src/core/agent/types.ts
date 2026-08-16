@@ -38,6 +38,8 @@ export interface AgentContext {
  */
 export interface AgentLoopConfig {
   readonly model: ModelConfig;
+  /** Hard upper bound for completed model Turns in this Run. */
+  readonly maxTurns?: number;
   /** Convert agent messages to LLM-compatible messages before each stream call. */
   readonly convertToLlm: (
     messages: readonly AgentMessage[],

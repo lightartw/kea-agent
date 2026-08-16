@@ -12,8 +12,8 @@ import type {
   Message,
   ModelConfig,
   StreamChunk,
-  StreamFn,
 } from "../../src/core/ai/types.js";
+import { runtimeFromStream, type TestStream } from "../fixtures/model-runtime.js";
 import { AgentTool, type AgentToolResult } from "../../src/core/agent/tools/types.js";
 import type { AgentToolCall } from "../../src/core/agent/tools/types.js";
 import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
@@ -53,10 +53,10 @@ function assistantMsg(
   };
 }
 
-function streamFnWithEvents(
+function streamWithEvents(
   streams: readonly (readonly StreamChunk[])[],
   beforeStream?: (context: Context, index: number) => void,
-): StreamFn {
+): TestStream {
   let index = 0;
   return async function* (_model, context) {
     const current = index;
@@ -76,8 +76,8 @@ function memoryContext(tools = new AgentToolRegistry()): AgentContext {
   };
 }
 
-function streamForToolCall(call: AgentToolCall): StreamFn {
-  return streamFnWithEvents([
+function streamForToolCall(call: AgentToolCall): TestStream {
+  return streamWithEvents([
     [
       { type: "toolcall_start", id: call.id, name: call.name },
       { type: "toolcall_end", toolCall: call },
@@ -133,7 +133,7 @@ test("successful two-Turn order matches the lifecycle", async () => {
   const registry = new AgentToolRegistry();
   registry.register(new NoopTool2());
   const tc = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
-  const streamFn: StreamFn = async function* () {
+  const stream: TestStream = async function* () {
     if (observed.length === 0) {
       observed.push("first");
       yield { type: "toolcall_start", id: "c1", name: "noop" };
@@ -152,9 +152,17 @@ test("successful two-Turn order matches the lifecycle", async () => {
   events.on("tools/pre-execute", (input, proceed) => { factOrder.push("tools/pre-execute"); return proceed(input); });
   events.on("tools/execute", (input, proceed) => { factOrder.push("tools/execute"); return proceed(input); });
   events.on("tools/post-execute", (input, proceed) => { factOrder.push("tools/post-execute"); return proceed(input); });
-  events.on("agent/stopping", () => { factOrder.push("agent/stopping"); });
+  events.on("agent/stopping", (input, proceed) => {
+    factOrder.push("agent/stopping");
+    return proceed(input);
+  });
 
-  await runAgentLoop("run", memoryContext(registry), makeConfig({ events }), streamFn);
+  await runAgentLoop(
+    "run",
+    memoryContext(registry),
+    makeConfig({ events }),
+    runtimeFromStream(stream),
+  );
 
   assert.deepEqual(factOrder, [
     "agent/turn-start",
@@ -164,6 +172,7 @@ test("successful two-Turn order matches the lifecycle", async () => {
     "tools/post-execute",
     "agent/tool-result",
     "agent/turn-end",
+    "agent/stopping",
     "agent/turn-start",
     "agent/turn-end",
     "agent/stopping",
@@ -176,7 +185,7 @@ test("agent/tool-call is emitted once per model-requested call", async () => {
   const tc1 = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
   const tc2 = { type: "toolCall" as const, id: "c2", name: "noop", arguments: {} };
   let turn = 0;
-  const streamFn: StreamFn = async function* () {
+  const stream: TestStream = async function* () {
     turn += 1;
     if (turn === 1) {
       yield { type: "toolcall_start", id: "c1", name: "noop" };
@@ -194,9 +203,41 @@ test("agent/tool-call is emitted once per model-requested call", async () => {
     if (input.sessionId === "session-1") calls.push(input.call);
   });
 
-  await runAgentLoop("run", memoryContext(registry), makeConfig({ events }), streamFn);
+  await runAgentLoop(
+    "run",
+    memoryContext(registry),
+    makeConfig({ events }),
+    runtimeFromStream(stream),
+  );
 
   assert.deepEqual(calls.map((call) => call.id), ["c1", "c2"]);
+});
+
+test("maxTurns stops before another model request", async () => {
+  const registry = new AgentToolRegistry();
+  registry.register(new NoopTool());
+  const call = {
+    type: "toolCall" as const,
+    id: "c1",
+    name: "noop",
+    arguments: {},
+  };
+  let requests = 0;
+  const stream: TestStream = async function* () {
+    requests += 1;
+    yield { type: "toolcall_start", id: call.id, name: call.name };
+    yield { type: "toolcall_end", toolCall: call };
+    yield { type: "done", message: assistantMsg("", [call]) };
+  };
+
+  await runAgentLoop(
+    "run",
+    memoryContext(registry),
+    makeConfig({ maxTurns: 1 }),
+    runtimeFromStream(stream),
+  );
+
+  assert.equal(requests, 1);
 });
 
 test("tool results are in history before the next model stream", async () => {
@@ -211,7 +252,7 @@ test("tool results are in history before the next model stream", async () => {
   })());
   const tc = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
   let secondHistory: readonly AgentMessage[] | undefined;
-  const streamFn = streamFnWithEvents(
+  const stream = streamWithEvents(
     [
       [
         { type: "toolcall_start", id: "c1", name: "noop" },
@@ -232,7 +273,7 @@ test("tool results are in history before the next model stream", async () => {
     appendMessage: async (message) => { history.push(message); },
   };
 
-  await runAgentLoop("run", context, makeConfig(), streamFn);
+  await runAgentLoop("run", context, makeConfig(), runtimeFromStream(stream));
 
   assert.deepEqual(secondHistory?.at(-1), {
     role: "tool",
@@ -273,7 +314,12 @@ test("agent/tool-result is emitted only after its Tool message is appended", asy
     checks.push(`turn-end:${committed}`);
   });
 
-  await runAgentLoop("run", context, makeConfig({ events }), streamForToolCall(call));
+  await runAgentLoop(
+    "run",
+    context,
+    makeConfig({ events }),
+    runtimeFromStream(streamForToolCall(call)),
+  );
 
   assert.deepEqual(checks, ["tool-result:true", "turn-end:true", "turn-end:true"]);
 });
@@ -338,7 +384,7 @@ test("unknown, invalid, blocked, and thrown tools each produce exactly one error
       "run",
       context,
       makeConfig({ events }),
-      streamForToolCall(scenario.call),
+      runtimeFromStream(streamForToolCall(scenario.call)),
     );
 
     assert.equal(results.length, 1, scenario.label);
@@ -377,7 +423,12 @@ test("failing agent/user-prompt, agent/context, or agent/stopping interceptors r
     const events = new Events();
     register(events);
     await assert.rejects(
-      runAgentLoop("start", memoryContext(), makeConfig({ events }), streamFnWithEvents([[{ type: "done", message: assistantMsg("") }]])),
+      runAgentLoop(
+        "start",
+        memoryContext(),
+        makeConfig({ events }),
+        runtimeFromStream(streamWithEvents([[{ type: "done", message: assistantMsg("") }]])),
+      ),
       new RegExp(`${name} failed`),
     );
   }
@@ -388,7 +439,10 @@ test("failing agent/user-prompt, agent/context, or agent/stopping interceptors r
 test("AI error terminal chunk appends its message and finishes", async () => {
   const events = new Events();
   let stops = 0;
-  events.on("agent/stopping", () => { stops++; });
+  events.on("agent/stopping", (input, proceed) => {
+    stops++;
+    return proceed(input);
+  });
   const failed = {
     ...assistantMsg(""),
     stopReason: "error" as const,
@@ -410,7 +464,7 @@ test("AI error terminal chunk appends its message and finishes", async () => {
     "start",
     context,
     makeConfig({ events }),
-    streamFnWithEvents([[{ type: "error", message: failed }]]),
+    runtimeFromStream(streamWithEvents([[{ type: "error", message: failed }]])),
   );
 
   assert.equal(stops, 0);
@@ -423,7 +477,10 @@ test("AI error terminal chunk appends its message and finishes", async () => {
 test("pre-aborted run rejects with AbortError without triggering stopping", async () => {
   const events = new Events();
   let stops = 0;
-  events.on("agent/stopping", () => { stops++; });
+  events.on("agent/stopping", (input, proceed) => {
+    stops++;
+    return proceed(input);
+  });
   const controller = new AbortController();
   controller.abort();
 
@@ -432,7 +489,7 @@ test("pre-aborted run rejects with AbortError without triggering stopping", asyn
       "start",
       memoryContext(),
       makeConfig({ events }),
-      streamFnWithEvents([]),
+      runtimeFromStream(streamWithEvents([])),
       controller.signal,
     ),
     (error: unknown) => (error as Error).name === "AbortError",
@@ -455,7 +512,12 @@ test("stream ending without a terminal chunk rejects and emits no turn-end", asy
   });
 
   await assert.rejects(
-    runAgentLoop("hello", context, makeConfig({ events }), async function* () {}),
+    runAgentLoop(
+      "hello",
+      context,
+      makeConfig({ events }),
+      runtimeFromStream(async function* () {}),
+    ),
     /stream.*terminal|done.*error/i,
   );
   assert.equal(turnEnds, 0);
@@ -491,7 +553,7 @@ test("abort during execution still produces exactly one result per call", async 
 
   const tc1 = { type: "toolCall" as const, id: "c1", name: "first", arguments: {} };
   const tc2 = { type: "toolCall" as const, id: "c2", name: "first", arguments: {} };
-  const streamFn: StreamFn = async function* () {
+  const stream: TestStream = async function* () {
     yield { type: "toolcall_start", id: "c1", name: "first" };
     yield { type: "toolcall_end", toolCall: tc1 };
     yield { type: "toolcall_start", id: "c2", name: "first" };
@@ -517,7 +579,7 @@ test("abort during execution still produces exactly one result per call", async 
     "run",
     context,
     makeConfig({ events }),
-    streamFn,
+    runtimeFromStream(stream),
     controller.signal,
   );
 
