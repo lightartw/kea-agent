@@ -5,7 +5,7 @@
 
 - Session 保存会话数据；
 - AgentHarness 运行这个 Session；
-- SessionRepository 创建、打开和列举多个 Session。
+- SessionRepository 创建、打开、列举、fork 和删除多个 Session。
 
 Harness 没有 `subscribe()`，也没有私有的 EventBus。调用方在构造 Harness 时提供 `Events`
 实例；同一个实例可以交给多份 Harness 共享。Session 和 Run 的身份（`sessionId`、`runId`）
@@ -26,11 +26,7 @@ import {
 } from "./index.js";
 
 const { stream, defaultModel } = createStreamFn();
-const session = Session.inMemory({
-  projectId: "test",
-  directory: process.cwd(),
-  cwd: ".",
-});
+const session = Session.inMemory({ cwd: process.cwd() });
 const events = new Events();
 const harness = new AgentHarness({
   session,
@@ -62,7 +58,7 @@ unsubscribe();
 2. 根据当前模型、工具、工作目录和日期生成 system prompt；
 3. 通过 `events.emit("harness/run-start", run)` 发布 run 开始；
 4. 调用一次 `runAgentLoop()`，把 `_messages` 本身作为只读视图交给 Agent，并实现
-   `appendMessage`（先 `session.appendMessage` 落盘，再更新内存视图）；
+   `appendMessage`（先 `session.append({ type: "message", message })` 落盘，再更新内存视图）；
 5. 在 `finally` 中清理 `activeRun` 和 busy 状态；如果已经发布 `run-start`，清理完成后再发布
    恰好一个 `harness/run-end`，其 `reason` 为 `completed`、`aborted` 或 `error`。
 
@@ -76,63 +72,98 @@ Run，空闲时调用则不产生效果。中止信号优先于迟到的 listene
 （AbortSignal 的 reason 或 `AbortError`）被归类为 `aborted`；与取消同时发生的存储或系统错误仍
 归类为 `error`，并由 `prompt()` 重新抛出。
 
-## Session：一份会话的数据
+## Session：一个独立的会话
 
-Session 拥有版本化 JSONL 头、消息、模型变更、标题和会话 ID。文件第一行是 `session` header
-（`type`、`version: 1`、`id`、`projectId`、`directory`、`cwd`、`title`、`createdAt`）；后续行是
-记录：`message`、`model_change` 或 `session_title`。
+一个 Session 是一份独立的会话历史：一条不可变、以 `parentId` 链接的节点链，加上指向当前
+端点的 `headId`。`SessionMetadata` 承载会话身份、标题、cwd 和血缘；`SessionRepository` 是
+唯一的公开持久化生命周期边界。Harness 选择并调用模型，Session 只持久化消息和分支范围内的
+模型选择。
 
-- `message` 和 `model_change` 组成一棵会话树；当前 Agent 沿当前叶节点线性追加。
-  `buildContext()` 从根到当前叶重新构造可运行的上下文。
-- `session_title` 是 Session 级记录，不影响会话树；`Session.info.title` 返回最新标题。
-- 新 Session 创建后**立即持久化** header，标题为 `"unknown"`；任何新增记录都会同步写入文件。
+### 核心概念
 
-### 创建、恢复与内存模式
+- `SessionNode` 恰好有两种变体：`message` 和 `model_selection`；
+- 节点不可变：`parentId` 把节点链接到父节点，`headId` 是当前端点；
+- 没有公开的原地分支切换；分支的唯一入口是 `SessionRepository.fork(sourceSessionId, nodeId)`，
+  它返回一个普通的新 Session；
+- 删除源 Session 不影响已经 fork 出来的 Session；
+- 助手消息的模型出处属于 `AgentMessage`（assistant 消息自带 `model` 字段），不属于 Session
+  元数据。
+
+### SessionNode 与 head
+
+`session.nodes` 只包含 `message` 和 `model_selection` 节点（标题不是节点）。`session.headId`
+是当前端点；`session.path(nodeId)` 沿 `parentId` 从根到该节点返回路径，`null` 返回空路径，
+未知 ID 抛 `invalid_entry`。节点由 Session 生成 `id`、`parentId` 和 `createdAt`，追加后不可
+修改。
+
+### 消息与模型选择
+
+- `session.messages()` 沿 head 的父链收集 `message` 节点中的消息，每次都返回新数组；
+- `session.modelSelection()` 从最新到最旧扫描路径，返回第一个 `model_selection` 的选择，
+  否则 `null`；
+- `session.append({ type: "message", message })` 和
+  `session.append({ type: "model_selection", selection })` 追加节点并立即持久化，返回生成的
+  节点 ID。
+
+Harness 只通过 `messages()` 和 `modelSelection()` 读取上下文；Session 不决定模型。
+
+### fork：创建新的 Session
+
+`SessionRepository.fork(sourceSessionId, nodeId)` 打开源 Session，复制根到 `nodeId` 的路径
+（`nodeId` 为 `null` 时复制空路径），保留复制节点的 ID 和 `parentId`，生成新的 Session ID，
+并把源 Session ID 记录为新 Session 的 `parentSessionId`。标题变更和兄弟节点不复制；fork 是
+一个以会话历史为种子、元数据全新的 Session。
+
+### SessionMetadata
+
+`SessionMetadata` 包含会话身份和列举字段：`id`、`title`、`cwd`、`createdAt`、`updatedAt`，
+fork 出的 Session 还有 `parentSessionId`。`title` 是 Session 级的，不是节点；`cwd` 是解析后
+的绝对路径，重新打开编程 Session 时用它恢复工作目录。
+
+### SessionRepository
+
+创建、打开、列举、fork 和删除都通过 Repository：
 
 ```ts
-const temporary = Session.inMemory({
-  projectId: "p",
-  directory: process.cwd(),
-  cwd: ".",
+const sessions = new SessionRepository(storageDir);
+const session = await sessions.create({ cwd: process.cwd() });
+
+await session.append({
+  type: "message",
+  message: { role: "user", content: "hello" },
 });
-const persistent = await Session.create(".kea", {
-  projectId: "p",
-  directory: process.cwd(),
-  cwd: ".",
-});
+
+const fork = await sessions.fork(session.metadata.id, session.headId);
 ```
 
-- `Session.inMemory(input)` 创建不写入文件的 Session，适合测试和临时运行；
-- `Session.create(storageDir, input)` 创建持久化 Session 并立即写入 header；
-- `Session.open(storageDir, sessionId)` 从 JSONL 文件恢复 Session，并拒绝无 header 的旧文件；
-- `appendMessage(message)` 追加消息；
-- `appendModelChange(model)` 追加模型变更；
-- `setTitle(title)` / `setTitleIfUnknown(title)` 修改标题；
-- `info` 返回不可变的 `SessionInfo`（含 `title`、`createdAt`、`updatedAt`）；
-- `buildContext()` 返回 `SessionContext`。
-
-持久化 Session 的文件位于 `<storageDir>/sessions/<sessionId>.jsonl`。`updatedAt` 是 header 和
-全部记录中最大的 `createdAt`。`SessionError.code` 说明失败类别：`not_found`、
-`invalid_session`、`invalid_entry` 或 `storage`。
-
-## SessionRepository：管理多份 Session
-
-应用需要在一个存储目录中创建、打开或列举多份 Session 时，使用 `SessionRepository`：
-
-```ts
-const repository = new SessionRepository(storageDir);
-const sessions = await repository.list();
-const recent = sessions[0] === undefined
-  ? await repository.create(input)
-  : await repository.open(sessions[0].id);
-```
-
-`create(input)` 和 `open(id)` 返回 Session；`list()` 通过 `Session.open()` 读取每个候选文件，
-按存储的 `updatedAt` 从新到旧排列并返回 `SessionInfo[]`（相同时间按 ID 降序）。空目录返回空
-数组；损坏或包含无效记录的 JSONL 会让 `list()` 传播对应的 `SessionError`，而不会静默忽略。
+- `create({ cwd })` 立即写入标题为 `"unknown"` 的 version-2 header，返回空 Session；
+- `open(id)` 校验文件名/header 一致性，恢复节点、标题、cwd、模型选择和 head；
+- `list()` 按存储的 `updatedAt` 从新到旧返回 `SessionMetadata[]`（相同时间按 ID 降序），
+  空目录返回空数组；损坏或包含无效记录的 JSONL 会传播对应的 `SessionError`，不会静默忽略；
+- `delete(id)` 幂等删除一个 Session 文件：文件不存在视为成功，不会检查或删除父/fork 文件。
 
 `AgentHarness` 不持有 Repository。应用先用 Repository 取得 Session，再把该 Session 交给新的
 Harness。`harness.sessionId` 标识 Harness 当前绑定的 Session，但不暴露可写的 Session 对象。
+
+### JSONL 持久化
+
+文件位于 `<storageDir>/sessions/<sessionId>.jsonl`。第一行是 version-2 header
+（`type: "session"`、`version: 2`、`id`、`cwd`、`title`、`createdAt`，fork 时还有
+`parentSessionId`）；后续行是节点（`message`、`model_selection`）和私有的 `session_title`
+行。`session_title` 是追加式存储行，永远不会出现在 `session.nodes` 中；version-1 文件被显式
+拒绝。
+
+JSONL 复制是当前后端行为，不是公开语义：公开 API 和逻辑语义保持与未来共享不可变节点存储
+的兼容。`SessionError.code` 说明失败类别：`not_found`、`invalid_session`、`invalid_entry`
+或 `storage`。
+
+### 与 AgentHarness 的边界
+
+`AgentHarness` 构造时接收调用方提供的 Session。Harness 通过 `session.messages()` 和
+`session.modelSelection()` 恢复上下文，通过 `session.append({ type: "message", ... })` 和
+`session.append({ type: "model_selection", ... })` 写入，通过 `session.setTitle()` /
+`setTitleIfUnknown()` 修改标题；`harness.sessionId` 和 `harness.title` 来自
+`session.metadata`。
 
 ## Events：共享的运行事实通道
 
@@ -249,8 +280,8 @@ Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 
 - `system-prompt.ts`：默认 builder 与模板格式化；
 - `events.ts`：Run 边界事件契约；
 - `session/session.ts`：单份 Session 的数据和持久化；
-- `session/repository.ts`：多份 Session 的 `create/open/list`；
-- `session/types.ts`：`SessionContext`、错误和存储记录类型。
+- `session/repository.ts`：多份 Session 的 `create/open/list/fork/delete`；
+- `session/types.ts`：`SessionMetadata`、`SessionNode`、错误类型。
 
 ## 完整公开导出
 
@@ -260,7 +291,7 @@ Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 
 
 - `AgentHarness`：运行绑定的 Session；
 - `Session`：保存和重建一份会话；
-- `SessionRepository`：在一个存储目录中创建、打开和列举 Session；
+- `SessionRepository`：在一个存储目录中创建、打开、列举、fork 和删除 Session；
 - `SessionError`：带有 `SessionErrorCode` 的会话错误；
 - `defaultSystemPrompt`：把模板包装为 `SystemPromptBuilder`；
 - `formatSystemPrompt`：替换模板的 `{{cwd}}` 和 `{{date}}`。
@@ -269,8 +300,7 @@ Harness 组合下层能力：`ai` 提供 `StreamFn` 与 `ModelConfig`；`agent` 
 
 - 配置与 system prompt：`HarnessConfig`、`SessionTitleGenerator`、
   `SystemPromptBuilder`、`SystemPromptContext`；
-- Session：`CreateSessionInput`、`SessionHeader`、`SessionInfo`、`SessionContext`、
-  `SessionErrorCode`。
+- Session：`SessionMetadata`、`SessionNode`、`SessionErrorCode`。
 
 Harness 事件载荷使用 agent 包定义的 `AgentRunIdentity`，但 harness 入口不重新导出这个类型；
 需要显式使用时从 `core/agent` 入口导入。
