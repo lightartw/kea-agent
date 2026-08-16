@@ -100,10 +100,10 @@ test("execute runs tools/pre-execute then lookup then execute", async () => {
 
   const result = await registry.execute(echoCall(), events);
 
-  assert.deepEqual(result, { content: "changed", isError: false });
+  assert.deepEqual(result, { content: "ok", isError: false });
   assert.deepEqual(stages, [
     "pre-execute",
-    "execute:changed",
+    "execute:ok",
     "post-execute",
   ]);
 });

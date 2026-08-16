@@ -138,10 +138,12 @@ project.events.on("agent/turn-end", (input) => {
 每次 `createSession()`、`openSession()` 或 `continueRecent()` 分配 Harness 时，Coding Agent
 都重新组装：
 
-1. 为 Bash、read、write、edit、Glob 和 Todo 建立新的 `AgentToolRegistry`；
+1. 根据 `session.metadata.cwd` 和 Project `directories`，为 Bash、read、write、edit、Glob 和
+   Todo 建立新的 `AgentToolRegistry`；
 2. 复用 Project 共享的 `Events`（Permission 等 coding listener 已注册其上）；
-3. 把选中的 Session、模型、stream、system prompt、解析后的 cwd、Project `directories` 和
-   `titleGenerator` 交给新的 `AgentHarness`。
+3. 把 system prompt 模板中的 `{{cwd}}`、`{{date}}` 替换成当前值；
+4. 把选中的 Session、模型、stream、最终 system prompt、Tool Registry 和 Events 交给新的
+   `AgentHarness`。
 
 ## 7. Bash、文件与 Glob
 
@@ -192,18 +194,7 @@ Todo Tool 不保存上一次调用。它同时返回模型可见的 `content` �
 从 `content` 看见列表，UI 或程序也能从 `details` 读取结构化数据。Todo 状态属于 Session，
 不属于 Tool 实例或单次 run。
 
-## 9. 自动标题
-
-`createProject()` 给每个 Harness 注入 `createSessionTitleGenerator(config.streamFn)`。标题
-生成是 Session 的后台附属任务：
-
-- 新 Session 立即以 `"unknown"` 标题持久化。
-- 第一个真实 user 消息持久化后，生成并发运行；它只使用该消息和当前模型，无 Tools，返回
-  单行 ≤100 字符标题，用 `setTitleIfUnknown()` 写入。
-- 标题生成失败、超长或晚到的结果都不会覆盖已修改的标题，也绝不阻塞或失败 Agent Run。
-- 模型在首个 prompt 前切换时，标题请求与 Agent Run 都使用切换后的模型。
-
-## 10. Interactions 与工具展示
+## 9. Interactions 与工具展示
 
 控制事件是执行前的控制通道。默认 permission listener 处理 Bash 的 allow/ask/deny；ask 时通过
 `CodingAgentInteractions.confirm()` 请求 UI 决策。没有传入 interactions 时使用
@@ -229,7 +220,7 @@ project.events.on("agent/tool-result", (input) => {
 每个 `ToolDefinition` 可以提供 `CodingToolPresentation`。没有专用规则、规则返回
 `undefined` 或规则抛错时，Coding Agent 使用通用文本；展示失败不会改变 Tool Result。
 
-## 11. 源码结构
+## 10. 源码结构
 
 - `factory.ts`：`createProject()`、共享 Events、Project 生命周期和 Session 选择；
 - `types.ts`：`CreateProjectConfig`；
@@ -237,14 +228,13 @@ project.events.on("agent/tool-result", (input) => {
 - `project/types.ts`：`Project`、`ProjectInfo`、更新/创建输入；
 - `project/storage.ts`：Project 文件读写、注册表扫描和根目录发现；
 - `coding-system-prompt.ts`：默认 coding system prompt；
-- `title-generator.ts`：把 `StreamFn` 适配为受限标题请求；
 - `tools/factory.ts`、`tools/definition.ts`、`tools/builtin/*`：内置 Tool；
 - `ui/interactions.ts`、`ui/presentation.ts`：UI 交互与工具展示。
 
 具体 UI 依赖 Coding Agent；Coding Agent 组装 Harness 和 Agent 能力；Harness 驱动 Agent；Agent
 使用 AI。Coding Agent 不导入 `src/ui`。
 
-## 12. 完整公共 API
+## 11. 完整公共 API
 
 以下清单与 `src/coding-agent/index.ts` 一致。
 

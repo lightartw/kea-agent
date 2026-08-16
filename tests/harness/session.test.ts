@@ -96,27 +96,6 @@ test("persistent session appends and reopens nodes", async () => {
   }
 });
 
-test("concurrent appends persist one ordered parent chain", async () => {
-  const storageDir = await tempStorage();
-  const followUp: AgentMessage = { role: "user", content: "follow up" };
-  try {
-    const session = await persistentSession(storageDir);
-    await session.append({ type: "message", message: user });
-    await session.append({ type: "message", message: assistant });
-
-    await Promise.all([
-      session.append({ type: "message", message: followUp }),
-      session.append({ type: "model_selection", selection: modelB }),
-    ]);
-
-    const reopened = await new SessionRepository(storageDir).open(session.id);
-    assert.deepEqual(reopened.messages(), [user, assistant, followUp]);
-    assert.deepEqual(reopened.modelSelection(), modelB);
-  } finally {
-    await rm(storageDir, { recursive: true, force: true });
-  }
-});
-
 test("failed append after external session-file deletion rolls back node and head", async () => {
   const storageDir = await tempStorage();
   try {
@@ -181,23 +160,6 @@ test("append rejects invalid runtime entries without changing the session", asyn
       assert.deepEqual(session.nodes, []);
     });
   }
-});
-
-test("a failed queued append does not block a later valid append", async () => {
-  const session = memorySession();
-  const failed = session.append({
-    type: "message",
-    message: { ...assistant, latencyMs: Number.NaN },
-  });
-  const succeeded = session.append({ type: "message", message: user });
-
-  await assert.rejects(
-    failed,
-    isInvalidRecord,
-  );
-  await succeeded;
-  assert.deepEqual(session.messages(), [user]);
-  assert.equal(session.modelSelection(), null);
 });
 
 test("messages returns a fresh array", async () => {
@@ -267,19 +229,6 @@ test("nodes excludes title rows and title changes never touch the tree", async (
   assert.deepEqual(session.nodes.map((node) => node.type), ["message", "model_selection"]);
   assert.deepEqual(session.messages(), [user]);
   assert.equal(session.headId, session.nodes.at(-1)?.id);
-});
-
-test("setTitleIfUnknown does not overwrite a queued manual title", async () => {
-  const session = memorySession();
-  await session.setTitle("Manual");
-  assert.equal(await session.setTitleIfUnknown("Generated"), false);
-  assert.equal(session.metadata.title, "Manual");
-});
-
-test("setTitleIfUnknown sets the first generated title", async () => {
-  const session = memorySession();
-  assert.equal(await session.setTitleIfUnknown("Generated"), true);
-  assert.equal(session.metadata.title, "Generated");
 });
 
 test("title rows roll back on failed persistence", async () => {
@@ -371,7 +320,7 @@ test("append publishes nothing when storage rejects", async () => {
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-01T00:00:00.000Z",
       },
-      records: [],
+      nodes: [],
     },
     storage,
   );

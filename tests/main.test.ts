@@ -30,8 +30,7 @@ test("Harness renders through one subscription while prompt returns a Promise", 
     model: { provider: "test", model: "test" },
     streamFn: stream,
     toolRegistry: new AgentToolRegistry(),
-    systemPrompt: () => "",
-    cwd: process.cwd(),
+    systemPrompt: "",
     events,
   });
   const renderer = new CliHarnessRenderer(

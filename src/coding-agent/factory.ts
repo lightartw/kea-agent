@@ -7,8 +7,6 @@ import type { Session } from "../core/harness/session/session.js";
 import type { SessionMetadata } from "../core/harness/session/types.js";
 import { Events } from "../core/events/events.js";
 import { CODING_SYSTEM_PROMPT } from "./coding-system-prompt.js";
-import { defaultSystemPrompt } from "../core/harness/system-prompt.js";
-import { createSessionTitleGenerator } from "./title-generator.js";
 import {
   createAgentToolRegistry,
   createBuiltinToolDefinitions,
@@ -30,15 +28,16 @@ import type {
   ProjectInfo,
   UpdateProjectInput,
 } from "./project/types.js";
-import type { SystemPromptBuilder, SessionTitleGenerator } from "../core/harness/types.js";
 import type { CreateProjectConfig } from "./types.js";
 import type { CodingAgentInteractions } from "./ui/interactions.js";
 
-function resolveSystemPrompt(
-  prompt: string | SystemPromptBuilder | undefined,
-): SystemPromptBuilder {
-  if (typeof prompt === "function") return prompt;
-  return defaultSystemPrompt(prompt ?? CODING_SYSTEM_PROMPT);
+function formatSystemPrompt(template: string, cwd: string, date: Date): string {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return template
+    .replace(/\{\{cwd\}\}/g, cwd)
+    .replace(/\{\{date\}\}/g, `${yyyy}-${mm}-${dd}`);
 }
 
 function isInside(path: string, directory: string): boolean {
@@ -68,8 +67,6 @@ function createHarness(
   session: Session,
   config: CreateProjectConfig,
   definitions: readonly ToolDefinition[],
-  systemPrompt: SystemPromptBuilder,
-  titleGenerator: SessionTitleGenerator,
   directories: readonly string[],
   events: Events,
 ): AgentHarness {
@@ -82,10 +79,12 @@ function createHarness(
     model: config.model,
     streamFn: config.streamFn,
     toolRegistry: createAgentToolRegistry(definitions, toolContext),
-    systemPrompt,
-    cwd: toolContext.cwd,
+    systemPrompt: formatSystemPrompt(
+      config.systemPrompt ?? CODING_SYSTEM_PROMPT,
+      session.metadata.cwd,
+      new Date(),
+    ),
     events,
-    titleGenerator,
   });
 }
 
@@ -121,8 +120,6 @@ export async function createProject(config: CreateProjectConfig): Promise<Projec
     }
   }
 
-  const systemPrompt = resolveSystemPrompt(config.systemPrompt);
-  const titleGenerator = createSessionTitleGenerator(config.streamFn);
   let current: ProjectInfo = opened.info;
   const initialCwd = opened.initialCwd;
 
@@ -130,8 +127,6 @@ export async function createProject(config: CreateProjectConfig): Promise<Projec
     session,
     config,
     definitions,
-    systemPrompt,
-    titleGenerator,
     current.directories,
     events,
   );

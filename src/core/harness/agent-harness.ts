@@ -7,12 +7,9 @@ import type { AgentToolRegistry } from "../agent/tools/registry.js";
 import type { Events } from "../events/events.js";
 import type { ModelConfig, StreamFn } from "../ai/types.js";
 import { errorMessage } from "../util/index.js";
+import type { HarnessRunEnd } from "./events.js";
 import { Session } from "./session/session.js";
-import type {
-  HarnessConfig,
-  SessionTitleGenerator,
-  SystemPromptBuilder,
-} from "./types.js";
+import type { HarnessConfig } from "./types.js";
 
 /** Tracks an in-flight prompt so abort() can cancel it. */
 interface ActiveRun {
@@ -29,13 +26,9 @@ function isAbortFailure(error: unknown, signal: AbortSignal): boolean {
 export class AgentHarness {
   private readonly session: Session;
   private readonly toolRegistry: AgentToolRegistry;
-  private readonly buildSystemPrompt: SystemPromptBuilder;
-  private readonly cwd: string;
+  private readonly systemPrompt: string;
   private readonly events: Events;
 
-  // Absorbed from Agent
-  private _messages: AgentMessage[];
-  private agentSystemPrompt = "";
   private activeRun: ActiveRun | undefined;
   private _streamFn: StreamFn;
 
@@ -46,40 +39,19 @@ export class AgentHarness {
   private running = false;
   private abortRequested = false;
 
-  // Automatic title state
-  private readonly titleGenerator: SessionTitleGenerator | undefined;
-  private titleEligible = false;
-  private titleRequested = false;
-
   constructor(config: HarnessConfig) {
-    const messages = config.session.messages();
     this.session = config.session;
     this.toolRegistry = config.toolRegistry;
-    this.buildSystemPrompt = config.systemPrompt;
-    this.cwd = config.cwd;
+    this.systemPrompt = config.systemPrompt;
     this._streamFn = config.streamFn;
     this.currentModel = config.session.modelSelection() ?? config.model;
-    this._messages = [...messages];
     this.events = config.events;
-    this.titleGenerator = config.titleGenerator;
-    this.titleEligible = config.titleGenerator !== undefined &&
-      this.session.metadata.title === "unknown" &&
-      !messages.some((message) => message.role === "user");
   }
 
   // ── Private helpers ──
 
   private assertIdle(): void {
     if (this.running) throw new Error("AgentHarness is busy");
-  }
-
-  private async prepareAgentForRun(): Promise<void> {
-    this.agentSystemPrompt = await this.buildSystemPrompt({
-      model: this.currentModel,
-      tools: this.toolRegistry.all(),
-      cwd: this.cwd,
-      date: new Date(),
-    });
   }
 
   private createLoopConfig(run: AgentRunIdentity): AgentLoopConfig {
@@ -89,34 +61,6 @@ export class AgentHarness {
       events: this.events,
       run,
     };
-  }
-
-  /** Launch a detached title task after the first eligible user message is persisted. */
-  private maybeStartTitle(): void {
-    if (!this.titleEligible || this.titleRequested) return;
-    if (!this._messages.some((message) => message.role === "user")) return;
-    this.titleEligible = false;
-    this.titleRequested = true;
-    const prompt = this._messages.find((message) => message.role === "user")!.content;
-    const generator = this.titleGenerator!;
-    const model = this.currentModel;
-    void this.runTitleTask(prompt, model, generator);
-  }
-
-  private async runTitleTask(
-    prompt: string,
-    model: ModelConfig,
-    generator: SessionTitleGenerator,
-  ): Promise<void> {
-    try {
-      const raw = await generator(prompt, model);
-      const firstLine = raw.split(/\r?\n/).find((line) => line.trim() !== "") ?? "";
-      const trimmed = firstLine.trim();
-      const capped = trimmed.length <= 97 ? trimmed : `${trimmed.slice(0, 97)}...`;
-      await this.session.setTitleIfUnknown(capped);
-    } catch {
-      // Title generation never fails or blocks the Agent Run.
-    }
   }
 
   // ── Core ──
@@ -137,24 +81,21 @@ export class AgentHarness {
     let failure: unknown;
 
     try {
-      await this.prepareAgentForRun();
-      if (this.abortRequested) return;
-
       started = true;
       await this.events.emit("harness/run-start", run);
 
       if (!this.abortRequested) {
         const config = this.createLoopConfig(run);
+        const messages = [...this.session.messages()];
         await runAgentLoop(
           input,
           {
-            systemPrompt: this.agentSystemPrompt,
-            messages: this._messages,
+            systemPrompt: this.systemPrompt,
+            messages,
             tools: this.toolRegistry,
             appendMessage: async (message) => {
               await this.session.append({ type: "message", message });
-              this._messages.push(message);
-              this.maybeStartTitle();
+              messages.push(message);
             },
           },
           config,
@@ -174,10 +115,7 @@ export class AgentHarness {
     }
 
     if (started) {
-      const endInput: AgentRunIdentity & (
-        | { readonly reason: "completed" | "aborted" }
-        | { readonly reason: "error"; readonly errorMessage: string }
-      ) = failure === undefined
+      const endInput: HarnessRunEnd = failure === undefined
         ? { ...run, reason: sawAborted ? "aborted" : "completed" }
         : { ...run, reason: "error", errorMessage: errorMessage(failure) };
       await this.events.emit("harness/run-end", endInput);
@@ -229,7 +167,7 @@ export class AgentHarness {
   }
 
   get messages(): readonly AgentMessage[] {
-    return this._messages;
+    return this.session.messages();
   }
 
   get model(): ModelConfig {

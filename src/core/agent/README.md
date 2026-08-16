@@ -176,8 +176,8 @@ Agent 有三个 `intercept()` 控制点：
 
 ## 8. 与 Harness 的关系
 
-位于 sibling 包 `harness/`。`AgentHarness` 持有 `_messages`、管理 `activeRun`、构造
-`AgentRunIdentity`，并通过共享的 `Events` 调用 `runAgentLoop()`。详见
+位于 sibling 包 `harness/`。`AgentHarness` 从 Session 取得当前路径的消息、管理 `activeRun`、
+构造 `AgentRunIdentity`，并通过共享的 `Events` 调用 `runAgentLoop()`。详见
 [harness/README.md](../harness/README.md)。
 
 ## 9. 完整公开导出

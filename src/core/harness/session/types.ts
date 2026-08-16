@@ -50,11 +50,11 @@ export type SessionRecord =
 export interface SessionStorage {
   create(stored: {
     readonly metadata: SessionMetadata;
-    readonly records: readonly SessionRecord[];
+    readonly nodes: readonly SessionNode[];
   }): Promise<void>;
   load(sessionId: string): Promise<{
     readonly metadata: SessionMetadata;
-    readonly records: readonly SessionRecord[];
+    readonly nodes: readonly SessionNode[];
   }>;
   list(): Promise<readonly SessionMetadata[]>;
   append(sessionId: string, record: SessionRecord): Promise<void>;

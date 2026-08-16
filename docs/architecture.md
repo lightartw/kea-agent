@@ -225,7 +225,7 @@ interface CreateProjectConfig {
   readonly cwd?: string;
   readonly streamFn: StreamFn;
   readonly model: ModelConfig;
-  readonly systemPrompt?: string | SystemPromptBuilder;
+  readonly systemPrompt?: string;
   readonly interactions?: CodingAgentInteractions;
   readonly onEventListenerError?: (
     error: unknown,
@@ -265,12 +265,6 @@ Bash permission 策略分为 allow、ask、deny；ask 通过 `CodingAgentInterac
 
 Todo 每次接收完整列表，同时返回模型可见的 `content` 和结构化的 `details.todos`。Harness 将
 Tool Result 写入 Session，因此恢复状态属于 Session，而不是 Todo Tool 实例。
-
-### 自动标题
-
-`createProject()` 给每个 Harness 注入 `createSessionTitleGenerator(config.streamFn)`。新 Session
-立即以 `"unknown"` 标题持久化；第一个真实 user 消息持久化后，标题请求并发运行，用
-`setTitleIfUnknown()` 写入单行 ≤100 字符标题。它不阻塞或失败 Agent Run，也不覆盖已修改标题。
 
 ### 展示边界
 
@@ -331,7 +325,7 @@ Session 的选择发生在 Coding Agent；CLI 只运行已选择的 Harness。
 
 - `ai` 不依赖 `agent`；
 - `agent` 不依赖 `harness`、`coding-agent` 或 `ui`；只声明自己的 `EventMap` 契约；
-- `harness` 不依赖具体 coding Tool 或 UI，只定义 `SessionTitleGenerator` 类型；
+- `harness` 不依赖具体 coding Tool 或 UI；
 - `coding-agent` 不依赖 `src/ui`，只定义 `CodingAgentInteractions` 端口；
 - `SessionRepository` 管理 Session 集合，`AgentHarness` 只绑定一份 Session；
 - `Project` 选择 Project 中的 Session，并直接返回独立 Harness；一份 Project 共享一个

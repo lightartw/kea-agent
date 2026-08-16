@@ -34,17 +34,6 @@ const oneTurnStream: StreamFn = async function* () {
   yield { type: "done", message: assistant };
 };
 
-/** Guard the recording streams from the Tool-free background title request. */
-function guardTitle(stream: StreamFn): StreamFn {
-  return async function* (_model, context) {
-    if (context.tools !== undefined && context.tools.length === 0) {
-      yield { type: "done", message: assistant };
-      return;
-    }
-    yield* stream(_model, context);
-  };
-}
-
 function createProjectAt(keaHome: string, directory: string, options: {
   streamFn?: StreamFn;
   systemPrompt?: string;
@@ -53,7 +42,7 @@ function createProjectAt(keaHome: string, directory: string, options: {
   return createProject({
     keaHome,
     directory,
-    streamFn: guardTitle(options.streamFn ?? oneTurnStream),
+    streamFn: options.streamFn ?? oneTurnStream,
     model,
     ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
     ...(options.interactions !== undefined ? { interactions: options.interactions } : {}),
@@ -102,11 +91,11 @@ test("openSession rebuilds system prompt and tools from the stored cwd", async (
     const project = await createProject({
       keaHome,
       directory: dir,
-      streamFn: guardTitle(async function* (_model, context) {
+      streamFn: async function* (_model, context) {
         seenPrompt = context.systemPrompt ?? "";
         seenTools = context.tools?.map((tool) => tool.name) ?? [];
         yield { type: "done", message: assistant };
-      }),
+      },
       model,
       systemPrompt: "cwd={{cwd}}",
     });
@@ -215,10 +204,10 @@ test("project restores a Session opened through the Project", async () => {
     const project = await createProject({
       keaHome,
       directory: dir,
-      streamFn: guardTitle(async function* (_model, context) {
+      streamFn: async function* (_model, context) {
         seenRoles.push(context.messages.map((message) => message.role));
         yield { type: "done", message: assistant };
-      }),
+      },
       model,
     });
 
@@ -290,10 +279,10 @@ test("Harnesses created for one Project do not share mutable state", async () =>
     const project = await createProject({
       keaHome,
       directory: dir,
-      streamFn: guardTitle(async function* (_model, context) {
+      streamFn: async function* (_model, context) {
         seenTools.push(context.tools?.map((tool) => tool.name) ?? []);
         yield { type: "done", message: assistant };
-      }),
+      },
       model,
     });
     const first = await project.createSession();
@@ -385,7 +374,7 @@ test("project defaults to fail-closed interactions for ask commands", async () =
     const project = await createProject({
       keaHome,
       directory: dir,
-      streamFn: guardTitle(twoTurnBashStream("rm file.txt")),
+      streamFn: twoTurnBashStream("rm file.txt"),
       model,
     });
     const harness = await project.createSession();
@@ -420,14 +409,14 @@ test("createProject returns distinct Projects and tool render functions per call
     const first = await createProject({
       keaHome: keaHomeA,
       directory: dirA,
-      streamFn: guardTitle(twoTurnBashStream("rm file.txt")),
+      streamFn: twoTurnBashStream("rm file.txt"),
       model,
       interactions: denyingInteractions(firstConfirmations),
     });
     const second = await createProject({
       keaHome: keaHomeB,
       directory: dirB,
-      streamFn: guardTitle(twoTurnBashStream("rm file.txt")),
+      streamFn: twoTurnBashStream("rm file.txt"),
       model,
       interactions: denyingInteractions(secondConfirmations),
     });
@@ -487,10 +476,10 @@ test("default Harness system prompt contains the coding agent opening text", asy
     const project = await createProject({
       keaHome,
       directory: dir,
-      streamFn: guardTitle(async function* (_model, context) {
+      streamFn: async function* (_model, context) {
         seenPrompt = context.systemPrompt ?? "";
         yield { type: "done", message: assistant };
-      }),
+      },
       model,
     });
     const harness = await project.createSession();
@@ -541,7 +530,7 @@ test("todo content is model-visible while details stay in the in-memory message"
     const project = await createProject({
       keaHome,
       directory: dir,
-      streamFn: guardTitle(todoTurnStream(todos)),
+      streamFn: todoTurnStream(todos),
       model,
     });
     const harness = await project.createSession();
@@ -573,7 +562,7 @@ test("todo state recovers from a restored Session after a model switch", async (
     const firstProject = await createProject({
       keaHome,
       directory: dir,
-      streamFn: guardTitle(todoTurnStream(todos)),
+      streamFn: todoTurnStream(todos),
       model,
     });
     const first = await firstProject.createSession();
@@ -590,7 +579,7 @@ test("todo state recovers from a restored Session after a model switch", async (
     const secondProject = await createProject({
       keaHome,
       directory: dir,
-      streamFn: guardTitle(recoveryStream),
+      streamFn: recoveryStream,
       model: { provider: "test", model: "model-2" },
     });
     const restored = await secondProject.openSession(first.sessionId);

@@ -1,32 +1,13 @@
-import type { AgentTool } from "../agent/tools/types.js";
 import type { AgentToolRegistry } from "../agent/tools/registry.js";
 import type { Events } from "../events/events.js";
 import type { ModelConfig, StreamFn } from "../ai/types.js";
 import type { Session } from "./session/session.js";
-
-export type SessionTitleGenerator = (
-  prompt: string,
-  model: ModelConfig,
-) => Promise<string>;
-
-export interface SystemPromptContext {
-  readonly model: ModelConfig;
-  readonly tools: readonly AgentTool[];
-  readonly cwd: string;
-  readonly date: Date;
-}
-
-export type SystemPromptBuilder = (
-  context: SystemPromptContext,
-) => string | Promise<string>;
 
 export interface HarnessConfig {
   readonly session: Session;
   readonly model: ModelConfig;
   readonly streamFn: StreamFn;
   readonly toolRegistry: AgentToolRegistry;
-  readonly systemPrompt: SystemPromptBuilder;
-  readonly cwd: string;
+  readonly systemPrompt: string;
   readonly events: Events;
-  readonly titleGenerator?: SessionTitleGenerator;
 }

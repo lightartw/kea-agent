@@ -117,32 +117,6 @@ test("open restores nodes, title, cwd, selection, and head", async () => {
   }
 });
 
-test("different Session IDs can append concurrently and both reopen", async () => {
-  const storageDir = await tempStorage();
-  try {
-    const repo = repository(storageDir);
-    const [first, second] = await Promise.all([
-      repo.create({ cwd: process.cwd() }),
-      repo.create({ cwd: process.cwd() }),
-    ]);
-
-    await Promise.all([
-      first.append({ type: "message", message: user }),
-      second.append({ type: "message", message: followUp }),
-      first.append({ type: "model_selection", selection: modelB }),
-      second.append({ type: "message", message: assistant }),
-    ]);
-
-    const reopenedFirst = await repo.open(first.metadata.id);
-    const reopenedSecond = await repo.open(second.metadata.id);
-    assert.deepEqual(reopenedFirst.messages(), [user]);
-    assert.deepEqual(reopenedFirst.modelSelection(), modelB);
-    assert.deepEqual(reopenedSecond.messages(), [followUp, assistant]);
-  } finally {
-    await rm(storageDir, { recursive: true, force: true });
-  }
-});
-
 test("a later stored record controls metadata ordering", async () => {
   const storageDir = await tempStorage();
   try {

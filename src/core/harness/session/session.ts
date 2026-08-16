@@ -11,32 +11,27 @@ import {
   type SessionStorage,
 } from "./types.js";
 
-type AppendNode =
-  | { readonly type: "message"; readonly message: AgentMessage }
-  | { readonly type: "model_selection"; readonly selection: ModelConfig };
-
 /**
- * One Session's in-memory state and behavior. Records and projections are
+ * One Session's in-memory state and behavior. Logical nodes and metadata are
  * owned here; durable acceptance is delegated to the shared SessionStorage.
  */
 export class Session {
-  private readonly records: SessionRecord[];
   private readonly nodeById = new Map<string, SessionNode>();
   private _headId: string | null = null;
   private metadataState: SessionMetadata;
   private readonly storage: SessionStorage | undefined;
-  private pending: Promise<void> = Promise.resolve();
 
   private constructor(options: {
     readonly metadata: SessionMetadata;
-    readonly records: readonly SessionRecord[];
+    readonly nodes: readonly SessionNode[];
     readonly storage?: SessionStorage;
   }) {
     this.metadataState = { ...options.metadata };
-    this.records = [];
     this.storage = options.storage;
-    for (const record of options.records) {
-      this.apply(structuredClone(record));
+    for (const storedNode of options.nodes) {
+      const node = structuredClone(storedNode);
+      this.nodeById.set(node.id, node);
+      this._headId = node.id;
     }
   }
 
@@ -50,7 +45,7 @@ export class Session {
         createdAt: now,
         updatedAt: now,
       },
-      records: [],
+      nodes: [],
     });
   }
 
@@ -64,11 +59,11 @@ export class Session {
   static fromStorage(
     stored: {
       readonly metadata: SessionMetadata;
-      readonly records: readonly SessionRecord[];
+      readonly nodes: readonly SessionNode[];
     },
     storage: SessionStorage,
   ): Session {
-    return new Session({ metadata: stored.metadata, records: stored.records, storage });
+    return new Session({ metadata: stored.metadata, nodes: stored.nodes, storage });
   }
 
   get id(): string {
@@ -84,7 +79,7 @@ export class Session {
   }
 
   get nodes(): readonly SessionNode[] {
-    return this.records.filter((record): record is SessionNode => record.type !== "session_title");
+    return [...this.nodeById.values()];
   }
 
   path(nodeId: string | null | undefined = this._headId): readonly SessionNode[] {
@@ -117,53 +112,39 @@ export class Session {
     return null;
   }
 
-  append(input: AppendNode): Promise<string> {
-    return this.enqueue(async () => {
-      const record: SessionRecord = input.type === "message"
-        ? {
-            type: "message",
-            id: newId(),
-            parentId: this._headId,
-            createdAt: new Date().toISOString(),
-            message: input.message,
-          }
-        : {
-            type: "model_selection",
-            id: newId(),
-            parentId: this._headId,
-            createdAt: new Date().toISOString(),
-            selection: input.selection,
-          };
-      const parsed = parseSessionRecord(record);
-      if (parsed.type === "session_title") {
-        throw new Error("Node append produced a title record");
-      }
-      await this.commit(parsed);
-      return parsed.id;
-    });
+  async append(input:
+    | { readonly type: "message"; readonly message: AgentMessage }
+    | { readonly type: "model_selection"; readonly selection: ModelConfig }
+  ): Promise<string> {
+    const record: SessionRecord = input.type === "message"
+      ? {
+          type: "message",
+          id: newId(),
+          parentId: this._headId,
+          createdAt: new Date().toISOString(),
+          message: input.message,
+        }
+      : {
+          type: "model_selection",
+          id: newId(),
+          parentId: this._headId,
+          createdAt: new Date().toISOString(),
+          selection: input.selection,
+        };
+    const parsed = parseSessionRecord(record);
+    if (parsed.type === "session_title") {
+      throw new Error("Node append produced a title record");
+    }
+    await this.commit(parsed);
+    return parsed.id;
   }
 
-  setTitle(title: string): Promise<void> {
+  async setTitle(title: string): Promise<void> {
     const normalized = this.normalizeTitle(title);
-    return this.enqueue(async () => {
-      await this.commit({
-        type: "session_title",
-        createdAt: new Date().toISOString(),
-        title: normalized,
-      });
-    });
-  }
-
-  setTitleIfUnknown(title: string): Promise<boolean> {
-    return this.enqueue(async () => {
-      if (this.metadataState.title !== "unknown") return false;
-      const normalized = this.normalizeTitle(title);
-      await this.commit({
-        type: "session_title",
-        createdAt: new Date().toISOString(),
-        title: normalized,
-      });
-      return true;
+    await this.commit({
+      type: "session_title",
+      createdAt: new Date().toISOString(),
+      title: normalized,
     });
   }
 
@@ -175,9 +156,8 @@ export class Session {
     this.apply(record);
   }
 
-  /** Update records plus the relevant node/head/title/updatedAt projection. */
+  /** Apply one accepted storage record to logical Session state. */
   private apply(record: SessionRecord): void {
-    this.records.push(record);
     this.metadataState = {
       ...this.metadataState,
       updatedAt: record.createdAt > this.metadataState.updatedAt
@@ -189,16 +169,6 @@ export class Session {
       this.nodeById.set(record.id, record);
       this._headId = record.id;
     }
-  }
-
-  /** Serialize mutations and allow later work after a rejected operation. */
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.pending.then(operation, operation);
-    this.pending = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
   }
 
   /** Enforce one non-empty trimmed line. */

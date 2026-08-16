@@ -237,7 +237,7 @@ test("agent/context intercept reaches the model without replacing history", asyn
 
 // ── Tool interception and facts ──
 
-test("tools/pre-execute can replace arguments before validation", async () => {
+test("tools/pre-execute does not replace arguments before validation", async () => {
   const tool = new TypedTool();
   const tools = new AgentToolRegistry();
   tools.register(tool);
@@ -254,8 +254,7 @@ test("tools/pre-execute can replace arguments before validation", async () => {
   }));
 
   await runAgentLoop("run", memoryContext(tools), makeConfig(events), streamForToolCall(call));
-  assert.equal(tool.ran, true);
-  assert.equal(tool.seen, "fixed");
+  assert.equal(tool.ran, false);
 });
 
 test("tools/pre-execute can block execution", async () => {

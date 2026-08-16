@@ -1,17 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 
 import { AgentHarness } from "../../src/core/harness/agent-harness.js";
 import { Session } from "../../src/core/harness/session/session.js";
-import { SessionRepository } from "../../src/core/harness/session/repository.js";
 import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
 import { AgentTool } from "../../src/core/agent/tools/types.js";
 import { Events } from "../../src/core/events/events.js";
-import type { HarnessConfig, SessionTitleGenerator } from "../../src/core/harness/types.js";
 import type {
   AssistantMessage,
   ModelConfig,
@@ -42,9 +36,8 @@ function memorySession(): Session {
 function makeHarness(options: {
   session?: Session;
   streamFn?: StreamFn;
-  systemPrompt?: () => string | Promise<string>;
+  systemPrompt?: string;
   events?: Events;
-  titleGenerator?: SessionTitleGenerator;
 } = {}): { harness: AgentHarness; events: Events } {
   const events = options.events ?? new Events();
   const harness = new AgentHarness({
@@ -52,10 +45,8 @@ function makeHarness(options: {
     model: modelA,
     streamFn: options.streamFn ?? stream,
     toolRegistry: new AgentToolRegistry(),
-    systemPrompt: options.systemPrompt ?? (() => "system"),
-    cwd: process.cwd(),
+    systemPrompt: options.systemPrompt ?? "system",
     events,
-    ...(options.titleGenerator !== undefined ? { titleGenerator: options.titleGenerator } : {}),
   });
   return { harness, events };
 }
@@ -258,7 +249,7 @@ test("run identity is stable within a run and differs across runs", async () => 
   assert.notEqual(firstRun, runIds[1]);
 });
 
-// ── Step 3: Active-run, abort, model, tool, prompt-builder ──
+// ── Step 3: Active-run, abort, model, tool, system prompt ──
 
 function deferred(): {
   promise: Promise<void>;
@@ -270,60 +261,6 @@ function deferred(): {
   });
   return { promise, resolve };
 }
-
-test("Harness is busy while an async system prompt is being built", async () => {
-  const gate = deferred();
-  const { harness } = makeHarness({
-    systemPrompt: async () => {
-      await gate.promise;
-      return "system";
-    },
-  });
-
-  const first = harness.prompt("first");
-  assert.equal(harness.isRunning, true);
-  await assert.rejects(harness.prompt("second"), /busy/);
-  await assert.rejects(harness.switchModel(modelB), /busy/);
-  assert.throws(() => harness.unregisterTool("missing"), /busy/);
-  assert.throws(() =>
-    harness.registerTool(
-      new (class extends AgentTool {
-        constructor() {
-          super("test", "test", Type.Object({}));
-        }
-        async execute() {
-          return { content: "ok", isError: false };
-        }
-      })(),
-    ),
-  );
-
-  gate.resolve();
-  await first;
-});
-
-test("abort during prompt preparation prevents the Agent run", async () => {
-  const gate = deferred();
-  let streamCalls = 0;
-  const { harness } = makeHarness({
-    systemPrompt: async () => {
-      await gate.promise;
-      return "system";
-    },
-    streamFn: async function* () {
-      streamCalls++;
-      yield { type: "done", message: assistant };
-    },
-  });
-
-  const run = harness.prompt("hello");
-  harness.abort();
-  gate.resolve();
-  await run;
-
-  assert.equal(streamCalls, 0);
-  assert.equal(harness.isRunning, false);
-});
 
 test("restores Session model and persists later switches", async () => {
   const session = memorySession();
@@ -347,7 +284,7 @@ test("failed model persistence leaves current model unchanged", async () => {
   assert.deepEqual(harness.model, modelA);
 });
 
-test("tool changes and async prompt builder affect the next run", async () => {
+test("system prompt and tool changes reach the Agent run", async () => {
   let seenTools: string[] = [];
   let seenPrompt = "";
   const registry = new AgentToolRegistry();
@@ -368,21 +305,19 @@ test("tool changes and async prompt builder affect the next run", async () => {
       yield { type: "done", message: assistant };
     },
     toolRegistry: registry,
-    systemPrompt: async ({ tools }) =>
-      `tools=${tools.map((entry) => entry.name).join(",")}`,
-    cwd: process.cwd(),
+    systemPrompt: "system",
     events: new Events(),
   });
 
   harness.registerTool(tool);
   await harness.prompt("first");
   assert.deepEqual(seenTools, ["dynamic"]);
-  assert.equal(seenPrompt, "tools=dynamic");
+  assert.equal(seenPrompt, "system");
 
   harness.unregisterTool("dynamic");
   await harness.prompt("second");
   assert.deepEqual(seenTools, []);
-  assert.equal(seenPrompt, "tools=");
+  assert.equal(seenPrompt, "system");
 });
 
 test("abort during Agent streaming settles the Harness run", async () => {
@@ -621,8 +556,7 @@ test("tool-result subscriber sees the persisted result message", async () => {
     model: modelA,
     streamFn,
     toolRegistry: registry,
-    systemPrompt: () => "system",
-    cwd: process.cwd(),
+    systemPrompt: "system",
     events,
   });
 
@@ -670,8 +604,7 @@ test("tool-result subscriber sees the persisted synthetic message for an unknown
     model: modelA,
     streamFn,
     toolRegistry: registry,
-    systemPrompt: () => "system",
-    cwd: process.cwd(),
+    systemPrompt: "system",
     events,
   });
 
@@ -688,179 +621,4 @@ test("tool-result subscriber sees the persisted synthetic message for an unknown
 
   await harness.prompt("run");
   assert.deepEqual(observed, [{ type: "tool-result", matches: true }]);
-});
-
-// ── Task 4: automatic title timing ──
-
-async function eventually(assertion: () => void): Promise<void> {
-  const deadline = Date.now() + 2000;
-  for (;;) {
-    try {
-      assertion();
-      return;
-    } catch {
-      if (Date.now() > deadline) throw new Error("eventually timed out");
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-}
-
-test("first persisted user message starts title generation beside the response", async () => {
-  const titleStarted = deferred();
-  const releaseTitle = deferred();
-  const modelStarted = deferred();
-  const session = memorySession();
-  const { harness } = makeHarness({
-    session,
-    titleGenerator: async (prompt, titleModel) => {
-      assert.equal(prompt, "design sessions");
-      assert.deepEqual(titleModel, modelA);
-      assert.equal(session.messages()[0]?.role, "user");
-      titleStarted.resolve();
-      await releaseTitle.promise;
-      return "Session design";
-    },
-    streamFn: async function* () {
-      modelStarted.resolve();
-      yield { type: "done", message: assistant };
-    },
-  });
-
-  const run = harness.prompt("design sessions");
-  await Promise.all([titleStarted.promise, modelStarted.promise]);
-  releaseTitle.resolve();
-  await run;
-  await eventually(() => assert.equal(harness.title, "Session design"));
-});
-
-test("blocked first prompts do not start title generation", async () => {
-  const session = memorySession();
-  let titleCalls = 0;
-  const events = new Events();
-  events.on("agent/user-prompt", () => undefined);
-  const { harness } = makeHarness({
-    session,
-    events,
-    titleGenerator: async () => {
-      titleCalls++;
-      return "should not run";
-    },
-  });
-
-  await harness.prompt("hello");
-  assert.equal(session.messages().filter((message) => message.role === "user").length, 0);
-  assert.equal(titleCalls, 0);
-  assert.equal(harness.title, "unknown");
-});
-
-test("title generator failure never rejects the run or changes run_end", async () => {
-  const session = memorySession();
-  const { harness, events } = makeHarness({
-    session,
-    titleGenerator: async () => {
-      throw new Error("title model failed");
-    },
-  });
-
-  const facts: string[] = [];
-  events.on("harness/run-start", (input) => {
-    if (input.sessionId === harness.sessionId) facts.push("run_start");
-  });
-  events.on("harness/run-end", (input) => {
-    if (input.sessionId === harness.sessionId) facts.push(`run_end:${input.reason}`);
-  });
-  await harness.prompt("hello");
-  assert.deepEqual(facts, ["run_start", "run_end:completed"]);
-  assert.equal(harness.title, "unknown");
-});
-
-test("generator output is trimmed to one line and capped", async () => {
-  const session = memorySession();
-  const { harness } = makeHarness({
-    session,
-    titleGenerator: async () => `${"x".repeat(120)}\nignored line`,
-  });
-
-  await harness.prompt("hello");
-  await eventually(() => assert.equal(harness.title, `${"x".repeat(97)}...`));
-});
-
-test("manual rename racing with generated output is never overwritten", async () => {
-  const releaseTitle = deferred();
-  const session = memorySession();
-  const { harness } = makeHarness({
-    session,
-    titleGenerator: async () => {
-      await releaseTitle.promise;
-      return "Generated";
-    },
-  });
-
-  const run = harness.prompt("hello");
-  await harness.setTitle("Manual");
-  releaseTitle.resolve();
-  await run;
-  await eventually(() => assert.equal(harness.title, "Manual"));
-});
-
-test("reopened unknown-title Session with an existing user message is not regenerated", async () => {
-  const storageDir = join(tmpdir(), `kea-harness-title-${randomUUID()}`);
-  await mkdir(storageDir, { recursive: true });
-  try {
-    const repository = new SessionRepository(storageDir);
-    const first = await repository.create({ cwd: process.cwd() });
-    const { harness: firstHarness } = makeHarness({
-      session: first,
-      titleGenerator: async () => "First title",
-    });
-    await firstHarness.prompt("hello");
-    await eventually(() => assert.equal(firstHarness.title, "First title"));
-
-    const reopened = await repository.open(first.metadata.id);
-    let titleCalls = 0;
-    const { harness: reopenedHarness } = makeHarness({
-      session: reopened,
-      titleGenerator: async () => {
-        titleCalls++;
-        return "regenerated";
-      },
-    });
-    await reopenedHarness.prompt("again");
-    assert.equal(titleCalls, 0);
-    assert.equal(reopenedHarness.title, "First title");
-  } finally {
-    await rm(storageDir, { recursive: true, force: true });
-  }
-});
-
-test("a later turn after first-attempt failure does not restart title generation", async () => {
-  const session = memorySession();
-  let calls = 0;
-  const { harness } = makeHarness({
-    session,
-    titleGenerator: async () => {
-      calls++;
-      throw new Error("failed");
-    },
-  });
-
-  await harness.prompt("hello");
-  await harness.prompt("world");
-  assert.equal(calls, 1);
-});
-
-test("model switched before the first prompt applies to title generation", async () => {
-  const session = memorySession();
-  let titleModel: ModelConfig | undefined;
-  const { harness } = makeHarness({
-    session,
-    titleGenerator: async (_prompt, model) => {
-      titleModel = model;
-      return "titled";
-    },
-  });
-
-  await harness.switchModel(modelB);
-  await harness.prompt("hello");
-  await eventually(() => assert.deepEqual(titleModel, modelB));
 });

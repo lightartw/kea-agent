@@ -10,6 +10,7 @@ import {
 import { isAbsolute, join, resolve } from "node:path";
 
 import {
+  isSessionNode,
   parseSessionId,
   parseSessionRecord,
   validateSessionRecords,
@@ -17,6 +18,7 @@ import {
 import {
   SessionError,
   type SessionMetadata,
+  type SessionNode,
   type SessionRecord,
   type SessionStorage,
 } from "./types.js";
@@ -119,189 +121,161 @@ function metadataFrom(
 }
 
 /**
- * Serialize mutations for one Session ID without blocking other IDs. A settled
- * entry is removed only if it still points to this operation's chain, so a
- * rejected operation neither leaks nor blocks later work.
- */
-function enqueueById<T>(
-  pendingById: Map<string, Promise<void>>,
-  sessionId: string,
-  operation: () => Promise<T>,
-): Promise<T> {
-  const previous = pendingById.get(sessionId) ?? Promise.resolve();
-  const result = previous.then(operation, operation);
-  const chain = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  pendingById.set(sessionId, chain);
-  void chain.then(() => {
-    if (pendingById.get(sessionId) === chain) {
-      pendingById.delete(sessionId);
-    }
-  });
-  return result;
-}
-
-/**
  * The concrete JSONL backend serving every Session in one Repository. It
  * never imports, returns, or constructs `Session`; the physical header format
  * and file layout are private to this module.
  */
 export class JsonlSessionStorage implements SessionStorage {
   private readonly storageDir: string;
-  private readonly pendingById = new Map<string, Promise<void>>();
 
   constructor(storageDir: string) {
     this.storageDir = resolve(storageDir);
   }
 
-  create(stored: {
+  async create(stored: {
     readonly metadata: SessionMetadata;
-    readonly records: readonly SessionRecord[];
+    readonly nodes: readonly SessionNode[];
   }): Promise<void> {
-    return enqueueById(this.pendingById, stored.metadata.id, async () => {
-      const header = parseHeader({
-        type: "session",
-        version: 2,
-        id: stored.metadata.id,
-        cwd: stored.metadata.cwd,
-        title: stored.metadata.title,
-        createdAt: stored.metadata.createdAt,
-        ...(stored.metadata.parentSessionId !== undefined
-          ? { parentSessionId: stored.metadata.parentSessionId }
-          : {}),
-      });
-      const records = stored.records.map((record) => parseSessionRecord(record));
-      validateSessionRecords(records);
-
-      const contents = [
-        JSON.stringify(header),
-        ...records.map((record) => JSON.stringify(record)),
-        "",
-      ].join("\n");
-      const path = sessionPath(this.storageDir, header.id);
-      const tempPath = join(sessionsDir(this.storageDir), `.tmp-${header.id}.jsonl`);
-      try {
-        await mkdir(sessionsDir(this.storageDir), { recursive: true });
-        await writeFile(tempPath, contents, { encoding: "utf8", flag: "wx" });
-        await rename(tempPath, path);
-      } catch (error) {
-        await rm(tempPath, { force: true }).catch(() => undefined);
-        throw asStorageError("Could not create session storage", error);
-      }
+    const header = parseHeader({
+      type: "session",
+      version: 2,
+      id: stored.metadata.id,
+      cwd: stored.metadata.cwd,
+      title: stored.metadata.title,
+      createdAt: stored.metadata.createdAt,
+      ...(stored.metadata.parentSessionId !== undefined
+        ? { parentSessionId: stored.metadata.parentSessionId }
+        : {}),
     });
+    const nodes = stored.nodes.map((node) => {
+      const record = parseSessionRecord(node);
+      if (!isSessionNode(record)) {
+        throw new SessionError("invalid_record", "Session node is invalid");
+      }
+      return record;
+    });
+    validateSessionRecords(nodes);
+
+    const contents = [
+      JSON.stringify(header),
+      ...nodes.map((node) => JSON.stringify(node)),
+      "",
+    ].join("\n");
+    const path = sessionPath(this.storageDir, header.id);
+    const tempPath = join(sessionsDir(this.storageDir), `.tmp-${header.id}.jsonl`);
+    try {
+      await mkdir(sessionsDir(this.storageDir), { recursive: true });
+      await writeFile(tempPath, contents, { encoding: "utf8", flag: "wx" });
+      await rename(tempPath, path);
+    } catch (error) {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+      throw asStorageError("Could not create session storage", error);
+    }
   }
 
-  load(sessionId: string): Promise<{
+  async load(sessionId: string): Promise<{
     readonly metadata: SessionMetadata;
-    readonly records: readonly SessionRecord[];
+    readonly nodes: readonly SessionNode[];
   }> {
-    return enqueueById(this.pendingById, sessionId, async () => {
-      const id = parseSessionId(sessionId);
-      const path = sessionPath(this.storageDir, id);
-      let contents: string;
-      try {
-        contents = await readFile(path, "utf8");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          throw new SessionError("not_found", `Session ${sessionId} was not found`, {
-            cause: error,
-          });
-        }
-        throw asStorageError("Could not read session storage", error);
+    const id = parseSessionId(sessionId);
+    const path = sessionPath(this.storageDir, id);
+    let contents: string;
+    try {
+      contents = await readFile(path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new SessionError("not_found", `Session ${sessionId} was not found`, {
+          cause: error,
+        });
       }
+      throw asStorageError("Could not read session storage", error);
+    }
 
-      if (contents.trim() === "") {
-        invalidSession("Session file is empty");
+    if (contents.trim() === "") {
+      invalidSession("Session file is empty");
+    }
+
+    const lines = contents.split(/\r?\n/).filter((line) => line.trim() !== "");
+    const header = parseHeader(parseJson(lines[0]!));
+    if (header.id !== id) {
+      invalidSession("Session header ID does not match the filename");
+    }
+
+    const records: SessionRecord[] = [];
+    for (let index = 1; index < lines.length; index++) {
+      records.push(parseSessionRecord(parseJson(lines[index]!)));
+    }
+    validateSessionRecords(records);
+
+    return {
+      metadata: metadataFrom(header, records),
+      nodes: records.filter(isSessionNode),
+    };
+  }
+
+  async list(): Promise<readonly SessionMetadata[]> {
+    let entries: string[];
+    try {
+      entries = await readdir(sessionsDir(this.storageDir));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return [];
       }
+      throw asStorageError("Could not read sessions directory", error);
+    }
 
-      const lines = contents.split(/\r?\n/).filter((line) => line.trim() !== "");
-      const header = parseHeader(parseJson(lines[0]!));
-      if (header.id !== id) {
-        invalidSession("Session header ID does not match the filename");
-      }
+    const jsonlFiles = entries.filter((entry) => SESSION_FILE_RE.test(entry));
+    const sessions: SessionMetadata[] = [];
+    for (const filename of jsonlFiles) {
+      const loaded = await this.load(filename.replace(/\.jsonl$/, ""));
+      sessions.push(loaded.metadata);
+    }
 
-      const records: SessionRecord[] = [];
-      for (let index = 1; index < lines.length; index++) {
-        records.push(parseSessionRecord(parseJson(lines[index]!)));
-      }
-      validateSessionRecords(records);
-
-      return { metadata: metadataFrom(header, records), records };
+    sessions.sort((a, b) => {
+      const byUpdated = b.updatedAt.localeCompare(a.updatedAt);
+      return byUpdated !== 0 ? byUpdated : b.id.localeCompare(a.id);
     });
+
+    return sessions;
   }
 
-  list(): Promise<readonly SessionMetadata[]> {
-    return (async () => {
-      let entries: string[];
+  async append(sessionId: string, record: SessionRecord): Promise<void> {
+    const id = parseSessionId(sessionId);
+    const detached = parseSessionRecord(record);
+    const path = sessionPath(this.storageDir, id);
+    try {
+      const file = await open(path, "r+");
       try {
-        entries = await readdir(sessionsDir(this.storageDir));
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          return [];
-        }
-        throw asStorageError("Could not read sessions directory", error);
-      }
-
-      const jsonlFiles = entries.filter((entry) => SESSION_FILE_RE.test(entry));
-      const sessions = await Promise.all(
-        jsonlFiles.map(async (filename) => {
-          const loaded = await this.load(filename.replace(/\.jsonl$/, ""));
-          return loaded.metadata;
-        }),
-      );
-
-      sessions.sort((a, b) => {
-        const byUpdated = b.updatedAt.localeCompare(a.updatedAt);
-        return byUpdated !== 0 ? byUpdated : b.id.localeCompare(a.id);
-      });
-
-      return sessions;
-    })();
-  }
-
-  append(sessionId: string, record: SessionRecord): Promise<void> {
-    return enqueueById(this.pendingById, sessionId, async () => {
-      const id = parseSessionId(sessionId);
-      const detached = parseSessionRecord(record);
-      const path = sessionPath(this.storageDir, id);
-      try {
-        const file = await open(path, "r+");
-        try {
-          const { size } = await file.stat();
-          const contents = Buffer.from(`${JSON.stringify(detached)}\n`, "utf8");
-          let offset = 0;
-          while (offset < contents.length) {
-            const { bytesWritten } = await file.write(
-              contents,
-              offset,
-              contents.length - offset,
-              size + offset,
-            );
-            if (bytesWritten === 0) {
-              throw new Error("Session append wrote zero bytes");
-            }
-            offset += bytesWritten;
+        const { size } = await file.stat();
+        const contents = Buffer.from(`${JSON.stringify(detached)}\n`, "utf8");
+        let offset = 0;
+        while (offset < contents.length) {
+          const { bytesWritten } = await file.write(
+            contents,
+            offset,
+            contents.length - offset,
+            size + offset,
+          );
+          if (bytesWritten === 0) {
+            throw new Error("Session append wrote zero bytes");
           }
-        } finally {
-          await file.close();
+          offset += bytesWritten;
         }
-      } catch (error) {
-        throw asStorageError("Could not persist session row", error);
+      } finally {
+        await file.close();
       }
-    });
+    } catch (error) {
+      throw asStorageError("Could not persist session row", error);
+    }
   }
 
-  delete(sessionId: string): Promise<void> {
-    return enqueueById(this.pendingById, sessionId, async () => {
-      const id = parseSessionId(sessionId);
-      const path = sessionPath(this.storageDir, id);
-      try {
-        await rm(path, { force: true });
-      } catch (error) {
-        throw asStorageError("Could not delete session storage", error);
-      }
-    });
+  async delete(sessionId: string): Promise<void> {
+    const id = parseSessionId(sessionId);
+    const path = sessionPath(this.storageDir, id);
+    try {
+      await rm(path, { force: true });
+    } catch (error) {
+      throw asStorageError("Could not delete session storage", error);
+    }
   }
 }

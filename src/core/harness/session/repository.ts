@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { newId } from "./records.js";
 import { Session } from "./session.js";
 import { JsonlSessionStorage } from "./storage.js";
-import type { SessionMetadata, SessionRecord, SessionStorage } from "./types.js";
+import type { SessionMetadata, SessionNode, SessionStorage } from "./types.js";
 
 /**
  * Lifecycle orchestration for all Sessions in one Project. Owns exactly one
@@ -27,7 +27,7 @@ export class SessionRepository {
         createdAt: now,
         updatedAt: now,
       },
-      records: [] as readonly SessionRecord[],
+      nodes: [] as readonly SessionNode[],
     };
     await this.storage.create(stored);
     return Session.fromStorage(stored, this.storage);
@@ -61,7 +61,7 @@ export class SessionRepository {
         updatedAt: now,
         parentSessionId: sourceSessionId,
       },
-      records: nodes,
+      nodes,
     };
     await this.storage.create(stored);
     return Session.fromStorage(stored, this.storage);
