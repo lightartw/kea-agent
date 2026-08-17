@@ -2,8 +2,8 @@
 
 ## 目标
 
-重新设计 `coding-agent` 的 Project 基础，使整个包拥有一个清晰的核心概念，并建立后续设计
-内建 Tools、coding Events 和 Permission 的稳定落点。
+重新设计 `coding-agent` 的 Project 基础，使整个包拥有一个清晰的核心概念，分离 Project 逻辑与
+物理持久化，并建立后续设计内建 Tools、coding Events 和 Permission 的稳定落点。
 
 本设计只处理 Project、Session 入口与 Harness 组装。UI、Tool 展示和 Permission 交互不在本次
 范围内；不能用临时 UI 接口反向塑造 Project。
@@ -16,10 +16,30 @@
 - 它拥有这个 Project 的 SessionRepository；
 - 它为新建或显式选择的 Session 组装 AgentHarness；
 - 它拥有该 Project 内所有 Harness 共用的 Events；
+- 它不负责解析或读写 `project.json`；
 - 它不保存当前 Session 或当前 Harness。
 
 `coding-agent` 是包和领域名称，不增加同名的 `CodingAgent` 类。当前没有独立行为能够证明
 `CodingAgent` 与 `Project` 两个运行实体同时存在的必要性。
+
+## 参考案例与取舍
+
+OpenCode 当前实现中，Project 相关代码实际包含三种职责：
+
+1. core Project resolver 从输入目录发现 Git 仓库并计算 Project 身份；
+2. Project service 通过 SQLite Project 表持久化 Project 数据；
+3. InstanceStore 按启动目录缓存和释放运行上下文。
+
+Kea 保留这种职责区分，但不复制 OpenCode 当前由 Project service 直接编排 SQL、迁移、事件和运行
+行为的复杂形态。Kea 当前只有 JSON 文件后端和单进程启动流程，因此用一个具体的内部
+`ProjectStorage` 隔离文件格式；运行实例继续由 `Project` 表达，不增加 InstanceStore。
+
+参考源码：
+
+- [OpenCode Project resolver](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/project.ts#L96-L110)
+- [OpenCode Project tables](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/project/sql.ts#L4-L31)
+- [OpenCode Project persistence flow](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/project/project.ts#L195-L285)
+- [OpenCode Instance lifecycle](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/project/instance-store.ts#L39-L68)
 
 ## Project 数据
 
@@ -50,9 +70,71 @@ Project 数据保存在：
 <keaHome>/projects/<projectId>/sessions/*.jsonl
 ```
 
-`project.json` 是一份小型当前状态，使用完整 JSON，而不是 JSONL。Project 数据写入采用同目录临时
-文件和原子替换。Project 存储是 `coding-agent` 的内部实现，不导出 `persistProject()`、
-`applyProjectUpdate()`、目录所有权检查或 ProjectRepository 接口。
+`project.json` 是一份小型当前状态，使用完整 JSON，而不是 JSONL。文件中额外保存私有的格式版本，
+但不为磁盘对象增加公开的 `StoredProject` 类型；`ProjectStorage` 从 `unknown` 解析并返回
+`ProjectInfo`。
+
+这里有两个不能混用的目录术语：
+
+- Project directory：`ProjectInfo.directory`，用户代码所在的根目录；
+- Project data directory：`<keaHome>/projects/<projectId>`，Kea 的内部数据目录。
+
+## ProjectStorage
+
+Project 的文件持久化由一个具体的内部类集中处理：
+
+```ts
+class ProjectStorage {
+  constructor(keaHome: string);
+
+  findByDirectory(
+    directory: string,
+  ): Promise<ProjectInfo | undefined>;
+
+  create(info: ProjectInfo): Promise<void>;
+
+  dataDirectory(projectId: string): string;
+}
+```
+
+`ProjectStorage` 具有独立状态和约束，因此是必要概念：它持有规范化后的 `keaHome`，隐藏 Project
+data directory 布局、Project ID 到路径的映射、JSON 格式、版本校验和原子创建。它不从
+`coding-agent` 的公共入口导出。
+
+第一版只有这一种后端，不增加 `ProjectStorage` 接口和 `JsonProjectStorage` 实现，也不增加
+ProjectRepository、ProjectManager 或散列的公开持久化函数。将来只有出现第二种后端时才提取
+Storage 接口。
+
+### Storage 方法语义
+
+`findByDirectory(directory)`：
+
+1. 扫描 `<keaHome>/projects` 下名称符合 Project ID 规则的目录；
+2. 读取并完整校验每个 `project.json`，文件中的 ID 必须与父目录名称一致；
+3. 使用与 Project 解析相同的路径规范规则，与输入 directory 精确比较；
+4. 没有匹配时返回 `undefined`，一个匹配时返回 `ProjectInfo`，多个匹配时明确失败。
+
+不存在 `<keaHome>/projects` 表示尚无 Project。其他目录读取错误、候选 Project 缺少
+`project.json`、JSON 损坏、版本不支持和字段非法都必须失败，不能静默忽略后继续创建重复 Project。
+
+`create(info)` 只负责验证和持久化已经生成的 `ProjectInfo`，不负责解析 cwd、发现 Git、生成 ID、
+生成名称或构造 Project。创建过程为：
+
+1. 在 `<keaHome>/projects` 内创建同文件系统的临时目录；
+2. 在临时目录写入完整的 `project.json`；
+3. 将临时目录原子重命名为目标 Project data directory；
+4. 失败时尽力删除本次临时目录并传播原始错误。
+
+目标 Project data directory 已存在时失败，不能覆盖。第一版不设计多进程并发、锁或重试；启动方
+保证同一 `keaHome` 不并发执行 Project 创建。
+
+`dataDirectory(projectId)` 验证 Project ID 后返回 Project data directory，只计算路径，不执行 I/O。
+SessionRepository 接收这个目录，并继续独立拥有其下 `sessions/` 的格式和操作；ProjectStorage 不
+读写 Session 文件。
+
+第一版 Project 创建后没有 ProjectInfo 的持久化修改行为，因此 `Project` 不持有
+`ProjectStorage`。未来出现真实的 Project 更新行为时，可以给 Storage 增加对应方法并将现有实例
+注入 Project；当前不提前增加 `update()`、`save()`、`list()`、`get()` 或 `delete()`。
 
 ## Project 发现与创建
 
@@ -85,13 +167,14 @@ function openOrCreateProject(options: {
 仓库”结果进入第 4 步；Git 进程无法启动或目录解析发生其他错误时明确失败，避免同一个仓库因环境
 异常被错误登记成另一个非 Git Project。
 
-得到 Project directory 后，再选择或创建 Project：
+得到 Project directory 后，再通过 ProjectStorage 选择或创建 Project：
 
-1. 扫描 `<keaHome>/projects/*/project.json`；
-2. 按规范化后的 `ProjectInfo.directory` 与 Project directory 精确相等查找；
-3. 恰好一个匹配时，读取并返回该 Project；
-4. 没有匹配时，为该 Project directory 创建 Project，生成并立即持久化稳定 ID；
-5. 多个匹配时说明持久化数据违反唯一性约束，明确失败。
+1. 用 `keaHome` 创建内部 ProjectStorage；
+2. 调用 `storage.findByDirectory(projectDirectory)`；
+3. 找到时使用返回的 ProjectInfo；
+4. 没有找到时生成 ProjectInfo，再调用 `storage.create(info)`；
+5. 用 `storage.dataDirectory(info.id)` 创建该 Project 的 SessionRepository；
+6. 将 ProjectInfo、SessionRepository、ModelRuntime、默认模型和 Events 组装成 Project。
 
 因此，在一个 `keaHome` 中，规范化后的 Project directory 唯一确定一个 Project。这里没有“启动位置
 位于某个已登记目录下就复用”的包含匹配，也没有最长路径选择：Git 子目录通过解析到同一 work-tree
@@ -103,11 +186,14 @@ Project。
 不存在 Projects 目录是正常的首次启动。其他读取错误、损坏的 Project 文件和重复目录归属必须明确
 失败，不能被当作“没有 Project”后再创建重复记录。
 
+`openOrCreateProject()` 是这段流程唯一的公开入口。ProjectStorage 只负责持久化，不返回 Project；
+Project 只负责运行行为，不反向承担目录发现。这里不需要 ProjectRepository。
+
 ## Project 运行对象
 
 `Project` 是类，而不是由对象字面量和闭包拼出的接口实现。类保存 ProjectInfo、SessionRepository、
-ModelRuntime、默认模型和 Events；`info` getter 返回 ProjectInfo 快照，不把持久字段复制为另一份
-公开状态。
+ModelRuntime、默认模型和 Events，不保存 ProjectStorage 或 keaHome；`info` getter 返回 ProjectInfo
+快照，不把持久字段复制为另一份公开状态。
 
 第一版公开行为为：
 
@@ -218,7 +304,9 @@ Bash permission 中的 `allow / ask / deny` 分类可以作为纯领域规则继
 ```text
 启动 cwd
 → 解析 Git work-tree 根；非 Git 则保留 cwd
-→ 按 Project directory 精确打开或创建 Project
+→ ProjectStorage.findByDirectory(projectDirectory)
+→ 必要时 ProjectStorage.create(info)
+→ SessionRepository(ProjectStorage.dataDirectory(projectId))
 → Project
 → project.createHarness({ cwd: startupCwd })
 → 新 Session
@@ -231,13 +319,37 @@ Bash permission 中的 `allow / ask / deny` 分类可以作为纯领域规则继
 
 - 启动 cwd 不存在或不是目录时失败；
 - Git 根目录发现无法执行或发生“不是 Git 仓库”之外的错误时失败；
+- ProjectStorage 只能把 Projects 根目录不存在解释为“没有 Project”；
 - Project 文件损坏、版本不支持或字段非法时失败；
+- Project 文件中的 ID 与 Project data directory 名称不一致时失败；
 - 同一规范化目录被多个 Project 登记时失败；
 - Project 读取错误不能被解释为不存在；
+- Project 创建不能覆盖已经存在的 Project data directory；
+- Project 创建失败不能返回半成品 Project；
 - 新 Session cwd 逃出 Project directory 时失败；
 - 已有 Session cwd 不存在或逃出 Project directory 时失败；
 - SessionRepository 和 Harness 组装错误原样传播，不缓存半成品；
 - 不通过隐式恢复、目录替换或创建新 Session 掩盖错误。
+
+## 测试边界
+
+ProjectStorage 使用临时 keaHome 独立测试：
+
+- Projects 根目录不存在时 `findByDirectory()` 返回 `undefined`；
+- `create()` 后能够按相同规范目录找到同一 ProjectInfo；
+- 无效 JSON、版本、字段、Project ID 和父目录 ID 不一致都会失败；
+- 两个 ProjectInfo 登记相同 directory 时查找失败；
+- 已存在的 Project data directory 不会被覆盖；
+- `dataDirectory()` 拒绝能够逃出 Projects 根目录的 Project ID；
+- Storage 测试不构造 Project、SessionRepository、ModelRuntime 或 Events。
+
+`openOrCreateProject()` 单独测试目录解析和编排：
+
+- Git 根目录与非 Git cwd 得到正确 Project directory；
+- 首次启动创建 Project，再次启动复用稳定 ID；
+- 创建 Project 后用其 data directory 构造 SessionRepository；
+- ProjectStorage 失败时不构造或返回 Project；
+- 每次应用启动仍显式创建新的 Session，而不是恢复最近 Session。
 
 ## 验收条件
 
@@ -258,3 +370,22 @@ Bash permission 中的 `allow / ask / deny` 分类可以作为纯领域规则继
 14. Project、Tools 和 Events 不依赖任何具体 UI，也不公开 Tool 渲染入口。
 15. Project 配置中没有临时 Permission/UI callback。
 16. Core Session、AgentHarness、Agent Loop 和 ModelRuntime 的现有边界保持不变。
+17. ProjectStorage 独立处理 Project 文件布局、解析、校验、查找和原子创建。
+18. ProjectStorage 不解析 cwd/Git、不生成 ProjectInfo、不构造 Project，也不读写 Session 文件。
+19. Project 不持有 ProjectStorage，ProjectStorage 不从 `coding-agent` 公共入口导出。
+20. 没有 ProjectRepository、ProjectManager、ProjectStorage 接口或第二个 Storage 实现。
+21. Project 逻辑与 Project 持久化分别可以在不读取对方实现细节的情况下测试。
+
+## 代码组织
+
+Project 基础代码集中在 `src/coding-agent/project/`：
+
+```text
+project/
+├── project.ts   # ProjectInfo 与 Project 运行类
+├── storage.ts   # ProjectStorage、私有磁盘格式与路径规则
+└── open.ts      # Project directory 解析与 openOrCreateProject
+```
+
+不增加通用 `types.ts`、factory、manager 或 repository。具体 Tools 和 coding Events 仍由后续设计决定，
+不进入 ProjectStorage。
