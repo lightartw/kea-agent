@@ -108,9 +108,11 @@ interface HarnessConfig {
 
 1. 创建本次 Run 的 `AbortController` 和 `{ sessionId, runId }`；
 2. 发布 `harness/run-start`；
-3. 调用一次 `runAgentLoop()`，传入已有消息、system prompt、Tools、Events 和 Run 身份；
+3. 从 `runtime.stream` 绑定出 `StreamFn`，调用一次 `runAgentLoop()`，传入已有消息、system prompt、
+   Tools、Events 和 Run 身份；完整 `ModelRuntime` 不进入 Agent Loop；
 4. Agent 产生完整消息时，`appendMessage` 先调用 `session.append()` 持久化，成功后才把消息加入
-   本次 Run 的消息数组；
+   本次 Run 的消息数组；首条 user message 持久化后，Harness 先尝试生成并保存 Session 标题，再开始
+   主模型 Turn；
 5. Agent 完成、中止或失败后，Harness 先清理运行状态，再发布一个对应的 `harness/run-end`；
 6. 如果是运行失败，在发布 `run-end` 后把原错误重新抛给调用方。
 
@@ -132,6 +134,15 @@ interface HarnessConfig {
 `switchModel()` 先把模型选择写入 Session，成功后才更新 Harness 的当前模型。`registerTool()`
 和 `unregisterTool()` 修改传入的 Tool Registry；新的 Tools 从下一次 Run 开始进入 Agent 上下文。
 `setTitle()` 直接写入 Session，不受 busy 状态限制。
+
+新 Session 的首条实际 user message 持久化后，Harness 使用当前模型调用一次
+`ModelRuntime.complete()` 生成标题。这里使用的是经过 `agent/user-prompt` interceptor 修改后的文本；
+标题请求不携带 Tools，也不进入 Agent Loop。请求串行完成后才开始正常 Turn，因此当前实现没有后台任务、
+并发写入或额外事件。
+
+标题逻辑集中在 `session-title.ts` 的一个函数中：它只接受默认标题为 `unknown` 且当前历史恰好只有
+一条 user message 的 Session，要求模型返回单行标题，清理首行和包围引号，并限制为 100 个字符。
+生成、清理或持久化中的任何失败都会保留默认标题并继续正常 Run；后续 user message 不会重试。
 
 ### `AgentHarness` 的公开成员
 
@@ -367,8 +378,9 @@ Session 只更新 `metadataState`。
 
 ## 包边界和源码位置
 
-Harness 组合下层能力：`ai` 提供 `ModelRuntime` 与 `ModelConfig`；`agent` 提供
-`runAgentLoop()`、消息、`AgentRunIdentity` 和 Tool Registry；`events` 提供共享 dispatcher。
+Harness 组合下层能力：`ai` 提供 `ModelRuntime` 与 `ModelConfig`；Harness 把
+`runtime.stream` 适配成 agent 定义的 `StreamFn`。`agent` 提供 `runAgentLoop()`、消息、
+`AgentRunIdentity` 和 Tool Registry；`events` 提供共享 dispatcher。
 具体 Tool 和项目级组装属于 Harness 上层。Harness 还通过仅供 core 内部使用的 `core/util`
 复用通用错误处理。
 

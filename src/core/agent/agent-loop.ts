@@ -1,10 +1,14 @@
 import type {
   Context,
   Message,
-  ModelRuntime,
   StreamChunk,
 } from "../ai/types.js";
-import type { AgentContext, AgentLoopConfig, AgentMessage } from "./types.js";
+import type {
+  AgentContext,
+  AgentLoopConfig,
+  AgentMessage,
+  StreamFn,
+} from "./types.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
 
 // ── Helpers ──
@@ -42,10 +46,9 @@ export async function runAgentLoop(
   input: string,
   context: AgentContext,
   config: AgentLoopConfig,
-  runtime: ModelRuntime,
+  streamFn: StreamFn,
   signal?: AbortSignal,
 ): Promise<void> {
-  const stream = runtime.stream.bind(runtime);
   // ── agent/user-prompt (intercept) ──
   const prompt = await config.events.intercept(
     "agent/user-prompt",
@@ -82,7 +85,7 @@ export async function runAgentLoop(
     const toolCalls: AgentToolCall[] = [];
     let turnMessage: AgentMessage | undefined;
 
-    for await (const event of stream(
+    for await (const event of streamFn(
       config.model,
       llmContext,
       signal === undefined ? {} : { signal },
@@ -149,17 +152,10 @@ export async function runAgentLoop(
       return;
     }
 
-    const shouldStop = await config.events.intercept(
-      "agent/stopping",
-      {
-        ...config.run,
-        message: turnMessage,
-        toolResults,
-        messages: [...context.messages],
-      },
-      async (value) => value.toolResults.length === 0,
-      signal,
-    );
-    if (shouldStop) return;
+    signal?.throwIfAborted();
+
+    // Every Tool Call above produces one Tool Result. Without any results,
+    // there is nothing new for the model to consume in another Turn.
+    if (toolResults.length === 0) return;
   }
 }

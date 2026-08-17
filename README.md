@@ -71,7 +71,7 @@ CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共�
 ## 启动路径
 
 ```text
-createStreamFn → createProject → continueRecent → cli.run(project, harness)
+createModelRuntime → createProject → continueRecent → cli.run(project, harness)
 ```
 
 `main.ts` 加载环境变量并创建 `CliFrontend`（其 `interactions` 实现
@@ -81,11 +81,11 @@ createStreamFn → createProject → continueRecent → cli.run(project, harness
 
 ```ts
 const cli = new CliFrontend();
-const { stream, defaultModel } = createStreamFn();
+const { runtime, modelConfig } = createModelRuntime();
 const project = await createProject({
   keaHome: process.env.KEA_HOME ?? resolve(homedir(), ".kea"),
-  streamFn: stream,
-  model: defaultModel,
+  runtime,
+  modelConfig,
   interactions: cli.interactions,
 });
 const harness = await project.continueRecent();
@@ -98,7 +98,7 @@ Harness 核心代码统一位于 `src/core/`；产品适配与界面代码位于
 
 | 包 | README | 职责 |
 |----|--------|------|
-| `ai` | [ai/README.md](src/core/ai/README.md) | LLM 客户端抽象、StreamFn、消息类型 |
+| `ai` | [ai/README.md](src/core/ai/README.md) | ModelRuntime、provider 路由、消息与流协议 |
 | `agent` | [agent/README.md](src/core/agent/README.md) | Agent loop、Hook Call、工具注册、AgentEvent |
 | `events` | [events/README.md](src/core/events/README.md) | 核心事件契约与统一分发器 |
 | `harness` | [harness/README.md](src/core/harness/README.md) | 运行时、版本化 Session、平坦 HarnessEvent、Hook 透传 |
@@ -156,7 +156,9 @@ Bash 安全策略分为三层：
 
 ## AI 层
 
-`createStreamFn()` 默认根据唯一存在的 API key 环境变量选择 provider，也支持显式配置。该工厂函数返回 `{ stream, defaultModel }`，其中 `stream` 是 Agent 层注入的 `StreamFn`。
+`createModelRuntime()` 默认根据唯一存在的 API key 环境变量选择 provider，也支持显式配置。该工厂函数返回
+`{ runtime, modelConfig }`。Harness 持有 `ModelRuntime`，并把绑定后的 `runtime.stream` 作为 agent
+定义的 `StreamFn` 传给 Agent Loop；`complete()` 不进入 Loop。
 
 详见 AI 层源码（`src/core/ai/`）。
 

@@ -102,7 +102,7 @@ listener 失败时，`intercept()` 失败并传播给行为拥有者。`intercep
 ## 8. 谁拥有哪些 Event
 
 - **Harness** 声明并分发 Run 边界：`harness/run-start`、`harness/run-end`；
-- **Agent** 声明并分发一次 Run 内的 Turn、Tool 和流式 event，以及三个 intercept event；
+- **Agent** 声明并分发一次 Run 内的 Turn、Tool 和流式 event，以及两个 intercept event；
 - **Coding Agent** 注册 Project 级 listener（例如 Permission），并创建共享 `Events`；
 - **UI** 通过 `on()` 注册展示所需的 listener，并用 `sessionId` 过滤 event。
 
@@ -123,7 +123,7 @@ tools/post-execute
 agent/tool-result
 agent/turn-end
 maxTurns hard-limit check
-agent/stopping -> boolean
+stop when toolResults is empty
 harness/run-end
 ```
 
@@ -135,10 +135,8 @@ harness/run-end
   各重复一次，顺序与模型生成顺序一致；
 - 未知、无效、被阻止、已中止或失败的 Tool Call 跳过无法执行的阶段，但仍然以恰好一个
   `agent/tool-result` 结束；
-- `agent/stopping` 是一个 Intercept event：每个正常 Turn 的 `agent/turn-end` 后，Agent Loop
-  先检查不可绕过的 `maxTurns`，再把完整 assistant message、Tool Result 和当前历史交给 listener。
-  默认处理在没有 Tool Result 时返回 `true`；listener 返回的 `boolean` 控制是否开始下一 Turn。
-  它不是事实观察，也不再注入消息。
+- 每个正常 Turn 的 `agent/turn-end` 后，Agent Loop 先检查不可绕过的 `maxTurns`，再按
+  `toolResults.length === 0` 直接决定是否结束；产生 Tool Result 时开始下一 Turn 让模型消费它们。
 
 ## 10. 公共接口
 

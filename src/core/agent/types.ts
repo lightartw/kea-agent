@@ -1,4 +1,10 @@
-import type { Message, ModelConfig } from "../ai/types.js";
+import type {
+  Context,
+  Message,
+  ModelConfig,
+  StreamChunk,
+  StreamOptions,
+} from "../ai/types.js";
 import type { Events } from "../events/events.js";
 import type { AgentToolRegistry } from "./tools/registry.js";
 
@@ -17,6 +23,13 @@ export interface AgentRunIdentity {
  * an extensible union when custom message types are needed.
  */
 export type AgentMessage = Message;
+
+/** Minimal model execution capability required by the Agent Loop. */
+export type StreamFn = (
+  modelConfig: ModelConfig,
+  context: Context,
+  options?: Partial<StreamOptions>,
+) => AsyncIterable<StreamChunk>;
 
 /**
  * Agent state passed into the loop. The messages view is read-only from

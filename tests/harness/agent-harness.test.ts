@@ -9,6 +9,7 @@ import { Events } from "../../src/core/events/events.js";
 import type {
   AssistantMessage,
   ModelConfig,
+  ModelRuntime,
 } from "../../src/core/ai/types.js";
 import { runtimeFromStream, type TestStream } from "../fixtures/model-runtime.js";
 import { Type } from "typebox";
@@ -36,13 +37,14 @@ function memorySession(): Session {
 function makeHarness(options: {
   session?: Session;
   stream?: TestStream;
+  runtime?: ModelRuntime;
   systemPrompt?: string;
   events?: Events;
 } = {}): { harness: AgentHarness; events: Events } {
   const events = options.events ?? new Events();
   const harness = new AgentHarness({
     session: options.session ?? memorySession(),
-    runtime: runtimeFromStream(options.stream ?? stream),
+    runtime: options.runtime ?? runtimeFromStream(options.stream ?? stream),
     modelConfig: modelA,
     toolRegistry: new AgentToolRegistry(),
     systemPrompt: options.systemPrompt ?? "system",
@@ -56,6 +58,87 @@ test("sessionId exposes the bound Session identity", () => {
   const { harness } = makeHarness({ session });
 
   assert.equal(harness.sessionId, session.id);
+});
+
+test("the first persisted user prompt generates one title before the main model run", async () => {
+  const session = memorySession();
+  const events = new Events();
+  const calls: string[] = [];
+  let titleContext: Parameters<ModelRuntime["complete"]>[1] | undefined;
+  let titleOptions: Parameters<ModelRuntime["complete"]>[2] | undefined;
+  let completeCalls = 0;
+  const runtime: ModelRuntime = {
+    async complete(_model, context, options) {
+      calls.push("title");
+      completeCalls++;
+      titleContext = context;
+      titleOptions = options;
+      assert.deepEqual(session.messages(), [
+        { role: "user", content: "effective prompt" },
+      ]);
+      return {
+        ...assistant,
+        content: [{ type: "text", text: '  "Generated title"  \nignored' }],
+      };
+    },
+    async *stream() {
+      calls.push("run");
+      yield { type: "done", message: assistant };
+    },
+  };
+  events.on("agent/user-prompt", (input, proceed) => proceed({
+    ...input,
+    prompt: "effective prompt",
+  }));
+  events.on("agent/turn-start", () => {
+    calls.push("turn-start");
+  });
+  const { harness } = makeHarness({ session, events, runtime });
+
+  await harness.prompt("raw prompt");
+  await harness.prompt("second prompt");
+
+  assert.deepEqual(calls, [
+    "title",
+    "turn-start",
+    "run",
+    "turn-start",
+    "run",
+  ]);
+  assert.equal(completeCalls, 1);
+  assert.equal(harness.title, "Generated title");
+  assert.equal(titleContext?.systemPrompt?.length === 0, false);
+  assert.deepEqual(titleContext?.messages, [
+    { role: "user", content: "effective prompt" },
+  ]);
+  assert.equal(titleContext?.tools, undefined);
+  assert.equal(titleOptions?.maxTokens, 64);
+});
+
+test("title generation failure keeps the default title and does not stop the run", async () => {
+  let completeCalls = 0;
+  let streamCalls = 0;
+  const runtime: ModelRuntime = {
+    async complete() {
+      completeCalls++;
+      throw new Error("title generation failed");
+    },
+    async *stream() {
+      streamCalls++;
+      yield { type: "done", message: assistant };
+    },
+  };
+  const { harness } = makeHarness({ runtime });
+
+  await harness.prompt("hello");
+
+  assert.equal(completeCalls, 1);
+  assert.equal(streamCalls, 1);
+  assert.equal(harness.title, "unknown");
+  assert.deepEqual(harness.messages.map((message) => message.role), [
+    "user",
+    "assistant",
+  ]);
 });
 
 // ── Step 1: Basic prompt / event facts ──
@@ -483,15 +566,10 @@ test("Harness shares one Events instance with Agent Loop", async () => {
     calls.push("context");
     return proceed(input);
   });
-  events.on("agent/stopping", (input, proceed) => {
-    calls.push("stopping");
-    return proceed(input);
-  });
-
   const { harness } = makeHarness({ events });
   await harness.prompt("hello");
   assert.deepEqual(calls, [
-    "user_prompt", "context", "stopping",
+    "user_prompt", "context",
   ]);
 });
 
@@ -509,16 +587,6 @@ test("agent/user-prompt and agent/context interceptor failures reject prompt and
     await assert.rejects(harness.prompt("hello"), new RegExp(`${label} failed`));
     assert.equal(harness.isRunning, false);
   }
-});
-
-test("agent/stopping interceptor failure keeps the completed assistant message and restores idle", async () => {
-  const events = new Events();
-  events.on("agent/stopping", () => { throw new Error("stop failed"); });
-  const { harness } = makeHarness({ events });
-
-  await assert.rejects(harness.prompt("hello"), /stop failed/);
-  assert.equal(harness.messages.at(-1)?.role, "assistant");
-  assert.equal(harness.isRunning, false);
 });
 
 // ── Task 4: tool result ordering against persisted Session ──

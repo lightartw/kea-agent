@@ -13,7 +13,7 @@ import type {
   ModelConfig,
   StreamChunk,
 } from "../../src/core/ai/types.js";
-import { runtimeFromStream, type TestStream } from "../fixtures/model-runtime.js";
+import type { TestStream } from "../fixtures/model-runtime.js";
 import { AgentTool, type AgentToolResult } from "../../src/core/agent/tools/types.js";
 import type { AgentToolCall } from "../../src/core/agent/tools/types.js";
 import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
@@ -152,16 +152,11 @@ test("successful two-Turn order matches the lifecycle", async () => {
   events.on("tools/pre-execute", (input, proceed) => { factOrder.push("tools/pre-execute"); return proceed(input); });
   events.on("tools/execute", (input, proceed) => { factOrder.push("tools/execute"); return proceed(input); });
   events.on("tools/post-execute", (input, proceed) => { factOrder.push("tools/post-execute"); return proceed(input); });
-  events.on("agent/stopping", (input, proceed) => {
-    factOrder.push("agent/stopping");
-    return proceed(input);
-  });
-
   await runAgentLoop(
     "run",
     memoryContext(registry),
     makeConfig({ events }),
-    runtimeFromStream(stream),
+    stream,
   );
 
   assert.deepEqual(factOrder, [
@@ -172,10 +167,8 @@ test("successful two-Turn order matches the lifecycle", async () => {
     "tools/post-execute",
     "agent/tool-result",
     "agent/turn-end",
-    "agent/stopping",
     "agent/turn-start",
     "agent/turn-end",
-    "agent/stopping",
   ]);
 });
 
@@ -207,7 +200,7 @@ test("agent/tool-call is emitted once per model-requested call", async () => {
     "run",
     memoryContext(registry),
     makeConfig({ events }),
-    runtimeFromStream(stream),
+    stream,
   );
 
   assert.deepEqual(calls.map((call) => call.id), ["c1", "c2"]);
@@ -234,7 +227,7 @@ test("maxTurns stops before another model request", async () => {
     "run",
     memoryContext(registry),
     makeConfig({ maxTurns: 1 }),
-    runtimeFromStream(stream),
+    stream,
   );
 
   assert.equal(requests, 1);
@@ -273,7 +266,7 @@ test("tool results are in history before the next model stream", async () => {
     appendMessage: async (message) => { history.push(message); },
   };
 
-  await runAgentLoop("run", context, makeConfig(), runtimeFromStream(stream));
+  await runAgentLoop("run", context, makeConfig(), stream);
 
   assert.deepEqual(secondHistory?.at(-1), {
     role: "tool",
@@ -318,7 +311,7 @@ test("agent/tool-result is emitted only after its Tool message is appended", asy
     "run",
     context,
     makeConfig({ events }),
-    runtimeFromStream(streamForToolCall(call)),
+    streamForToolCall(call),
   );
 
   assert.deepEqual(checks, ["tool-result:true", "turn-end:true", "turn-end:true"]);
@@ -384,7 +377,7 @@ test("unknown, invalid, blocked, and thrown tools each produce exactly one error
       "run",
       context,
       makeConfig({ events }),
-      runtimeFromStream(streamForToolCall(scenario.call)),
+      streamForToolCall(scenario.call),
     );
 
     assert.equal(results.length, 1, scenario.label);
@@ -401,9 +394,9 @@ test("unknown, invalid, blocked, and thrown tools each produce exactly one error
 
 // ── Control interceptor failures ──
 
-test("failing agent/user-prompt, agent/context, or agent/stopping interceptors reject the Run", async () => {
+test("failing agent/user-prompt or agent/context interceptors reject the Run", async () => {
   const cases: Array<{
-    name: "agent/user-prompt" | "agent/context" | "agent/stopping";
+    name: "agent/user-prompt" | "agent/context";
     register: (events: Events) => void;
   }> = [
     {
@@ -414,10 +407,6 @@ test("failing agent/user-prompt, agent/context, or agent/stopping interceptors r
       name: "agent/context",
       register: (events) => { events.on("agent/context", () => { throw new Error("agent/context failed"); }); },
     },
-    {
-      name: "agent/stopping",
-      register: (events) => { events.on("agent/stopping", () => { throw new Error("agent/stopping failed"); }); },
-    },
   ];
   for (const { name, register } of cases) {
     const events = new Events();
@@ -427,7 +416,7 @@ test("failing agent/user-prompt, agent/context, or agent/stopping interceptors r
         "start",
         memoryContext(),
         makeConfig({ events }),
-        runtimeFromStream(streamWithEvents([[{ type: "done", message: assistantMsg("") }]])),
+        streamWithEvents([[{ type: "done", message: assistantMsg("") }]]),
       ),
       new RegExp(`${name} failed`),
     );
@@ -438,11 +427,6 @@ test("failing agent/user-prompt, agent/context, or agent/stopping interceptors r
 
 test("AI error terminal chunk appends its message and finishes", async () => {
   const events = new Events();
-  let stops = 0;
-  events.on("agent/stopping", (input, proceed) => {
-    stops++;
-    return proceed(input);
-  });
   const failed = {
     ...assistantMsg(""),
     stopReason: "error" as const,
@@ -464,23 +448,17 @@ test("AI error terminal chunk appends its message and finishes", async () => {
     "start",
     context,
     makeConfig({ events }),
-    runtimeFromStream(streamWithEvents([[{ type: "error", message: failed }]])),
+    streamWithEvents([[{ type: "error", message: failed }]]),
   );
 
-  assert.equal(stops, 0);
   assert.equal(turnEnds.length, 1);
   assert.equal(turnEnds[0]?.message.role, "assistant");
   assert.deepEqual(turnEnds[0]?.toolResults, []);
   assert.deepEqual(history.map((message) => message.role), ["user", "assistant"]);
 });
 
-test("pre-aborted run rejects with AbortError without triggering stopping", async () => {
+test("pre-aborted run rejects with AbortError before model streaming", async () => {
   const events = new Events();
-  let stops = 0;
-  events.on("agent/stopping", (input, proceed) => {
-    stops++;
-    return proceed(input);
-  });
   const controller = new AbortController();
   controller.abort();
 
@@ -489,12 +467,11 @@ test("pre-aborted run rejects with AbortError without triggering stopping", asyn
       "start",
       memoryContext(),
       makeConfig({ events }),
-      runtimeFromStream(streamWithEvents([])),
+      streamWithEvents([]),
       controller.signal,
     ),
     (error: unknown) => (error as Error).name === "AbortError",
   );
-  assert.equal(stops, 0);
 });
 
 test("stream ending without a terminal chunk rejects and emits no turn-end", async () => {
@@ -516,7 +493,7 @@ test("stream ending without a terminal chunk rejects and emits no turn-end", asy
       "hello",
       context,
       makeConfig({ events }),
-      runtimeFromStream(async function* () {}),
+      async function* () {},
     ),
     /stream.*terminal|done.*error/i,
   );
@@ -579,7 +556,7 @@ test("abort during execution still produces exactly one result per call", async 
     "run",
     context,
     makeConfig({ events }),
-    runtimeFromStream(stream),
+    stream,
     controller.signal,
   );
 

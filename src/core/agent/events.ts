@@ -15,15 +15,6 @@ declare module "../events/types.js" {
       readonly AgentMessage[]
     >;
 
-    "agent/stopping": InterceptEvent<
-      AgentRunIdentity & {
-        readonly message: AgentMessage;
-        readonly toolResults: readonly AgentMessage[];
-        readonly messages: readonly AgentMessage[];
-      },
-      boolean
-    >;
-
     // Events dispatched with emit().
     "agent/turn-start": EmitEvent<AgentRunIdentity>;
 

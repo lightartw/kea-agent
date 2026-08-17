@@ -112,15 +112,15 @@ interface AgentLoopConfig {
 
 ### 控制事件
 
-`src/core/agent/events.ts` 声明三个控制拦截器（通过 `EventMap` 扩充）：
+`src/core/agent/events.ts` 声明两个控制拦截器（通过 `EventMap` 扩充）：
 
 | 事件 | 作用 |
 | ---- | ---- |
 | `agent/user-prompt` | user message 写入前，返回 `undefined` 阻止 Run |
 | `agent/context` | 每次 LLM 请求前整理消息快照，不改写 Session 历史 |
-| `agent/stopping` | 仅当 Loop 即将停止时拦截，返回消息以开始下一 Turn |
 
 控制事件在状态或动作提交前执行，可以改变尚未提交的行为；它不是被动 listener。
+Turn 后是否继续由 Agent Loop 内建决定：本轮有 Tool Result 就继续，让模型消费结果；没有则结束。
 
 ### 事实事件
 

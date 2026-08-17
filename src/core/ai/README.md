@@ -29,8 +29,8 @@ for await (const event of runtime.stream(modelConfig, context)) {
 把 `ToolResultMessage` 加入下一次调用的 `Context.messages`。
 
 `runtime.complete()` 消费同一条 stream 路由，并返回 `done` 或 `error` 终止块中的完整
-assistant message。流没有终止块时它会拒绝。它不承担标题生成、compaction 或停止判断；这些是
-调用方的策略，当前 core 尚未实现 AI 标题、压缩或 AI stopping listener。
+assistant message。流没有终止块时它会拒绝。它不承担标题生成、compaction 或工具循环停止判断；
+当前 Agent Loop 直接按本轮是否产生 Tool Result 决定是否继续。
 
 ## Provider 与模型切换
 
@@ -270,7 +270,7 @@ type StreamChunk =
 | 导出 | 建议范围 |
 |---|---|
 | `createModelRuntime`, `ProviderConfig` | 应用组合根配置 ai 能力 |
-| `ModelRuntime` | provider 路由和请求能力；直接注入相邻 agent 层 |
+| `ModelRuntime` | provider 路由和请求能力；由 Harness 或应用组合层持有 |
 | `ModelConfig` | 一次请求的模型选择；agent 和模型选择界面可直接使用 |
 | `Context`, `StreamChunk` | ai 调用边界；agent 内部消费，不继续向上透传 |
 | `StreamOptions` | ai 直接调用选项 |

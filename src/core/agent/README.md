@@ -1,6 +1,6 @@
 # agent
 
-`agent` 在 `ai.ModelRuntime` 之上实现多 turn 工具循环。
+`agent` 通过自己定义的 `StreamFn` 使用 ai 流协议，并实现多 turn 工具循环。
 
 一次 `runAgentLoop()` 调用是一个 **Agent Run**；每次调用 LLM 是一个 **Turn**。当 assistant 消息
 带 tool call 时，Agent 顺序执行工具、保存结果并开始下一 turn；没有 tool call 时结束。Harness
@@ -17,10 +17,10 @@ agent 包分为两部分：
 
 ## 1. 一次 AI 请求与一次 Agent Run
 
-一次 `runtime.stream()` 调用完成一次 LLM 请求。一次 Agent Run 可能包含多次 LLM 请求：模型先输出
+一次 `StreamFn` 调用完成一次 LLM 请求。一次 Agent Run 可能包含多次 LLM 请求：模型先输出
 assistant message，Agent 执行其中请求的 Tool，把 Tool Result 写回历史，再请求一次模型让它
-读取结果。`runAgentLoop()` 驱动这整个过程；通常在模型不再请求 Tool 时结束，
-每个正常 Turn 后都由 `agent/stopping` 判断是否继续。
+读取结果。`runAgentLoop()` 驱动这整个过程：本轮产生 Tool Result 时开始下一 Turn，让模型消费
+结果；没有 Tool Result 时结束 Run。
 
 ## 2. 类型
 
@@ -29,7 +29,7 @@ function runAgentLoop(
   input: string,
   context: AgentContext,
   config: AgentLoopConfig,
-  runtime: ModelRuntime,
+  streamFn: StreamFn,
   signal?: AbortSignal,
 ): Promise<void>;
 
@@ -158,26 +158,22 @@ tools/post-execute
 agent/tool-result
 agent/turn-end
 maxTurns hard-limit check
-agent/stopping -> boolean
+stop when toolResults is empty
 ```
 
 四个流式事实只在 provider 产生对应片段时发生。Tool 拦截五行对每个 Tool Call 重复一次。若
-`maxTurns` 未达到且 `agent/stopping` 返回 `false`，下一个 `agent/turn-start` 开始新一轮。
+`maxTurns` 未达到且本轮产生了 Tool Result，下一个 `agent/turn-start` 开始新一轮；否则 Run 结束。
 
 ## 7. Agent 控制事件
 
-Agent 有三个 `intercept()` 控制点：
+Agent 有两个 `intercept()` 控制点：
 
 - **`agent/user-prompt`**：user message 写入前，listener 可返回修改后的 prompt，或返回
   `undefined` 阻止 Run；
-- **`agent/context`**：每次模型请求前整理消息快照，不改写 Session 历史；
-- **`agent/stopping`**：每个正常 Turn 的 `agent/turn-end` 后拦截，输入本轮完整 assistant
-  message、全部 Tool Result 和当前消息历史，返回 `boolean` 表示是否停止。
+- **`agent/context`**：每次模型请求前整理消息快照，不改写 Session 历史。
 
-默认 stopping 策略在 `toolResults.length === 0` 时返回 `true`。listener 可以返回不同的布尔值；
-未来若需要 AI 判断，可在 listener 的闭包中调用 `runtime.complete()`，但 core 当前没有注册该
-listener。`maxTurns` 是 Loop 在 dispatch 前执行的硬限制，listener 不能覆盖它。AI `error` 终止块
-会直接结束 Run；已经取消的信号也不会进入 stopping listener。
+Turn 后是否继续不是扩展点，而是 Loop 的内建结构规则：`toolResults.length === 0` 时结束，否则继续。
+`maxTurns` 是在这条规则前检查的硬限制。AI `error` 终止块会直接结束 Run。
 
 ## 8. 与 Harness 的关系
 
@@ -195,7 +191,7 @@ listener。`maxTurns` 是 Loop 在 dispatch 前执行的硬限制，listener 不
 - `AgentToolCall`, `AgentToolResult`, `PreToolDecision`
 
 从 `src/core/agent/types.ts`（经根入口）：
-- `AgentContext`, `AgentLoopConfig`, `AgentMessage`, `AgentRunIdentity`
+- `AgentContext`, `AgentLoopConfig`, `AgentMessage`, `AgentRunIdentity`, `StreamFn`
 
 ## 10. 包边界
 
@@ -203,12 +199,14 @@ agent 只从相邻 ai 层直接依赖：
 
 | ai 接口 | agent 用途 |
 |---------|-----------|
-| `ModelRuntime` | 注入 provider 路由和 LLM 请求能力；Loop 只调用其 `stream()` |
 | `ModelConfig` | model/provider 选择 |
 | `Message` | `AgentMessage` 和转换结果 |
 | `Context` | 调用 LLM 前临时构造 |
 | `StreamChunk` | loop 消费 ai stream |
 | `Tool` | `AgentTool` schema 契约 |
+
+`StreamFn` 由 agent 定义，是 Loop 所需的最小模型执行能力。上层可以用
+`runtime.stream.bind(runtime)` 提供实现；Loop 不接收完整 `ModelRuntime`，也不能调用 `complete()`。
 
 其他依赖：
 

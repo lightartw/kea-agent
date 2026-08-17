@@ -1,6 +1,7 @@
 import type { ModelRuntime } from "../../src/core/ai/types.js";
+import type { StreamFn } from "../../src/core/agent/types.js";
 
-export type TestStream = ModelRuntime["stream"];
+export type TestStream = StreamFn;
 
 export function runtimeFromStream(stream: TestStream): ModelRuntime {
   return {

@@ -9,6 +9,7 @@ import type { ModelConfig, ModelRuntime } from "../ai/types.js";
 import { errorMessage } from "../util/index.js";
 import type { HarnessRunEnd } from "./events.js";
 import { Session } from "./session/session.js";
+import { ensureSessionTitle } from "./session-title.js";
 import type { HarnessConfig } from "./types.js";
 
 /** Tracks an in-flight prompt so abort() can cancel it. */
@@ -96,10 +97,19 @@ export class AgentHarness {
             appendMessage: async (message) => {
               await this.session.append({ type: "message", message });
               messages.push(message);
+              if (message.role === "user") {
+                await ensureSessionTitle({
+                  session: this.session,
+                  prompt: message.content,
+                  runtime: this.runtime,
+                  model: this.currentModel,
+                  signal: abortController.signal,
+                });
+              }
             },
           },
           config,
-          this.runtime,
+          this.runtime.stream.bind(this.runtime),
           abortController.signal,
         );
       }

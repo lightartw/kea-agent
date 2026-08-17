@@ -7,4 +7,5 @@ export type {
   AgentLoopConfig,
   AgentMessage,
   AgentRunIdentity,
+  StreamFn,
 } from "./types.js";

@@ -119,7 +119,7 @@ registerCodingEvents(events, interactions);
 ```
 
 `createSession()`、`openSession()` 和 `continueRecent()` 每次组装 Harness 时都把这个**同一个**
-实例交给新的 `AgentHarness`；Harness 又把它传给 `runAgentLoop()`。因此一份 Project 的全部
+实例交给新的 `AgentHarness`；Harness 把绑定后的 `StreamFn` 传给 `runAgentLoop()`。因此一份 Project 的全部
 Session 共享同一套 listener 注册，而 `sessionId`（来自 `AgentRunIdentity`）区分它们属于哪份
 Session：
 
