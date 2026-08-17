@@ -61,7 +61,6 @@ Project 数据保存在：
 ```ts
 interface OpenOrCreateProjectConfig {
   readonly keaHome: string;
-  readonly directory?: string;
   readonly cwd?: string;
   readonly runtime: ModelRuntime;
   readonly modelConfig: ModelConfig;
@@ -70,22 +69,38 @@ interface OpenOrCreateProjectConfig {
 function openOrCreateProject(config: OpenOrCreateProjectConfig): Promise<Project>;
 ```
 
-启动位置按 `config.cwd ?? config.directory ?? process.cwd()` 解析为绝对路径。若同时提供 `cwd` 和
-`directory`，`cwd` 必须位于 `directory` 内。
+`cwd` 是应用的启动位置，省略时使用 `process.cwd()`。配置中不接受 `directory`：Project directory
+不是调用者提供的第二个位置，而是根据 `cwd` 解析出的结果。这样不存在 `cwd` 与 `directory` 冲突、
+优先级或包含关系等额外规则。
 
-Project 选择顺序为：
+首先把 `cwd` 解析为 Project directory：
+
+1. 将 `cwd` 解析为绝对路径，验证路径存在且是目录，并取得其规范路径；
+2. 以该目录执行等价于 `git rev-parse --show-toplevel` 的 Git 根目录发现；
+3. 如果位于 Git work-tree 中，Project directory 是规范化后的 work-tree 根；
+4. 如果不位于 Git work-tree 中，Project directory 就是规范化后的 `cwd`。
+
+不要通过手工寻找 `.git` 目录实现第 2 步，因为 Git worktree 的 `.git` 可以是文件。明确的“不是 Git
+仓库”结果进入第 4 步；Git 进程无法启动或目录解析发生其他错误时明确失败，避免同一个仓库因环境
+异常被错误登记成另一个非 Git Project。
+
+得到 Project directory 后，再选择或创建 Project：
 
 1. 扫描 `<keaHome>/projects/*/project.json`；
-2. 如果启动位置等于或位于已登记 Project 的 `directory` 下，打开该 Project；
-3. 多个已登记目录同时匹配时，选择路径最长、最具体的 Project；
-4. 没有匹配且显式提供 `directory` 时，用该目录创建 Project；
-5. 没有匹配且未显式提供 `directory` 时，使用启动位置所属 Git work-tree 根；
-6. 不属于 Git work-tree 时，使用启动位置创建 Project。
+2. 按规范化后的 `ProjectInfo.directory` 与 Project directory 精确相等查找；
+3. 恰好一个匹配时，读取并返回该 Project；
+4. 没有匹配时，为该 Project directory 创建 Project，生成并立即持久化稳定 ID；
+5. 多个匹配时说明持久化数据违反唯一性约束，明确失败。
 
-Git 只参与首次根目录发现。Project、Session、Harness 和 Tools 不区分 Git 与非 Git Project。
+因此，在一个 `keaHome` 中，规范化后的 Project directory 唯一确定一个 Project。这里没有“启动位置
+位于某个已登记目录下就复用”的包含匹配，也没有最长路径选择：Git 子目录通过解析到同一 work-tree
+根而复用 Project；非 Git 目录则只有从同一个 `cwd` 启动才会复用 Project。
+
+Git 只参与 Project directory 解析。Project、Session、Harness 和 Tools 不区分 Git 与非 Git
+Project。
 
 不存在 Projects 目录是正常的首次启动。其他读取错误、损坏的 Project 文件和重复目录归属必须明确
-失败，不能被当作“没有 Project”后再创建重复记录。传入目录必须存在且确实是目录。
+失败，不能被当作“没有 Project”后再创建重复记录。
 
 ## Project 运行对象
 
@@ -126,6 +141,11 @@ class Project {
 Core Session 保持当前格式，不增加 `projectId`、Project directory 或相对 cwd。Project 对 Session
 的归属由该 Project 专属的 SessionRepository 存储目录表达；Session metadata 继续保存解析后的
 绝对 `cwd`。
+
+启动 `cwd` 与 Project directory 是两个不同结果，而不是两个入口参数：前者是用户实际启动和首个
+Session 工作的位置，后者是由前者解析出的 Project 身份和文件边界。例如从
+`/repo/packages/app` 启动且 `/repo` 是 Git work-tree 根时，`ProjectInfo.directory` 为 `/repo`，
+新 Session 的 `cwd` 仍为 `/repo/packages/app`。
 
 `createHarness({ cwd })` 的 cwd：
 
@@ -196,7 +216,8 @@ Bash permission 中的 `allow / ask / deny` 分类可以作为纯领域规则继
 
 ```text
 启动 cwd
-→ openOrCreateProject()
+→ 解析 Git work-tree 根；非 Git 则保留 cwd
+→ 按 Project directory 精确打开或创建 Project
 → Project
 → project.createHarness({ cwd: startupCwd })
 → 新 Session
@@ -207,7 +228,8 @@ Bash permission 中的 `allow / ask / deny` 分类可以作为纯领域规则继
 
 ## 错误规则
 
-- Project 路径不存在或不是目录时失败；
+- 启动 cwd 不存在或不是目录时失败；
+- Git 根目录发现无法执行或发生“不是 Git 仓库”之外的错误时失败；
 - Project 文件损坏、版本不支持或字段非法时失败；
 - 同一规范化目录被多个 Project 登记时失败；
 - Project 读取错误不能被解释为不存在；
@@ -219,14 +241,18 @@ Bash permission 中的 `allow / ask / deny` 分类可以作为纯领域规则继
 ## 验收条件
 
 1. 从未登记目录启动会创建只有一个 directory 的 Project，并立即持久化稳定 ID。
-2. 再次从 Project 根目录或其子目录启动会读取同一 Project ID。
-3. 非 Git 目录和 Git work-tree 都能创建 Project，Git 只影响首次根发现。
-4. 损坏的 Project 数据不会导致静默创建重复 Project。
-5. 每次启动调用 `createHarness()` 都创建新的 Session ID，不恢复最近 Session。
-6. `listSessions()` 返回 Project SessionRepository 的 SessionMetadata。
-7. `createHarnessFromSession(id)` 显式恢复所选 Session 并返回绑定它的 AgentHarness。
-8. Project 没有 `continueRecent()`、`createSession()` 或 `openSession()`。
-9. 每个 Harness 获得独立 Tool Registry 和运行状态，但共享 Project Events。
-10. Project、Tools 和 Events 不依赖任何具体 UI，也不公开 Tool 渲染入口。
-11. Project 配置中没有临时 Permission/UI callback。
-12. Core Session、AgentHarness、Agent Loop 和 ModelRuntime 的现有边界保持不变。
+2. 同一 Git work-tree 内的不同启动 cwd 都解析到 work-tree 根并读取同一 Project ID。
+3. 同一非 Git cwd 再次启动会读取同一 Project ID；不同非 Git cwd 不做父子目录包含匹配。
+4. 每个规范化 Project directory 最多对应一个 Project；重复登记明确失败。
+5. `OpenOrCreateProjectConfig` 只有 `cwd`，没有调用者指定 Project 根的 `directory`。
+6. Git 与非 Git Project 的后续运行行为相同，Git 只影响 Project directory 解析。
+7. 损坏的 Project 数据不会导致静默创建重复 Project。
+8. 每次启动调用 `createHarness()` 都创建新的 Session ID，不恢复最近 Session。
+9. 启动 Session 保留原始启动 cwd，而不是被改成 Git work-tree 根。
+10. `listSessions()` 返回 Project SessionRepository 的 SessionMetadata。
+11. `createHarnessFromSession(id)` 显式恢复所选 Session 并返回绑定它的 AgentHarness。
+12. Project 没有 `continueRecent()`、`createSession()` 或 `openSession()`。
+13. 每个 Harness 获得独立 Tool Registry 和运行状态，但共享 Project Events。
+14. Project、Tools 和 Events 不依赖任何具体 UI，也不公开 Tool 渲染入口。
+15. Project 配置中没有临时 Permission/UI callback。
+16. Core Session、AgentHarness、Agent Loop 和 ModelRuntime 的现有边界保持不变。
