@@ -59,19 +59,20 @@ Project 数据保存在：
 公开入口为：
 
 ```ts
-interface OpenOrCreateProjectConfig {
+function openOrCreateProject(options: {
   readonly keaHome: string;
   readonly cwd?: string;
   readonly runtime: ModelRuntime;
   readonly modelConfig: ModelConfig;
-}
-
-function openOrCreateProject(config: OpenOrCreateProjectConfig): Promise<Project>;
+}): Promise<Project>;
 ```
 
-`cwd` 是应用的启动位置，省略时使用 `process.cwd()`。配置中不接受 `directory`：Project directory
+`cwd` 是应用的启动位置，省略时使用 `process.cwd()`。参数中不接受 `directory`：Project directory
 不是调用者提供的第二个位置，而是根据 `cwd` 解析出的结果。这样不存在 `cwd` 与 `directory` 冲突、
 优先级或包含关系等额外规则。
+
+这里保留对象参数，但不为参数形状增加命名接口。对象形式允许以后以可选字段扩展调用，而当前没有
+复用、独立构造或独立校验该参数形状的需求；只有出现这些真实需求时，才提取命名类型。
 
 首先把 `cwd` 解析为 Project directory：
 
@@ -244,7 +245,8 @@ Bash permission 中的 `allow / ask / deny` 分类可以作为纯领域规则继
 2. 同一 Git work-tree 内的不同启动 cwd 都解析到 work-tree 根并读取同一 Project ID。
 3. 同一非 Git cwd 再次启动会读取同一 Project ID；不同非 Git cwd 不做父子目录包含匹配。
 4. 每个规范化 Project directory 最多对应一个 Project；重复登记明确失败。
-5. `OpenOrCreateProjectConfig` 只有 `cwd`，没有调用者指定 Project 根的 `directory`。
+5. `openOrCreateProject()` 使用内联对象参数，其中只有启动 `cwd`，没有调用者指定 Project 根的
+   `directory`，也没有无独立职责的命名配置类型。
 6. Git 与非 Git Project 的后续运行行为相同，Git 只影响 Project directory 解析。
 7. 损坏的 Project 数据不会导致静默创建重复 Project。
 8. 每次启动调用 `createHarness()` 都创建新的 Session ID，不恢复最近 Session。
