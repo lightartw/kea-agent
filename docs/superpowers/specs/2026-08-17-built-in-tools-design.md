@@ -123,8 +123,7 @@ interface AgentToolResult<TDetails> {
 
 第一版不允许无界输出：
 
-- 文本最大展示 2,000 行；
-- 文本最大展示 50 KiB UTF-8；
+- Bash、Read 和 Glob 文本最大展示 2,000 行及 50 KiB UTF-8；
 - Bash 从尾部保留，因为命令结尾通常包含最终状态和错误；
 - Read 从请求 offset 开始向后保留；
 - Glob 最多返回排序后的前 1,000 个匹配；
@@ -205,8 +204,8 @@ SSH/container adapter 的可能性；不为单一函数增加 operations class �
    └─ 失败结果
 ```
 
-目录只列直接子项；目录名称以 `/` 结尾，先按名称确定性排序，不递归。details 保存规范绝对路径、
-`file | directory`、offset、返回数量、总数量和 truncated。
+目录只列直接子项；目录名称以 `/` 结尾，先按名称确定性排序，不递归，并同时遵守 50 KiB 输出上限。
+details 保存规范绝对路径、`file | directory`、offset、返回数量、总数量和 truncated。
 
 ## write_file
 
@@ -253,7 +252,7 @@ old_text 匹配次数
 ```
 
 使用 Node.js 24 `fs.promises.glob()`，cwd 固定为构造时的 Session cwd。匹配结果转换为 `/` 分隔的
-cwd-relative 路径，按代码点顺序确定性排序并去重。
+cwd-relative 路径，按代码点顺序确定性排序并去重，同时受 1,000 项和 50 KiB 两个上限约束。
 
 关键分支：
 
@@ -283,7 +282,8 @@ details 保存总匹配数、返回数和 truncated，不复制完整 matches。
 完整模型可见列表，并在 details 保存 `{ todos }`。Session 已持久化整个 Tool Result，因此恢复
 Session 时不需要 Tool 内部状态。
 
-空列表是合法的，表示清空任务。content schema 要求至少一个非空字符，但不擅自 trim 或改写用户
+空列表是合法的，表示清空任务。列表最多 50 项，每项 content 为 1 至 200 个字符；该格式上限保证
+完整 Todo 列表无需截断即可同时进入模型 content 和 Session details。Tool 不擅自 trim 或改写用户
 文本；不强制最多一个 `in_progress`，因为该约束属于 agent guideline，不是数据格式不变量。
 
 ## Registry 工厂
