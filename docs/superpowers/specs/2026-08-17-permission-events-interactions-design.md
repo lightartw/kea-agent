@@ -1,117 +1,73 @@
 # Permission、Events 与 Interactions 设计
 
-## 1. 目标
+## 阅读前提
 
-本设计重新定义 Coding Agent 的 Tool Events、Permission 和主动交互边界。目标是：
+本文的读者已经阅读 `src/core/ai`、`src/core/events`、`src/core/agent` 和
+`src/core/harness` 的 README，理解 `Events.emit()`、`Events.intercept()`、
+`AgentRunIdentity`、`ToolExecutionContext`、Tool Registry 和 Harness 的职责。本文不重复这些
+机制，只解释 Coding Agent 在其上增加的 Permission 和主动交互语义。
 
-1. Tool 只实现工具逻辑，不知道 Permission、Events、Session、Project 或 UI；
-2. Permission 作为 `tools/pre-execute` listener，在 Tool 执行前做逻辑决策；
-3. Events 表达内部已经发生的事实或可拦截的执行控制点；
-4. Interactions 表达内部逻辑主动向外部索取回答；
-5. Event 与 Interaction 都不包含终端、网页、按钮或排版语义；
-6. 为未来插件注册 Tool 及其配套 Permission listener 保留边界，但本次不设计插件系统。
+本文接续 `2026-08-17-built-in-tools-design.md`。六个内置 Tool 仍是直接的 `AgentTool`；Tool
+只实现操作，不接收 Permission、Interactions、Project 或 UI 能力。
 
-本设计接续 `2026-08-17-built-in-tools-design.md`。六个内置 Tool 仍是直接的
-`AgentTool`，不向 Tool 注入 Permission 或 Interactions。
+## 1. Coding Agent 增加的两个能力
 
-## 2. 本次范围
+core 已经提供 Tool 执行和拦截机制，但不知道什么是危险命令、Project 外部目录或用户授权。
+Coding Agent 在 core 之上增加两个能力：
 
-本次设计并实现以下内容：
+- **Permission**：根据 Coding Agent 的安全规则决定一次 Tool Call 是 `allow`、`ask` 还是
+  `deny`；
+- **Interactions**：当决定为 `ask` 时，向 Coding Agent 外部请求一个回答并等待结果。
 
-- Tool Event 的输入身份与执行顺序；
-- UI 无关的 `Interactions.permission()`；
-- Permission request、reply、规则语义和失败行为；
-- Permission listener 与 `tools/pre-execute` 的连接；
-- 现有 UI interaction 类型从 Coding Agent 逻辑层移除。
+Permission 注册为 `tools/pre-execute` listener。它不进入 Tool，也不成为 Registry 的内建策略。
+Interactions 是 Permission 使用的外部端口，不表示任何具体 UI。
 
-以下内容明确延后：
-
-- Project 对 Session cwd、project directory 和已授权目录的具体装配；
-- Permission 规则的磁盘持久化位置和 Project 配置格式；
-- 插件发现、加载、生命周期和 Extension Context；
-- 通用 Question、confirm、select、input 等其他交互；
-- UI 的 Permission 弹窗和 Tool Result 展示组件。
-
-外部目录与危险命令的规则语义在本文定稿，但依赖 Project 环境的数据来源在后续
-Project 设计中接入。
-
-## 3. 参考产品及取舍
-
-### 3.1 Pi
-
-Pi 的 extension handler 接收丰富的 `ExtensionContext`，其中直接包含
-`ExtensionUIContext`、cwd、Session、模型和取消能力。它的 permission-gate 示例在
-`tool_call` handler 内调用 `ctx.ui.select()`；没有 UI 时默认阻止危险命令。
-
-这种设计对插件作者非常方便，但 Tool 事件处理逻辑直接依赖 UI 能力。Kea 保留它“一切功能可由
-扩展注册”的方向，不采用 Permission 对 `ctx.ui` 的耦合方式。
-
-参考：
-
-- <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts>
-- <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/permission-gate.ts>
-
-### 3.2 OpenCode
-
-OpenCode 的 Tool Context 暴露 `ask()`，Tool 主动发起 Permission。Permission service 保存
-pending request 和已批准规则，并使用 `once`、`always`、`reject` 回答；远程 UI 通过 asked/replied
-事件和 reply API 完成往返。
-
-它的优点是 Tool 最了解自己的权限语义，缺点是每个 Tool 都感知 Permission。Kea 选择更彻底的
-分离：Tool 不拥有发起 Permission 的能力；Permission listener 从 Tool Event 识别并拦截调用。
-Kea 当前是直接异步调用拓扑，因此不复制 pending map、asked/replied Event 和 reply endpoint。
-
-参考：
-
-- <https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/tool.ts>
-- <https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/permission/index.ts>
-
-## 4. 两种数据流
-
-Events 和 Interactions 解决的是相反方向的问题。
+一次需要询问的调用经过以下路径：
 
 ```text
-外部输入 -> 内部执行 -> Event -> 外部 listener 消费并展示
-
-内部逻辑 -> Interaction request -> 外部展示并取得回答
-         <- Interaction reply   <-
+AgentToolRegistry
+  -> tools/pre-execute
+  -> Permission listener
+  -> Interactions.permission(request)
+  <- PermissionReply
+  -> PreToolDecision
+  -> Tool 或错误 Tool Result
 ```
 
-Events 适合事实通知和已有执行过程的拦截点。Interactions 是内部主动等待外部回答的端口。
-Permission 不能仅靠单向 Event 获得用户回答，也不新增 `permission/request` Event 来模拟一次
-请求/响应协议。
+这里没有第二个 Permission Event。`tools/pre-execute` 是执行控制点；
+`Interactions.permission()` 是内部主动取得外部回答的调用。
 
-Interactions 不叫 Bridge，也不带 `CodingAgent` 前缀。建议文件为：
+## 2. Events 与 Interactions 的边界
+
+Events 沿用 core 已有语义：行为拥有者发布事实，或者开放一个可由 listener 包裹的待执行行为。
+外部系统通常通过 listener 消费这些 Event，用于显示、日志或扩展逻辑。
+
+Interactions 的方向相反。Coding Agent 内部发起一个领域请求，并等待外部返回回答：
 
 ```text
-src/coding-agent/interactions.ts
+内部 -> PermissionRequest -> 外部 adapter -> 人或其他决策者
+内部 <- PermissionReply   <- 外部 adapter <-
 ```
 
-本次只有 Permission 需要主动交互，因此不增加 `question()`，也不提前增加
-`confirm()`、`select()`、`input()`。这些方法描述 UI 操作方式，而不是 Coding Agent 的领域需求。
-通知属于单向事实，不放入 Interactions。
+如果把请求也建模成 `permission/request` Event，系统还需要另一个 reply Event，以及 pending map、
+request ID、超时和清理协议。那是远程传输层的实现方式，不是所有 Coding Agent 调用都必须承担的
+领域模型。
 
-## 5. ToolExecutionContext 与 Tool Event
+直接 Interaction 用一次 Promise 关联 request 和 reply。终端、桌面 UI 或进程内测试可以直接实现
+它；RPC adapter 如需 request ID，可以在自己的传输层生成。
 
-`AgentToolRegistry.execute(call, executionContext)` 已经接收 `ToolExecutionContext`：
+## 3. Tool Event 契约
 
-```ts
-interface ToolExecutionContext {
-  readonly sessionId: string;
-  readonly runId: string;
-  readonly events: Events;
-  readonly signal?: AbortSignal;
-}
-```
+### 3.1 为什么需要修改输入
 
-它是 Registry 编排一次 Tool Call 所需的环境，不传给具体 Tool。`call` 是明确的执行对象，继续作为
-`execute()` 的第一个参数。
+一个 Project 的 Events 可以被多个 Session 和 Run 共用。Permission 和外部 listener 必须知道
+当前 Tool Call 属于哪个 Run。`ToolExecutionContext` 已经把这个身份带到 Registry，因此 Registry
+只需把身份放入 Tool Event 输入。
 
-不能把整个 `ToolExecutionContext` 放进 Event 输入：`events` 会形成无意义的自引用并鼓励 listener
-触发嵌套 Event；`signal` 已经由 `intercept()` 单独传给 listener。Registry 只提取 Event 消费者需要的
-Run 身份。
+整个 `ToolExecutionContext` 不进入 Event：`events` 本身不是 Event 数据，`signal` 也已经由
+`intercept()` 单独传给 listener。
 
-为避免在 `EventMap` 中反复拼接交叉类型，定义两个可读的事件输入：
+### 3.2 输入类型
 
 ```ts
 interface ToolCallEvent {
@@ -125,7 +81,8 @@ interface ToolResultEvent extends ToolCallEvent {
 }
 ```
 
-Tool Event 契约为：
+`ToolCallEvent` 表示某个 Run 中的一次 Tool Call；`ToolResultEvent` 在同一组信息上增加执行结果。
+它们是 Event 输入，不是新的 Context。
 
 ```ts
 "tools/pre-execute": InterceptEvent<ToolCallEvent, PreToolDecision>;
@@ -133,32 +90,55 @@ Tool Event 契约为：
 "tools/post-execute": InterceptEvent<ToolResultEvent, AgentToolResult>;
 ```
 
-`ToolCallEvent` 和 `ToolResultEvent` 是 Event 输入，不是新的执行 Context。它们也可以被
-`agent/tool-call` 和 `agent/tool-result` 复用，避免两套相同的 Session/Run/Call 结构。
+`agent/tool-call` 和 `agent/tool-result` 表达相同载荷时也可以复用这两个类型，避免继续使用重复的
+匿名交叉类型。
 
-### 5.1 执行顺序
+### 3.3 Registry 顺序
+
+本设计调整 core README 当前记录的执行顺序。目标顺序为：
 
 ```text
-Agent Loop
--> registry.execute(call, executionContext)
--> lookup Tool
--> validate arguments
--> tools/pre-execute
--> tools/execute
--> tools/post-execute
--> agent/tool-result
+lookup -> validate -> tools/pre-execute -> tools/execute -> tools/post-execute
 ```
 
-lookup 和参数校验必须在 `tools/pre-execute` 前完成。未知 Tool 或参数无效时直接返回错误，不询问
-Permission。
+未知 Tool 或无效参数不是可以授权的有效操作，因此直接产生错误结果，不进入 Permission。
 
-`tools/pre-execute` 是只读控制点。listener 只能继续或拒绝，调用 `proceed(input)` 时必须传回同一
-input，不能用它改写 Tool Call。实际参数变换不属于 Permission 设计。
+`tools/pre-execute` 是只读决策点。listener 调用 `proceed(input)` 时传递同一个 input，或直接返回
+`PreToolDecision.deny`。Registry 后续使用已经 lookup、校验过的原始 call；pre listener 不能借此
+替换实际执行的 Tool Call。
 
-## 6. Interaction 契约
+## 4. Permission 的策略与回答
 
-`PermissionRequest` 是内部逻辑与外部 adapter 之间必要的结构化契约，不包含 title、message、
-按钮文字或其他 UI 排版。
+Permission 在询问外部之前先计算策略：
+
+| 策略 | 含义 | 行为 |
+| --- | --- | --- |
+| `allow` | 当前操作安全，或已有规则允许 | 继续，不发生 Interaction |
+| `ask` | 没有现成规则可以决定 | 请求 PermissionReply |
+| `deny` | 命中不可覆盖的规则 | 拒绝，不发生 Interaction |
+
+只有 `ask` 会产生回答：
+
+| 回答 | 当前调用 | 规则状态 |
+| --- | --- | --- |
+| `once` | 允许 | 不修改 |
+| `always` | 允许 | 先记录 allow 规则 |
+| `deny` | 拒绝 | 不记录永久 deny |
+
+`allow` 是询问前的策略结论；`once` 和 `always` 是询问后的回答。两组词属于不同阶段。
+
+策略优先级是：
+
+```text
+hard deny > remembered allow > ask
+```
+
+硬性禁止先于已记录授权判断，避免旧授权覆盖后来命中的硬性安全规则。
+
+## 5. Interactions 契约
+
+Interactions 使用 Coding Agent 的领域语义，不暴露 `confirm()`、`select()`、`input()` 等 UI
+操作。建议文件为 `src/coding-agent/interactions.ts`。
 
 ```ts
 type PermissionOperation =
@@ -202,47 +182,73 @@ interface Interactions {
 }
 ```
 
-`request.reason` 解释系统为什么要求授权；`reply.reason` 是用户拒绝时给 Agent/LLM 的反馈。
-UI 可以按 `request.kind` 做不同展示，但不能改变授权范围。
+### 5.1 Request 提供的信息
 
-直接调用由返回的 Promise 关联请求和回答，因此领域契约不需要 `requestId`。RPC、WebSocket 等远程
-adapter 如需 pending map 和 transport request ID，应在 adapter 内部实现，不能迫使进程内调用也
-承担远程传输协议。
+- `sessionId`、`runId` 和 `call.id` 关联当前 Tool Call；
+- `call` 保存 Tool 名称和完整参数，供外部展示调用本身；
+- `kind` 区分危险命令和外部目录两种授权语义；
+- `reason` 说明 Permission 为什么没有直接 allow；
+- 命令请求额外提供 command 和执行 cwd；
+- 目录请求额外提供操作类型、目标路径和 `always` 将授权的目录。
 
-没有可用 adapter 时，默认 `Interactions` 必须返回带原因的 deny，不能自动批准。例如原因可以是
-`Permission request failed: interaction unavailable`。listener 对显式 reason 原样传递；只有 reason
-缺失时才使用 `Permission denied by user`。
+这些字段描述逻辑，不规定标题、正文、按钮文字或排版。adapter 根据自己的界面生成展示。
+Promise 已经关联本次 request 和 reply，因此领域对象不需要 `requestId`。
 
-## 7. Permission 的三层语义
+### 5.2 Reply 的拒绝原因
 
-必须区分策略计算和用户回答。
+`deny.reason` 是外部提供给 Agent/LLM 的反馈。Permission 将非空 reason 原样写入
+`PreToolDecision.deny.reason`；没有 reason 时使用 `Permission denied by user`。
 
-策略计算结果是：
+例如外部返回：
 
-```text
-allow | ask | deny
+```ts
+{
+  kind: "deny",
+  reason: "不要删除这个文件，改为移动到回收站",
+}
 ```
 
-- `allow`：已有规则已经允许，不发生 Interaction；
-- `ask`：没有现成结论，需要外部回答；
-- `deny`：硬性规则直接拒绝，不允许用户覆盖。
-
-Interaction 回答是：
+最终 Tool Result 中的模型可见内容为：
 
 ```text
-once | always | deny
+Error: 不要删除这个文件，改为移动到回收站
 ```
 
-- `once`：只执行当前 Tool Call，不修改规则；
-- `always`：先记录当前请求对应的 allow 规则，再执行当前 Tool Call；
-- `deny`：拒绝当前 Tool Call，不创建永久 deny 规则。
+### 5.3 当前只定义 permission()
 
-因此 `allow` 与 `once`/`always` 不重复：`allow` 是询问前的既有策略结论，后两者是发生询问后的
-用户选择。
+本阶段没有其他确定的主动交互需求，因此不增加 `question()`，也不预先增加通用 UI primitives。
+以后出现新的领域请求时再扩展 Interactions。单向通知继续使用 Event，不进入 Interactions。
 
-## 8. Permission 规则
+没有外部 adapter 时，默认实现返回带有明确原因的 deny：
 
-Permission 保存两类逻辑规则：
+```ts
+{
+  kind: "deny",
+  reason: "Permission request failed: interaction unavailable",
+}
+```
+
+## 6. Permission listener
+
+Permission 是 `tools/pre-execute` 上的 Coding Agent listener。它的分支如下：
+
+```text
+ToolCallEvent
+  ├─ 与 Permission 无关 -> proceed(input)
+  ├─ hard deny          -> deny(rule reason)
+  ├─ remembered allow  -> proceed(input)
+  └─ ask
+       └─ interactions.permission(request, signal)
+            ├─ once   -> proceed(input)
+            ├─ always -> 记录规则，再 proceed(input)
+            └─ deny   -> deny(reply.reason 或默认原因)
+```
+
+Permission listener 只返回 `PreToolDecision`，不执行 Tool。Tool 也不会主动发起 Permission。
+
+## 7. `always` 规则
+
+`always` 需要保存下一次能够匹配的授权范围：
 
 ```ts
 type PermissionRule =
@@ -257,155 +263,137 @@ type PermissionRule =
     };
 ```
 
-`PermissionRule` 是 `always` 真正写入并在后续请求中匹配的状态，不是 UI DTO。
+这是 Permission 的逻辑状态，不是 Interaction reply 或 UI 数据。外部只决定 `always`，具体规则由
+Permission 根据当前 request 生成。
 
-### 8.1 危险命令
+### 7.1 危险命令
 
-危险命令的 remembered allow 使用完整命令文本和执行 cwd 精确匹配。不能按风险类别批准所有
-`rm`，第一版也不引入 Shell pattern 推导。
+命令规则使用完整 command 和执行 cwd 精确匹配。第一版不批准整个风险类别，也不推导 Shell
+pattern。命令文本不做自定义规范化，因为空格、引号和转义可能改变 Shell 语义。文本或 cwd 任一
+不同就重新询问。
 
-Shell 文本不做自定义归一化，因为空格、引号和转义可能改变语义。command 或 cwd 任一不同就重新
-询问。硬性 deny 始终先判断，旧 allow 规则不能覆盖后来命中的硬性禁止规则。
+### 7.2 外部目录
 
-### 8.2 外部目录
+Project directory 是默认可信范围，不是硬边界。Tool 可以访问外部目录；首次访问需要询问，
+`always` 记录规范化后的绝对目录。
 
-Project directory 是默认可信范围，不是不能逃出的硬边界。目标位于 Project directory 外时需要
-Permission；用户选择 `always` 后记录规范化的绝对目录。
+目录规则覆盖该目录和所有后代，对 read、write、edit、glob、execute 生效；不覆盖父目录或兄弟
+目录。包含关系使用平台路径语义判断，不能使用字符串 `startsWith()`。
 
-目录规则允许该目录及其所有后代，对所有内置 Tool 的 read、write、edit、glob、execute 生效；不
-允许其父目录或兄弟目录。路径包含关系必须用平台路径语义判断，不能使用字符串 `startsWith()`。
+路径规范化、符号链接处理、Session cwd 和 Project directory 的来源由 Project/path-policy 阶段
+负责。对于不存在的写入目标，后续实现需要解析最近存在的祖先，避免符号链接绕过已批准目录。
 
-规范化与符号链接处理属于 Project/path-policy 集成，但最终比较对象必须是可信的绝对路径。对于
-尚不存在的写入目标，需要以最近存在的祖先解析实际路径，避免通过符号链接逃逸已批准目录。
+Bash 可以动态构造路径，因此静态分析只能提供尽力检查。Permission listener 不是文件系统
+sandbox；需要强安全边界时应使用 OS 级执行隔离。
 
-Shell 可以动态计算路径，静态命令分析只能提供尽力检查，不能被描述成完整文件系统沙箱。若产品
-需要强安全边界，必须在执行环境增加 OS 级 sandbox；这不属于 Event 或 Permission listener。
+### 7.3 生命周期
 
-### 8.3 规则优先级和生命周期
+当前规则保存在 Permission listener 的内存状态中，生命周期与所在 Coding Agent runtime 相同。
+内存规则写入完成后才继续 `always` 请求，不增加 RuleStore 抽象。
 
-判断顺序固定为：
+持久化属于后续 Project 设计。未来接入持久化后，只有规则保存成功才能执行当前调用；保存失败不能
+静默退化成 `once`。
 
-```text
-hard deny > remembered allow > ask
-```
+## 8. 失败与取消
 
-本阶段规则状态由 Permission listener 持有，生命周期与它所在的 Coding Agent runtime 相同。
-Project 阶段再决定 durable storage；持久化位置不能反向改变本文的 request、reply 或 Event 契约。
-当前内存规则写入是同步操作，不增加 RuleStore 抽象。未来接入持久化后，只有规则保存成功才能把
-`always` 当作批准；保存失败必须拒绝当前执行，不能静默退化成 `once`。
+- hard deny 使用安全规则的 reason；
+- 用户 deny 使用用户 reason，没有时使用默认拒绝原因；
+- Interaction 不存在、断开、抛错或返回无效 reply 时关闭式失败；
+- Run signal 已取消时传播取消，不报告成用户拒绝；
+- `always` 必须先更新规则状态，再允许 Tool 执行。
 
-## 9. Permission listener 数据流
+系统规则、用户反馈和交互故障使用不同错误文本，使 LLM 能够正确判断下一步。任何技术故障都不能
+使受保护操作绕过 Permission。
 
-Permission 注册为 `tools/pre-execute` listener。Tool 不调用它，也不知道它存在。
+## 9. 模块边界
 
-```text
-收到 ToolCallEvent
-│
-├─ 与 Permission 无关
-│  └─ proceed(input)
-│
-├─ 命中 hard deny
-│  └─ PreToolDecision.deny(rule reason)
-│
-├─ 命中 remembered allow
-│  └─ proceed(input)
-│
-└─ ask
-   └─ interactions.permission(request, signal)
-      ├─ once
-      │  └─ proceed(input)
-      ├─ always
-      │  ├─ save allow rule
-      │  └─ proceed(input)
-      └─ deny
-         └─ PreToolDecision.deny(user reason or default)
-```
+| 模块 | 本设计中的职责 |
+| --- | --- |
+| Tool | 根据已校验参数执行操作并返回结果 |
+| Registry | 按顺序执行 Tool Event，并落实 PreToolDecision |
+| Events | 分发 Tool 执行控制点和事实 |
+| Permission | 计算策略、维护授权规则、调用 Interactions |
+| Interactions | 定义内部主动向外部请求回答的端口 |
+| 外部 adapter | 展示 PermissionRequest 并返回 PermissionReply |
 
-这条链只有一个 Event 截断点和一次普通 Interaction 调用，不产生嵌套 Event。
+未来插件可以注册 AgentTool 和配套的 `tools/pre-execute` listener，并使用相同 Interaction 边界。
+本次只保证这个扩展方向，不设计插件加载、生命周期或 Extension Context。MCP、subagent 等能力留到
+插件需求形成后统一设计。
 
-`PreToolDecision.deny.reason` 最终进入错误 `AgentToolResult`，成为 LLM 可见反馈：
+## 10. Todo 展示
 
-```text
-Error: sudo is not allowed
-Error: 不要删除这个文件
-Error: Permission request failed: interaction unavailable
-```
+`todo_write` 不需要新的 Event 或 Interaction。完整 Todo 状态位于
+`AgentToolResult.details.todos`，`agent/tool-result` 已携带 Session、Run、Call 和 Result。UI
+可以根据 Tool 名称和结构化 details 特殊展示。
 
-## 10. 失败和取消
+展示形式特殊不表示逻辑流特殊。只有 Todo 将来成为可被 Tool 之外的 API 修改、查询的独立状态时，
+才增加 Todo service/event。
 
-- Run signal 已取消：传播取消，不伪装成用户拒绝；
-- Interaction 不存在、断开或抛错：关闭式失败，拒绝 Tool；
-- adapter 返回无效 Reply：按 Interaction 错误处理并拒绝；
-- 当前内存 `always` 先写入规则再继续；未来持久化保存失败时拒绝当前执行，不能静默退化成
-  `once`；
-- 用户 deny 且带 reason：将 reason 返回给 LLM；
-- 用户 deny 未带 reason：使用 `Permission denied by user`；
-- hard deny：不调用 Interactions。
+## 11. 当前阶段与 Project 阶段
 
-listener 或 adapter 的技术错误不能让 Tool 绕过 Permission。错误文本应区分系统规则、用户拒绝和
-交互故障，避免向 LLM 提供错误归因。
+当前 Event/Interaction 阶段负责：
 
-## 11. UI 与特殊 Tool 展示
+- 调整三个 Tool Event 的输入；
+- 调整 Registry 的 lookup、validate 和三个拦截阶段顺序；
+- 定义 UI 无关的 `Interactions.permission()`；
+- 让 Permission 的策略判断、规则状态以及 Interaction/`PreToolDecision` 映射脱离 UI，并能用显式
+  环境数据独立测试；
+- 保持 Tool 不感知 Permission。
 
-UI adapter 实现 `Interactions.permission()`，可以用终端选择框、网页按钮、桌面弹窗或远程 RPC
-取得相同的 `PermissionReply`。这些实现细节不进入 Coding Agent 逻辑契约。
+后续 Project 阶段负责：
 
-`todo_write` 不需要特殊 Event 或 Interaction。它的完整状态已经位于
-`AgentToolResult.details.todos`，`agent/tool-result` 同时携带 Session、Run、Call 和 Result。UI
-可以按 Tool 名称读取结构化 details 做特殊展示；特殊呈现不等于特殊逻辑流。只有当 Todo 将来成为
-可被 Tool 之外的 API 修改和查询的独立领域状态时，才增加专门的 Todo service/event。
+- 按 sessionId 提供实际 cwd 和 Project trusted directories；
+- 构造和判断 external-directory request；
+- 决定 command/directory rule 的持久化方式；
+- 用 Permission 替代 Project 当前对外部 cwd 的硬性拒绝。
 
-## 12. 未来插件边界
+危险命令 request 和 command rule 需要 Session cwd；外部目录判断还需要 Project trusted
+directories。在 Project 提供这些数据前，当前阶段不伪造缺失值，也不把 cwd 或 trusted
+directories 加入通用 core Tool Event。按 Session 构造 PermissionRequest 和注册完整 runtime
+listener 的装配在 Project 阶段完成，Project 接入不改变 Tool API 或本文的 Interaction 契约。
 
-本次不设计插件系统，但边界允许未来插件：
+## 12. 验证要求
 
-1. 注册新的 `AgentTool`；
-2. 注册识别该 Tool Call 的 `tools/pre-execute` listener；
-3. listener 在需要外部回答时使用语义化 Interaction；
-4. 注册独立的 Tool Result renderer。
+### Tool Events
 
-内置 Tool 和未来插件 Tool 使用同一 Registry/Event 契约。当前不增加万能 Context 或 service
-locator；等插件生命周期、命令、MCP、subagent 等共同需求明确后，再设计 Extension Context。
+- pre、execute、post 都收到正确的 sessionId、runId 和 call；
+- post 额外收到 result；
+- unknown Tool 和无效参数不触发 pre/Permission；
+- pre deny 跳过 execute/post，并产生一个错误 Tool Result；
+- listener 收到当前 Run signal；
+- pre listener 不能改变最终执行的 Tool Call。
 
-## 13. 测试要求
+### Permission 与 Interactions
 
-### 13.1 Tool Events
-
-- 三个 Tool Event 都携带正确的 sessionId、runId 和 call；
-- post-execute 额外携带 result；
-- unknown Tool 和参数校验失败不会触发 Permission；
-- pre-execute deny 跳过 execute/post-execute 并生成唯一错误结果；
-- listener 收到 Run signal。
-
-### 13.2 Permission
-
-- ordinary call 直接 proceed；
-- hard deny 不调用 Interactions；
-- ask + once 执行但不记录规则；
-- ask + always 先记录规则再执行；
-- remembered allow 不再次询问；
+- ordinary call 直接继续；
+- hard deny 不调用 Interaction；
+- once 执行但不记录规则；
+- always 先记录规则再执行，后续匹配不重复询问；
 - hard deny 覆盖 remembered allow；
-- deny reason 进入最终 Tool Result；
-- 无 reason 时使用默认反馈；
-- Interaction 故障和无效 Reply 均关闭式失败；
-- abort 不被报告为用户拒绝。
+- deny reason 原样进入 Tool Result，无 reason 时使用默认反馈；
+- Interaction 故障和无效 reply 关闭式失败；
+- abort 不报告成用户拒绝。
 
-### 13.3 规则匹配
+### 规则
 
-- command 只有文本和 cwd 都相同时命中；
-- directory 命中自身与后代，不命中相似前缀、父目录或兄弟目录；
-- Windows 大小写和分隔符行为遵循所选路径规范化实现；
-- 外部目录的 read、write、edit、glob、execute 使用同一 remembered directory rule。
+- command 只有文本和 cwd 都相同时匹配；
+- directory 匹配自身和后代，不匹配相似前缀、父目录或兄弟目录；
+- 平台大小写和分隔符行为由统一路径规范化实现决定；
+- remembered directory 对五种文件/执行操作使用同一规则。
 
-## 14. 完成标准
+## 13. 参考产品
 
-设计落地后应满足：
+Pi 的 `ExtensionContext` 直接提供 `ui`、cwd、Session 等能力；permission-gate 示例在
+`tool_call` handler 中调用 `ctx.ui.select()`。这种设计便于 extension 直接完成交互。Kea 的 Tool
+和 Permission 不接收 UI 能力，外部交互统一经过领域化 Interactions。
 
-1. `src/coding-agent/tools/` 不导入 Events、Permission、Interactions 或 UI；
-2. core Tool Event 具有可关联的 Run 身份，但不包含 Project/UI 数据；
-3. Coding Agent 通过 `Interactions.permission()` 主动索取回答；
-4. Permission 只通过 `tools/pre-execute` 控制 Tool 执行；
-5. 没有 `permission/request` 嵌套 Event；
-6. 没有 `CodingAgentInteractions`、通用 confirm/select/input 或 notify 契约；
-7. once、always、deny 及拒绝反馈语义有测试覆盖；
-8. Project 改造可以在不改变 Event/Interaction 契约的前提下接入 cwd、可信目录和规则持久化。
+OpenCode 的 Tool Context 提供 `ask()`，Permission service 使用 pending request、asked/replied
+事件和 reply API 支持远程调用。Kea 不让 Tool 发起 Permission；当前 Interaction 又使用直接
+Promise，因此 pending 协议留给需要它的远程 adapter。
+
+参考源码：
+
+- <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts>
+- <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/permission-gate.ts>
+- <https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/tool.ts>
+- <https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/permission/index.ts>
