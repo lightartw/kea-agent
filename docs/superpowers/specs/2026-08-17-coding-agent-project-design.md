@@ -384,8 +384,9 @@ Project 基础代码集中在 `src/coding-agent/project/`：
 project/
 ├── project.ts   # ProjectInfo 与 Project 运行类
 ├── storage.ts   # ProjectStorage、私有磁盘格式与路径规则
-└── open.ts      # Project directory 解析与 openOrCreateProject
+└── factory.ts   # Project directory 解析与 openOrCreateProject 工厂函数
 ```
 
-不增加通用 `types.ts`、factory、manager 或 repository。具体 Tools 和 coding Events 仍由后续设计决定，
-不进入 ProjectStorage。
+不增加通用 `types.ts`、Factory 类、manager、repository 或第二套构造抽象。`factory.ts` 只集中放置
+`openOrCreateProject()` 及其私有目录发现逻辑。具体 Tools 和 coding Events 仍由后续设计决定，不进入
+ProjectStorage。

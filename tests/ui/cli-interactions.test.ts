@@ -4,7 +4,7 @@ import test from "node:test";
 import type { Interface } from "node:readline/promises";
 
 import { CliInteractions } from "../../src/ui/cli-interactions.js";
-import type { ConfirmationRequest } from "../../src/coding-agent/index.js";
+import type { PermissionRequest } from "../../src/coding-agent/index.js";
 
 type QuestionFn = (
   query: string,
@@ -21,10 +21,31 @@ class FakeInput extends EventEmitter {
   }
 }
 
-const confirmation: ConfirmationRequest = {
-  source: "permission",
-  title: "Allow Bash command?",
-  message: "file deletion requires approval\nTool: bash({\"command\":\"rm file.txt\"})",
+const call = {
+  type: "toolCall",
+  id: "c1",
+  name: "bash",
+  arguments: {},
+} as const;
+
+const dangerousRequest: PermissionRequest = {
+  kind: "dangerous-command",
+  sessionId: "session-1",
+  runId: "run-1",
+  call,
+  command: "rm file.txt",
+  cwd: "/work/project",
+  reason: "file deletion requires approval",
+};
+
+const externalRequest: PermissionRequest = {
+  kind: "external-directory",
+  sessionId: "session-1",
+  runId: "run-1",
+  call,
+  targetPath: "/outside/target",
+  directory: "/work/project",
+  reason: "outside the project directory",
 };
 
 function fakeReadline(question: QuestionFn): Interface {
@@ -51,31 +72,25 @@ function interactionsWithAnswer(answer: string): CliInteractions {
   return interactionsWithQuestion(async () => answer);
 }
 
-function interactionsWithLogs(logs: string[]): CliInteractions {
-  return interactionsWithQuestion(
-    async () => "",
-    new FakeInput(),
-    (text) => logs.push(text),
-  );
-}
+// ── Permission tests ──
 
-// ── Confirmation tests ──
-
-test("confirm accepts only y or yes and defaults to deny", async () => {
+test("permission maps answers to replies and defaults to deny", async () => {
   for (const [answer, expected] of [
-    ["y", true],
-    ["YES", true],
-    ["", false],
-    ["n", false],
-    ["anything", false],
+    ["y", { kind: "once" }],
+    ["YES", { kind: "once" }],
+    ["a", { kind: "always" }],
+    ["always", { kind: "always" }],
+    ["", { kind: "deny" }],
+    ["n", { kind: "deny" }],
+    ["anything", { kind: "deny" }],
   ] as const) {
     const interactions = interactionsWithAnswer(answer);
-    assert.equal(await interactions.confirm(confirmation), expected);
+    assert.deepEqual(await interactions.permission(dangerousRequest), expected);
     interactions.close();
   }
 });
 
-test("confirm forwards AbortSignal to readline and returns false when aborted", async () => {
+test("permission forwards AbortSignal to readline and denies when aborted", async () => {
   const controller = new AbortController();
   const seen: AbortSignal[] = [];
   const interactions = interactionsWithQuestion(async (_prompt, options) => {
@@ -85,12 +100,15 @@ test("confirm forwards AbortSignal to readline and returns false when aborted", 
     throw Object.assign(new Error("aborted"), { name: "AbortError" });
   });
 
-  assert.equal(await interactions.confirm(confirmation, controller.signal), false);
+  assert.deepEqual(
+    await interactions.permission(dangerousRequest, controller.signal),
+    { kind: "deny" },
+  );
   assert.equal(seen.length, 1);
   interactions.close();
 });
 
-test("ESC cancels confirmation instead of invoking the run abort listener", async () => {
+test("ESC cancels permission instead of invoking the run abort listener", async () => {
   const input = new FakeInput();
   const interactions = interactionsWithQuestion((_prompt, options) =>
     new Promise<string>((_resolve, reject) => {
@@ -100,20 +118,23 @@ test("ESC cancels confirmation instead of invoking the run abort listener", asyn
       input.emit("data", Buffer.from([0x1b]));
     }), input);
 
-  assert.equal(await interactions.confirm(confirmation), false);
+  assert.deepEqual(await interactions.permission(dangerousRequest), { kind: "deny" });
   interactions.close();
 });
 
-// ── Notification tests ──
-
-test("notify renders the supplied message", () => {
-  const logs: string[] = [];
-  const interactions = interactionsWithLogs(logs);
-  interactions.notify({
-    source: "summary",
-    level: "info",
-    message: "[HOOK] Stop: session used 2 tool calls",
+test("permission prompt shows the command or the external target", async () => {
+  const queries: string[] = [];
+  const interactions = interactionsWithQuestion(async (query) => {
+    queries.push(query);
+    return "";
   });
-  assert.deepEqual(logs, ["[HOOK] Stop: session used 2 tool calls"]);
+
+  await interactions.permission(dangerousRequest);
+  await interactions.permission(externalRequest);
+
+  assert.match(queries[0] ?? "", /file deletion requires approval/);
+  assert.match(queries[0] ?? "", /rm file\.txt/);
+  assert.match(queries[1] ?? "", /outside the project directory/);
+  assert.match(queries[1] ?? "", /\/outside\/target/);
   interactions.close();
 });

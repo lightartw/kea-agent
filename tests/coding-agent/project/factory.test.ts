@@ -2,20 +2,24 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join, parse, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
 import type { AssistantMessage, ModelConfig } from "../../../src/core/ai/types.js";
-import {
-  openOrCreateProject,
-  setGitToplevelExecutorForTests,
-} from "../../../src/coding-agent/project/open.js";
+import { openOrCreateProject } from "../../../src/coding-agent/factory.js";
+import type { Interactions } from "../../../src/coding-agent/interaction/interactions.js";
 import { runtimeFromStream, type TestStream } from "../../fixtures/model-runtime.js";
 
 const execFileAsync = promisify(execFile);
 
 const modelConfig: ModelConfig = { provider: "test", model: "model-a" };
+
+const testInteractions: Interactions = {
+  async permission() {
+    return { kind: "deny" };
+  },
+};
 
 const assistant: AssistantMessage = {
   role: "assistant",
@@ -65,7 +69,12 @@ async function persistDocument(
 test("omitted cwd uses process.cwd()", async () => {
   const keaHome = await tempDir();
   try {
-    const project = await openOrCreateProject({ keaHome, runtime: runtimeFromStream(simpleStream), modelConfig });
+    const project = await openOrCreateProject({
+      keaHome,
+      runtime: runtimeFromStream(simpleStream),
+      modelConfig,
+      interactions: testInteractions,
+    });
     const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
       cwd: process.cwd(),
     });
@@ -84,12 +93,31 @@ test("a non-Git cwd becomes the canonical Project directory", async () => {
       cwd: dir,
       runtime: runtimeFromStream(simpleStream),
       modelConfig,
+      interactions: testInteractions,
     });
     assert.equal(project.info.directory, resolve(dir));
     assert.equal(project.info.name, basename(dir));
   } finally {
     await rm(keaHome, { recursive: true, force: true });
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a filesystem root gets a non-empty Project name", async () => {
+  const keaHome = await tempDir();
+  try {
+    const root = parse(process.cwd()).root;
+    const project = await openOrCreateProject({
+      keaHome,
+      cwd: root,
+      runtime: runtimeFromStream(simpleStream),
+      modelConfig,
+      interactions: testInteractions,
+    });
+    assert.equal(project.info.directory, resolve(root));
+    assert.notEqual(project.info.name, "");
+  } finally {
+    await rm(keaHome, { recursive: true, force: true });
   }
 });
 
@@ -107,6 +135,7 @@ test("a cwd below a Git work-tree resolves to the work-tree root while the Sessi
       cwd: sub,
       runtime: runtimeFromStream(recordingStream(prompts)),
       modelConfig,
+      interactions: testInteractions,
     });
     assert.equal(project.info.directory, resolve(repo));
 
@@ -132,12 +161,14 @@ test("two startups in the same Git work-tree reuse one stable Project ID", async
       cwd: repo,
       runtime: runtimeFromStream(simpleStream),
       modelConfig,
+      interactions: testInteractions,
     });
     const second = await openOrCreateProject({
       keaHome,
       cwd: sub,
       runtime: runtimeFromStream(simpleStream),
       modelConfig,
+      interactions: testInteractions,
     });
     assert.equal(second.info.id, first.info.id);
     assert.equal(second.info.directory, resolve(repo));
@@ -159,12 +190,14 @@ test("the same non-Git cwd reuses one Project ID while parent and child cwds sta
       cwd: parent,
       runtime: runtimeFromStream(simpleStream),
       modelConfig,
+      interactions: testInteractions,
     });
     const second = await openOrCreateProject({
       keaHome,
       cwd: parent,
       runtime: runtimeFromStream(simpleStream),
       modelConfig,
+      interactions: testInteractions,
     });
     assert.equal(second.info.id, first.info.id);
 
@@ -173,6 +206,7 @@ test("the same non-Git cwd reuses one Project ID while parent and child cwds sta
       cwd: child,
       runtime: runtimeFromStream(simpleStream),
       modelConfig,
+      interactions: testInteractions,
     });
     assert.notEqual(childProject.info.id, first.info.id);
     assert.equal(childProject.info.directory, resolve(child));
@@ -191,6 +225,7 @@ test("first open persists Project data and constructs the SessionRepository belo
       cwd: dir,
       runtime: runtimeFromStream(simpleStream),
       modelConfig,
+      interactions: testInteractions,
     });
     const projectId = project.info.id;
     const projectDirOnDisk = join(keaHome, "projects", projectId);
@@ -222,6 +257,7 @@ test("every startup followed by createHarness creates a new Session ID even with
       cwd: dir,
       runtime: runtimeFromStream(simpleStream),
       modelConfig,
+      interactions: testInteractions,
     });
     const firstHarness = await first.createHarness({ cwd: dir });
 
@@ -230,6 +266,7 @@ test("every startup followed by createHarness creates a new Session ID even with
       cwd: dir,
       runtime: runtimeFromStream(simpleStream),
       modelConfig,
+      interactions: testInteractions,
     });
     const secondHarness = await second.createHarness({ cwd: dir });
     assert.notEqual(secondHarness.sessionId, firstHarness.sessionId);
@@ -250,6 +287,7 @@ test("missing cwd and cwd that is a file reject", async () => {
         cwd: join(dir, "missing"),
         runtime: runtimeFromStream(simpleStream),
         modelConfig,
+        interactions: testInteractions,
       }),
       /does not exist/i,
     );
@@ -261,6 +299,7 @@ test("missing cwd and cwd that is a file reject", async () => {
         cwd: file,
         runtime: runtimeFromStream(simpleStream),
         modelConfig,
+        interactions: testInteractions,
       }),
       /is not a directory/i,
     );
@@ -270,33 +309,56 @@ test("missing cwd and cwd that is a file reject", async () => {
   }
 });
 
-test("an explicit not-a-repository result falls back to cwd while other Git failures reject", async () => {
+test("a Git process launch failure rejects instead of treating cwd as non-Git", async () => {
   const keaHome = await tempDir();
   const dir = await tempDir();
+  const originalPath = process.env["PATH"];
   try {
-    setGitToplevelExecutorForTests(async () => ({ kind: "not_a_repository" }));
-    const project = await openOrCreateProject({
-      keaHome,
-      cwd: dir,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-    });
-    assert.equal(project.info.directory, resolve(dir));
-
-    setGitToplevelExecutorForTests(async () => {
-      throw new Error("git is not installed");
-    });
+    process.env["PATH"] = "";
     await assert.rejects(
       openOrCreateProject({
         keaHome,
         cwd: dir,
         runtime: runtimeFromStream(simpleStream),
         modelConfig,
+        interactions: testInteractions,
       }),
-      /git is not installed/,
+      /Unable to determine the Git work-tree root/,
     );
   } finally {
-    setGitToplevelExecutorForTests(null);
+    if (originalPath === undefined) delete process.env["PATH"];
+    else process.env["PATH"] = originalPath;
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Git error other than not-a-repository rejects with context", async () => {
+  const keaHome = await tempDir();
+  const dir = await tempDir();
+  const invalidConfig = join(dir, "invalid.gitconfig");
+  const originalGlobalConfig = process.env["GIT_CONFIG_GLOBAL"];
+  const originalNoSystem = process.env["GIT_CONFIG_NOSYSTEM"];
+  try {
+    await writeFile(invalidConfig, "[invalid\n");
+    process.env["GIT_CONFIG_GLOBAL"] = invalidConfig;
+    process.env["GIT_CONFIG_NOSYSTEM"] = "1";
+
+    await assert.rejects(
+      openOrCreateProject({
+        keaHome,
+        cwd: dir,
+        runtime: runtimeFromStream(simpleStream),
+        modelConfig,
+        interactions: testInteractions,
+      }),
+      /Unable to determine the Git work-tree root/,
+    );
+  } finally {
+    if (originalGlobalConfig === undefined) delete process.env["GIT_CONFIG_GLOBAL"];
+    else process.env["GIT_CONFIG_GLOBAL"] = originalGlobalConfig;
+    if (originalNoSystem === undefined) delete process.env["GIT_CONFIG_NOSYSTEM"];
+    else process.env["GIT_CONFIG_NOSYSTEM"] = originalNoSystem;
     await rm(keaHome, { recursive: true, force: true });
     await rm(dir, { recursive: true, force: true });
   }
@@ -318,6 +380,7 @@ test("corrupt, unsupported, unreadable, and duplicate records reject without cre
           cwd: dir,
           runtime: runtimeFromStream(simpleStream),
           modelConfig,
+          interactions: testInteractions,
         }),
         /invalid JSON/i,
       );
@@ -343,6 +406,7 @@ test("corrupt, unsupported, unreadable, and duplicate records reject without cre
           cwd: dir,
           runtime: runtimeFromStream(simpleStream),
           modelConfig,
+          interactions: testInteractions,
         }),
         /version/i,
       );
@@ -361,6 +425,7 @@ test("corrupt, unsupported, unreadable, and duplicate records reject without cre
           cwd: dir,
           runtime: runtimeFromStream(simpleStream),
           modelConfig,
+          interactions: testInteractions,
         }),
         /read/i,
       );
@@ -388,6 +453,7 @@ test("corrupt, unsupported, unreadable, and duplicate records reject without cre
           cwd: dir,
           runtime: runtimeFromStream(simpleStream),
           modelConfig,
+          interactions: testInteractions,
         }),
         /more than one/i,
       );

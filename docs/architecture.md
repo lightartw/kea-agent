@@ -81,8 +81,8 @@ emit listener 只有一个输入参数并返回 `void`；intercept listener 有 
 
 ## 3. Agent：Tool 循环与事件控制
 
-`src/core/agent/` 用 `runAgentLoop()` 执行一次多 Turn Agent Run。它接收消息、`AgentToolRegistry`、
-模型、`StreamFn` 和共享 `Events`，并产生 `Promise<void>`。
+`src/core/agent/` 用 `runAgentLoop()` 执行一次多 Turn Agent Run。它接收用户输入、
+`AgentContext`、`AgentLoopConfig` 与 `StreamFn`，并产生 `Promise<void>`。
 
 ```ts
 function runAgentLoop(
@@ -90,23 +90,25 @@ function runAgentLoop(
   context: AgentContext,
   config: AgentLoopConfig,
   streamFn: StreamFn,
-  signal?: AbortSignal,
 ): Promise<void>;
 
 interface AgentContext {
+  readonly sessionId: string;
+  readonly runId: string;
   readonly systemPrompt: string;
   readonly messages: readonly AgentMessage[];
   readonly tools: AgentToolRegistry;
+  readonly events: Events;
+  readonly signal?: AbortSignal;
   appendMessage(message: AgentMessage): Promise<void>;
 }
 
 interface AgentLoopConfig {
   readonly model: ModelConfig;
+  readonly maxTurns?: number;
   readonly convertToLlm: (
     messages: readonly AgentMessage[],
   ) => readonly Message[];
-  readonly events: Events;
-  readonly run: AgentRunIdentity;
 }
 ```
 
@@ -129,11 +131,12 @@ Agent 同时声明 `emit` 事实事件：`agent/turn-start`、`agent/turn-end`�
 `agent/tool-call-delta`、`agent/tool-call`、`agent/tool-result`。完整消息先经
 `context.appendMessage()` 提交，再发布对应完成事实。
 
-每个 Tool Call 在 `AgentToolRegistry.execute()` 内经过三个拦截阶段，由
-`src/core/agent/tools/events.ts` 声明：`tools/pre-execute`、`tools/execute`、`tools/post-execute`。
-pre-execute 返回 `allow` 或可选原因的 `deny`；Registry 把拒绝统一转换成错误结果。execute 运行
-Tool 本体；post-execute 在结果写入 Session 前修改它。未知、无效、被阻止、已中止或失败的调用都会以恰好一个
-`agent/tool-result` 结束。
+每个 Tool Call 在 `AgentToolRegistry.execute()` 内先做 lookup 和 TypeBox 校验，再经过三个拦截
+阶段，由 `src/core/agent/tools/events.ts` 声明：`tools/pre-execute`、`tools/execute`、
+`tools/post-execute`。pre-execute 接收 `ToolCallEvent` 并返回 `allow` 或可选原因的 `deny`；它是
+只读决策点，listener 不能替换实际执行的 Tool Call。Registry 把拒绝统一转换成错误结果。execute
+接收 `ToolCallEvent` 并运行 Tool 本体；post-execute 接收 `ToolResultEvent`，在结果写入 Session
+前修改它。未知、无效、被阻止、已中止或失败的调用都会以恰好一个 `agent/tool-result` 结束。
 
 ### Tool 边界
 
@@ -259,9 +262,10 @@ listener 注册，由 `sessionId` 区分；它们依然拥有独立的可变 Too
 ### 默认 Coding 能力
 
 Coding Agent 提供 coding system prompt，以及 Bash、read、write、edit、Glob 和无状态 Todo。
-Bash permission 策略分为 allow、ask、deny；ask 通过 `CodingAgentInteractions.confirm()` 请求
-具体 UI，deny 同时由 Permission listener 和 Bash Tool 防守。未提供 interactions 时，
-`NO_INTERACTIONS` 默认拒绝确认请求。
+Bash permission 策略分为 allow、ask、deny；ask 通过 `Interactions.permission()` 端口请求外部
+回答（once / always / deny），deny 由 Permission listener 在 `tools/pre-execute` 上直接拒绝。
+未提供 interactions 时，`NO_INTERACTIONS` 总是返回带 `Permission request failed: interaction
+unavailable` 原因的 deny。
 
 Todo 每次接收完整列表，同时返回模型可见的 `content` 和结构化的 `details.todos`。Harness 将
 Tool Result 写入 Session，因此恢复状态属于 Session，而不是 Todo Tool 实例。

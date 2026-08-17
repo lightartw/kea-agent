@@ -1,7 +1,7 @@
 import { createInterface, type Interface } from "node:readline/promises";
 
 import type {
-  CodingAgentInteractions,
+  Interactions,
   Project,
 } from "../coding-agent/index.js";
 import type { AgentHarness } from "../core/harness/index.js";
@@ -39,7 +39,7 @@ export class CliFrontend {
   }
 
   /** The interaction adapter, available for factory injection. */
-  get interactions(): CodingAgentInteractions {
+  get interactions(): Interactions {
     return this.cliInteractions;
   }
 
@@ -47,7 +47,6 @@ export class CliFrontend {
   async run(project: Project, harness: AgentHarness): Promise<void> {
     const renderer = new CliHarnessRenderer(
       { write: this.writeFn, log: this.logFn },
-      (input) => project.renderTool(input),
     );
     const unsubscribe = renderer.bind(project.events, harness.sessionId);
 

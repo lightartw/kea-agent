@@ -4,7 +4,7 @@
 
 **Goal:** Delete the legacy Project implementation first, then rebuild only `src/coding-agent/project/` from the approved single-directory Project and ProjectStorage design.
 
-**Architecture:** The rebuilt folder contains `project.ts` for `ProjectInfo` and the runtime `Project`, `storage.ts` for the concrete JSON `ProjectStorage`, and `open.ts` for cwd/Git resolution plus `openOrCreateProject()`. This plan deliberately does not adapt the coding-agent factory, exports, Tools, Events, Permission, CLI, main, README, or their tests; the wider coding-agent may remain uncompilable until later design stages.
+**Architecture:** The rebuilt folder contains `project.ts` for `ProjectInfo` and the runtime `Project`, `storage.ts` for the concrete JSON `ProjectStorage`, and `factory.ts` for cwd/Git resolution plus the `openOrCreateProject()` factory function. This plan deliberately does not adapt the outer coding-agent factory, exports, Tools, Events, Permission, CLI, main, README, or their tests; the wider coding-agent may remain uncompilable until later design stages.
 
 **Tech Stack:** Node.js 24, TypeScript 7 with NodeNext ESM, `node:test`, JSON Project files, and the existing Core `SessionRepository`, `AgentHarness`, `Events`, `AgentToolRegistry`, `ModelRuntime`, and `ModelConfig`.
 
@@ -19,7 +19,7 @@
 - Verify the rebuilt Project in isolation by compiling only its dependency graph and its tests.
 - A normalized absolute Project directory is the sole Project identity within one `keaHome`.
 - `cwd` is the startup directory. Git discovery may derive a different Project directory; callers cannot supply a Project directory override.
-- Keep one concrete internal `ProjectStorage`. Do not add a Storage interface, `JsonProjectStorage`, ProjectRepository, ProjectManager, factory, generic Project config type, or alternate backend.
+- Keep one concrete internal `ProjectStorage`. Do not add a Storage interface, `JsonProjectStorage`, ProjectRepository, ProjectManager, Factory class, second construction abstraction, generic Project config type, or alternate backend.
 - `ProjectStorage` owns only Project persistence. It does not resolve cwd/Git, generate `ProjectInfo`, construct `Project`, or access Session files.
 - `Project` owns runtime behavior and does not retain `ProjectStorage` or `keaHome`. It has no update, save, delete, `continueRecent`, `createSession`, or `openSession` operation.
 - `createHarness()` always creates a new Session. Only `createHarnessFromSession(id)` restores history explicitly.
@@ -34,7 +34,7 @@ Run these commands from the repository root after all three source files exist:
 
 ```powershell
 npm run clean
-npx tsc --outDir dist --rootDir . --target ES2024 --module NodeNext --moduleResolution NodeNext --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --useUnknownInCatchVariables --verbatimModuleSyntax --skipLibCheck --types node src/coding-agent/project/project.ts src/coding-agent/project/storage.ts src/coding-agent/project/open.ts tests/coding-agent/project/project.test.ts tests/coding-agent/project/storage.test.ts tests/coding-agent/project/open.test.ts tests/fixtures/model-runtime.ts
+npx tsc --ignoreConfig --outDir dist --rootDir . --target ES2024 --module NodeNext --moduleResolution NodeNext --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --useUnknownInCatchVariables --verbatimModuleSyntax --skipLibCheck --types node src/coding-agent/project/project.ts src/coding-agent/project/storage.ts src/coding-agent/project/factory.ts tests/coding-agent/project/project.test.ts tests/coding-agent/project/storage.test.ts tests/coding-agent/project/factory.test.ts tests/fixtures/model-runtime.ts
 node --test "dist/tests/coding-agent/project/*.test.js"
 ```
 
@@ -258,12 +258,12 @@ git add src/coding-agent/project/project.ts tests/coding-agent/project/project.t
 git commit -m "feat: add runtime project"
 ```
 
-### Task 4: Rebuild Project discovery and opening
+### Task 4: Rebuild the Project factory
 
 **Files:**
 
-- Create: `src/coding-agent/project/open.ts`
-- Create: `tests/coding-agent/project/open.test.ts`
+- Create: `src/coding-agent/project/factory.ts`
+- Create: `tests/coding-agent/project/factory.test.ts`
 
 - [ ] **Step 1: Write openOrCreateProject tests first**
 
@@ -280,17 +280,17 @@ Exercise the public function through real temporary directories, a temporary `ke
 9. an explicit Git “not a repository” result falls back to cwd, while inability to launch Git or another Git error rejects;
 10. corrupt, unsupported, unreadable, or duplicate Project records reject without creating another Project.
 
-For the Git process failure cases, keep process execution behind a file-local function whose injected executor is available only to tests in `open.test.ts`; do not introduce a public Git service, resolver interface, or manager.
+For the Git process failure cases, exercise the real Git process boundary with test-scoped environment changes. Do not introduce a public test setter, Git service, resolver interface, or manager.
 
 - [ ] **Step 2: Compile the failing open tests**
 
 Run the complete isolated TypeScript command from “Isolated verification”.
 
-Expected: compilation fails because `open.ts` and `openOrCreateProject()` have not been implemented.
+Expected: compilation fails because `factory.ts` and `openOrCreateProject()` have not been implemented.
 
 - [ ] **Step 3: Implement cwd/Git resolution and openOrCreateProject**
 
-Implement only this public entry in `open.ts`:
+Implement only this public entry in `factory.ts`:
 
 ```ts
 export function openOrCreateProject(options: {
@@ -336,21 +336,21 @@ git diff --check
 Expected: the forbidden-concept search returns no matches; the file list contains exactly these six files:
 
 ```text
-src/coding-agent/project/open.ts
+src/coding-agent/project/factory.ts
 src/coding-agent/project/project.ts
 src/coding-agent/project/storage.ts
-tests/coding-agent/project/open.test.ts
+tests/coding-agent/project/factory.test.ts
 tests/coding-agent/project/project.test.ts
 tests/coding-agent/project/storage.test.ts
 ```
 
 Do not run the full repository build or repair failures outside this list.
 
-- [ ] **Step 6: Commit Project opening**
+- [ ] **Step 6: Commit the Project factory**
 
 ```powershell
-git add src/coding-agent/project/open.ts tests/coding-agent/project/open.test.ts
-git commit -m "feat: open projects from cwd"
+git add src/coding-agent/project/factory.ts tests/coding-agent/project/factory.test.ts
+git commit -m "feat: add project factory"
 ```
 
 ## Completion criteria

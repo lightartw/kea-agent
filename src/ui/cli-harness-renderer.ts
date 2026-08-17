@@ -1,30 +1,21 @@
 import type { Events } from "../core/events/events.js";
-import type { ToolPresentationInput } from "../coding-agent/ui/presentation.js";
 
 const LARGE_OUTPUT_THRESHOLD = 100_000;
+const ARGUMENTS_PREVIEW_LENGTH = 200;
+const RESULT_PREVIEW_LENGTH = 2_000;
 
 export interface CliRenderTarget {
   readonly write: (text: string) => void;
   readonly log: (text: string) => void;
 }
 
+/** Renders one Harness's events to a terminal-style target. */
 export class CliHarnessRenderer {
-  constructor(
-    private readonly target: CliRenderTarget,
-    private readonly renderToolEvent: (event: ToolPresentationInput) => string,
-  ) {}
+  constructor(private readonly target: CliRenderTarget) {}
 
   bind(events: Events, sessionId: string): () => void {
     const toolCounts = new Map<string, number>();
     const unregister: Array<() => void> = [];
-    const render = (event: ToolPresentationInput): string => {
-      try {
-        return this.renderToolEvent(event);
-      } catch (error) {
-        this.target.log(`[ui error] ${error instanceof Error ? error.message : String(error)}`);
-        return "";
-      }
-    };
 
     unregister.push(events.on("harness/run-start", (input) => {
       if (input.sessionId !== sessionId) return;
@@ -36,6 +27,9 @@ export class CliHarnessRenderer {
       const count = toolCounts.get(input.runId) ?? 0;
       toolCounts.delete(input.runId);
       this.target.log(`session used ${count} tool calls`);
+      if (input.reason === "error") {
+        this.target.log(`\x1b[31mrun failed: ${input.errorMessage}\x1b[0m`);
+      }
     }));
 
     unregister.push(events.on("agent/text-delta", (input) => {
@@ -60,13 +54,9 @@ export class CliHarnessRenderer {
 
     unregister.push(events.on("agent/tool-call", (input) => {
       if (input.sessionId !== sessionId) return;
-      const event: ToolPresentationInput = {
-        type: "call",
-        call: input.call,
-      };
-      const text = render(event);
-      if (text.length > 0) {
-        this.target.log(`\n\x1b[33m${text}\x1b[0m`);
+      const summary = summarizeArguments(input.call.arguments);
+      if (summary.length > 0) {
+        this.target.log(`\x1b[33m  ${summary}\x1b[0m`);
       }
     }));
 
@@ -74,14 +64,14 @@ export class CliHarnessRenderer {
       if (input.sessionId !== sessionId) return;
       const count = (toolCounts.get(input.runId) ?? 0) + 1;
       toolCounts.set(input.runId, count);
-      const event: ToolPresentationInput = {
-        type: "result",
-        call: input.call,
-        result: input.result,
-      };
-      const text = render(event);
-      if (text.length > 0) {
-        this.target.log(text);
+      this.target.log(
+        `\n\x1b[${input.result.isError ? "31" : "32"}m[result] ${input.call.name}\x1b[0m`,
+      );
+      const preview = input.result.content.length > RESULT_PREVIEW_LENGTH
+        ? `${input.result.content.slice(0, RESULT_PREVIEW_LENGTH)}\n…[truncated]`
+        : input.result.content;
+      if (preview.length > 0) {
+        this.target.log(preview);
       }
       if (input.result.content.length > LARGE_OUTPUT_THRESHOLD) {
         this.target.log(`⚠ Large output from ${input.call.name} (${input.result.content.length} characters)`);
@@ -92,4 +82,17 @@ export class CliHarnessRenderer {
       for (const remove of unregister) remove();
     };
   }
+}
+
+function summarizeArguments(arguments_: Record<string, unknown>): string {
+  let text: string;
+  try {
+    text = JSON.stringify(arguments_);
+  } catch {
+    return "";
+  }
+  if (text.length > ARGUMENTS_PREVIEW_LENGTH) {
+    return `${text.slice(0, ARGUMENTS_PREVIEW_LENGTH)}…`;
+  }
+  return text;
 }

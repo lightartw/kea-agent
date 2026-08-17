@@ -17,8 +17,8 @@ import {
 } from "../src/core/harness/index.js";
 
 import {
-  CodingToolPresentationRegistry,
-  createProject,
+  openOrCreateProject,
+  ProjectError,
 } from "../src/coding-agent/index.js";
 
 import { CliFrontend } from "../src/ui/index.js";
@@ -36,13 +36,11 @@ import type {
 } from "../src/core/harness/index.js";
 
 import type {
-  CodingAgentInteractions,
-  CodingToolPresentation,
-  CreateProjectConfig,
+  Interactions,
+  PermissionReply,
+  PermissionRequest,
   Project,
   ProjectInfo,
-  ToolDefinition,
-  ToolPresentationInput,
 } from "../src/coding-agent/index.js";
 
 import type { ModelRuntime, StreamChunk } from "../src/core/ai/index.js";
@@ -57,8 +55,8 @@ void [
   AgentHarness,
   Session,
   SessionRepository,
-  createProject,
-  CodingToolPresentationRegistry,
+  openOrCreateProject,
+  ProjectError,
   CliFrontend,
 ];
 
@@ -78,11 +76,9 @@ type PublicHarnessTypes = [
 type PublicCodingAgentTypes = [
   Project,
   ProjectInfo,
-  CreateProjectConfig,
-  CodingAgentInteractions,
-  ToolDefinition,
-  CodingToolPresentation<unknown, unknown>,
-  ToolPresentationInput,
+  Interactions,
+  PermissionRequest,
+  PermissionReply,
 ];
 
 type PublicEventTypes = [EventMap];

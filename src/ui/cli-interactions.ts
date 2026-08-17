@@ -1,9 +1,9 @@
 import { createInterface, type Interface } from "node:readline/promises";
 
 import type {
-  CodingAgentInteractions,
-  ConfirmationRequest,
-  Notification,
+  Interactions,
+  PermissionReply,
+  PermissionRequest,
 } from "../coding-agent/index.js";
 
 interface CliInteractionsOptions {
@@ -12,8 +12,8 @@ interface CliInteractionsOptions {
   readonly log?: (text: string) => void;
 }
 
-/** Concrete input adapter that implements CodingAgentInteractions. */
-export class CliInteractions implements CodingAgentInteractions {
+/** Concrete input adapter that implements the Interactions port for the CLI. */
+export class CliInteractions implements Interactions {
   private readonly readline: Interface;
   private readonly inputStream: NodeJS.ReadStream;
   private readonly logFn: (text: string) => void;
@@ -56,10 +56,10 @@ export class CliInteractions implements CodingAgentInteractions {
     };
   }
 
-  async confirm(
-    request: ConfirmationRequest,
+  async permission(
+    request: PermissionRequest,
     signal?: AbortSignal,
-  ): Promise<boolean> {
+  ): Promise<PermissionReply> {
     // Temporarily detach the run ESC listener
     const runAbort = this.runAbort;
     if (runAbort !== undefined && this.inputStream.isTTY) {
@@ -86,17 +86,19 @@ export class CliInteractions implements CodingAgentInteractions {
         ? AbortSignal.any([signal, confirmationController.signal])
         : confirmationController.signal;
 
-      const answer = await this.readline.question(
-        `\n⚠ ${request.title}\n   ${request.message}\n   Allow? [y/N] `,
-        { signal: combinedSignal },
-      );
-      return ["y", "yes"].includes(answer.trim().toLowerCase());
+      const answer = await this.readline.question(this.promptText(request), {
+        signal: combinedSignal,
+      });
+      const normalized = answer.trim().toLowerCase();
+      if (["y", "yes"].includes(normalized)) return { kind: "once" };
+      if (["a", "always"].includes(normalized)) return { kind: "always" };
+      return { kind: "deny" };
     } catch (error) {
       if (
         error instanceof Error &&
         (error.name === "AbortError" || confirmationDone)
       ) {
-        return false;
+        return { kind: "deny" };
       }
       throw error;
     } finally {
@@ -112,8 +114,11 @@ export class CliInteractions implements CodingAgentInteractions {
     }
   }
 
-  notify(notification: Notification): void {
-    this.logFn(notification.message);
+  private promptText(request: PermissionRequest): string {
+    const target = request.kind === "dangerous-command"
+      ? request.command
+      : request.targetPath;
+    return `\n⚠ ${request.reason}\n   ${target}\n   Allow once [y/N] (a = always)? `;
   }
 
   /** Safe to call after normal exit, Ctrl+C, or startup failure. */

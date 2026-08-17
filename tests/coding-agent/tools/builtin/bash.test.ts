@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { createBashTool } from "../../../../src/coding-agent/tools/builtin/bash/bash.js";
+import { createBashTool } from "../../../../src/coding-agent/tools/builtin/bash.js";
 
 function signal(): AbortSignal {
   return new AbortController().signal;

@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { config as loadDotenv } from "dotenv";
 
 import { CliFrontend } from "./ui/cli-frontend.js";
-import { createProject } from "./coding-agent/factory.js";
+import { openOrCreateProject } from "./coding-agent/factory.js";
 import { createModelRuntime } from "./core/ai/factory.js";
 
 export async function asyncMain(): Promise<void> {
@@ -14,13 +14,16 @@ export async function asyncMain(): Promise<void> {
   try {
     const { runtime, modelConfig } = createModelRuntime();
     const keaHome = process.env.KEA_HOME ?? resolve(homedir(), ".kea");
-    const project = await createProject({
+    const project = await openOrCreateProject({
       keaHome,
       runtime,
       modelConfig,
       interactions: cli.interactions,
     });
-    const harness = await project.continueRecent();
+    const sessions = await project.listSessions();
+    const harness = sessions[0] !== undefined
+      ? await project.createHarnessFromSession(sessions[0].id)
+      : await project.createHarness();
     await cli.run(project, harness);
   } finally {
     cli.close();

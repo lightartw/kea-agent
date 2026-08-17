@@ -41,18 +41,22 @@ function toToolResultMessage(
 /**
  * Run one Agent Run from a user input. Complete messages are committed
  * through `context.appendMessage()` before their events are emitted.
+ * Events and cancellation come from `context`, which the caller built
+ * for this Run.
  */
 export async function runAgentLoop(
   input: string,
   context: AgentContext,
   config: AgentLoopConfig,
   streamFn: StreamFn,
-  signal?: AbortSignal,
 ): Promise<void> {
+  const run = { sessionId: context.sessionId, runId: context.runId };
+  const signal = context.signal;
+
   // ── agent/user-prompt (intercept) ──
-  const prompt = await config.events.intercept(
+  const prompt = await context.events.intercept(
     "agent/user-prompt",
-    { ...config.run, prompt: input },
+    { ...run, prompt: input },
     async (value) => value.prompt,
     signal,
   );
@@ -65,13 +69,13 @@ export async function runAgentLoop(
   while (true) {
     if (signal?.aborted) return;
 
-    await config.events.emit("agent/turn-start", config.run);
+    await context.events.emit("agent/turn-start", run);
 
     // ── agent/context (intercept) ──
     const requestMessages = [...context.messages];
-    const effectiveMessages = await config.events.intercept(
+    const effectiveMessages = await context.events.intercept(
       "agent/context",
-      { ...config.run, messages: requestMessages },
+      { ...run, messages: requestMessages },
       async (value) => value.messages,
       signal,
     );
@@ -94,16 +98,16 @@ export async function runAgentLoop(
 
       switch (event.type) {
         case "text_delta":
-          await config.events.emit("agent/text-delta", { ...config.run, text: event.text });
+          await context.events.emit("agent/text-delta", { ...run, text: event.text });
           break;
         case "thinking_delta":
-          await config.events.emit("agent/thinking-delta", { ...config.run, thinking: event.thinking });
+          await context.events.emit("agent/thinking-delta", { ...run, thinking: event.thinking });
           break;
         case "toolcall_start":
-          await config.events.emit("agent/tool-call-start", { ...config.run, id: event.id, name: event.name });
+          await context.events.emit("agent/tool-call-start", { ...run, id: event.id, name: event.name });
           break;
         case "toolcall_delta":
-          await config.events.emit("agent/tool-call-delta", { ...config.run, id: event.id, argumentsDelta: event.argumentsDelta });
+          await context.events.emit("agent/tool-call-delta", { ...run, id: event.id, argumentsDelta: event.argumentsDelta });
           break;
         case "toolcall_end":
           break;
@@ -113,8 +117,8 @@ export async function runAgentLoop(
           break;
         case "error":
           await context.appendMessage(event.message);
-          await config.events.emit("agent/turn-end", {
-            ...config.run,
+          await context.events.emit("agent/turn-end", {
+            ...run,
             message: event.message,
             toolResults: [],
           });
@@ -129,20 +133,26 @@ export async function runAgentLoop(
     // ── Execute Tool Calls in source order; every call produces exactly one result ──
     const toolResults: AgentMessage[] = [];
     for (const call of toolCalls) {
-      await config.events.emit("agent/tool-call", { ...config.run, call });
-      const result = await context.tools.execute(call, config.events, signal);
+      const toolEvent = { ...run, cwd: context.cwd, call };
+      await context.events.emit("agent/tool-call", toolEvent);
+      const result = await context.tools.execute(call, {
+        sessionId: context.sessionId,
+        runId: context.runId,
+        cwd: context.cwd,
+        events: context.events,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      });
       const resultMessage = toToolResultMessage(call, result);
       await context.appendMessage(resultMessage);
       toolResults.push(resultMessage);
-      await config.events.emit("agent/tool-result", {
-        ...config.run,
-        call,
+      await context.events.emit("agent/tool-result", {
+        ...toolEvent,
         result,
       });
     }
 
-    await config.events.emit("agent/turn-end", {
-      ...config.run,
+    await context.events.emit("agent/turn-end", {
+      ...run,
       message: turnMessage,
       toolResults,
     });

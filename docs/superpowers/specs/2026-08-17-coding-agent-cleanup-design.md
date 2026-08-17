@@ -49,7 +49,9 @@ Its existing explanatory comment should remain with the moved implementation. Im
 
 ## Dynamic system prompt
 
-Rename the prompt module to `system-prompt.ts` and expose one simple function:
+Rename the prompt module to `system-prompt.ts`. Keep the prompt body in a
+module-level `SYSTEM_PROMPT_TEMPLATE` constant with placeholders for the two
+dynamic values, then expose one simple function:
 
 ```ts
 export function createSystemPrompt(
@@ -59,6 +61,11 @@ export function createSystemPrompt(
 ```
 
 Do not introduce `SystemPromptOptions`, skill hooks, or other extension points yet. If skill configuration later changes the prompt, the interface can be revised when that requirement is concrete.
+
+`createSystemPrompt()` starts with the template, replaces the
+`{{projectDirectory}}` and `{{cwd}}` placeholders, and returns the populated
+prompt. This keeps the long prompt content separate from parameter
+substitution.
 
 The generated prompt is:
 

@@ -501,58 +501,6 @@ test("exactly one run-end follows every observed run-start", async () => {
   }
 });
 
-test("an AbortSignal fired while Permission awaits confirmation wins over the answer", async () => {
-  const { harness, events } = makeHarness({
-    stream: streamWithToolCall(),
-  });
-  const signal: AbortSignal[] = [];
-  let resolvePermission: (value: boolean) => void = () => undefined;
-  const permissionGate = new Promise<boolean>((resolve) => { resolvePermission = resolve; });
-  events.on("tools/pre-execute", (call, proceed, abortSignal) => {
-    signal.push(abortSignal!);
-    return permissionGate.then((allowed) => {
-      if (allowed) return proceed(call);
-      return { kind: "deny" as const, reason: "permission denied by user" };
-    });
-  });
-  const results: Array<{ isError: boolean }> = [];
-  events.on("agent/tool-result", (input) => {
-    if (input.sessionId === harness.sessionId) results.push({ isError: input.result.isError });
-  });
-
-  const run = harness.prompt("run tool");
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  harness.abort();
-  resolvePermission(false);
-  await run;
-
-  assert.equal(signal.length, 1);
-  assert.equal(results.length, 1);
-  assert.equal(results[0]?.isError, true);
-});
-
-function streamWithToolCall(): TestStream {
-  const tc = { type: "toolCall" as const, id: "c1", name: "echo", arguments: {} };
-  const toolTurn: AssistantMessage = {
-    role: "assistant",
-    content: [tc],
-    model: "model-a",
-    stopReason: "toolUse",
-    latencyMs: 0,
-  };
-  let turn = 0;
-  return async function* () {
-    turn += 1;
-    if (turn === 1) {
-      yield { type: "toolcall_start", id: "c1", name: "echo" };
-      yield { type: "toolcall_end", toolCall: tc };
-      yield { type: "done", message: toolTurn };
-    } else {
-      yield { type: "done", message: assistant };
-    }
-  };
-}
-
 // ── Task 4: Harness control-event pass-through tests ──
 
 test("Harness shares one Events instance with Agent Loop", async () => {

@@ -36,7 +36,6 @@ test("Harness renders through one subscription while prompt returns a Promise", 
   });
   const renderer = new CliHarnessRenderer(
     { write: (text) => rendered.push(text), log: (text) => logs.push(text) },
-    (event) => `[${event.type}] ${event.call.name}`,
   );
   const unsubscribe = renderer.bind(events, harness.sessionId);
 

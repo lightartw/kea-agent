@@ -1,5 +1,5 @@
 import type { AgentMessage, AgentRunIdentity } from "./types.js";
-import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
+import type { ToolCallEvent, ToolResultEvent } from "./tools/events.js";
 import type { EmitEvent, InterceptEvent } from "../events/types.js";
 
 declare module "../events/types.js" {
@@ -41,12 +41,8 @@ declare module "../events/types.js" {
       AgentRunIdentity & { readonly id: string; readonly argumentsDelta: string }
     >;
 
-    "agent/tool-call": EmitEvent<
-      AgentRunIdentity & { readonly call: AgentToolCall }
-    >;
+    "agent/tool-call": EmitEvent<ToolCallEvent>;
 
-    "agent/tool-result": EmitEvent<
-      AgentRunIdentity & { readonly call: AgentToolCall; readonly result: AgentToolResult }
-    >;
+    "agent/tool-result": EmitEvent<ToolResultEvent>;
   }
 }

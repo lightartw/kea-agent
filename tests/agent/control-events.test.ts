@@ -23,8 +23,6 @@ import type {
 } from "../../src/core/ai/types.js";
 import type { TestStream } from "../fixtures/model-runtime.js";
 
-const run = { sessionId: "session-1", runId: "run-1" } as const;
-
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 const typedParameters = Type.Object(
   { value: Type.String() },
@@ -32,23 +30,28 @@ const typedParameters = Type.Object(
 );
 const testModel: ModelConfig = { provider: "test", model: "test-model" };
 
-function makeConfig(events: Events): AgentLoopConfig {
+function makeConfig(): AgentLoopConfig {
   return {
     model: testModel,
     convertToLlm: (msgs) => msgs,
-    events,
-    run,
   };
 }
 
 function memoryContext(
   tools = new AgentToolRegistry(),
   history: AgentMessage[] = [],
+  events = new Events(),
+  signal?: AbortSignal,
 ): AgentContext {
   return {
+    sessionId: "session-1",
+    runId: "run-1",
+    cwd: process.cwd(),
     systemPrompt: "",
     messages: history,
     tools,
+    events,
+    ...(signal === undefined ? {} : { signal }),
     appendMessage: async (message) => { history.push(message); },
   };
 }
@@ -130,7 +133,7 @@ test("agent/user-prompt blocking prevents message insertion and model calls", as
   events.on("agent/user-prompt", () => undefined);
   let streams = 0;
   const history: AgentMessage[] = [];
-  const context = memoryContext(undefined, history);
+  const context = memoryContext(undefined, history, events);
   const recorded: string[] = [];
   events.on("agent/turn-start", (input) => {
     if (input.sessionId === "session-1") recorded.push("turn-start");
@@ -139,7 +142,7 @@ test("agent/user-prompt blocking prevents message insertion and model calls", as
   await runAgentLoop(
     "secret",
     context,
-    makeConfig(events),
+    makeConfig(),
     async function* () {
       streams++;
       yield { type: "done", message: assistantMsg("unused") };
@@ -155,12 +158,12 @@ test("agent/user-prompt a returned prompt runs the Run", async () => {
   const events = new Events();
   events.on("agent/user-prompt", (input, proceed) => proceed(input));
   const history: AgentMessage[] = [];
-  const context = memoryContext(undefined, history);
+  const context = memoryContext(undefined, history, events);
 
   await runAgentLoop(
     "hello",
     context,
-    makeConfig(events),
+    makeConfig(),
     async function* () {
       yield { type: "done", message: assistantMsg("done") };
     },
@@ -176,13 +179,13 @@ test("agent/user-prompt transformation reaches persisted history and the model r
     prompt: input.prompt.toUpperCase(),
   }));
   const history: AgentMessage[] = [];
-  const context = memoryContext(undefined, history);
+  const context = memoryContext(undefined, history, events);
   let requestMessages: readonly Message[] = [];
 
   await runAgentLoop(
     "hello",
     context,
-    makeConfig(events),
+    makeConfig(),
     async function* (_model, context) {
       requestMessages = [...context.messages];
       yield { type: "done", message: assistantMsg("done") };
@@ -208,13 +211,13 @@ test("agent/context intercept reaches the model without replacing history", asyn
     ],
   }));
   const history: AgentMessage[] = [];
-  const context = memoryContext(undefined, history);
+  const context = memoryContext(undefined, history, events);
   let requestMessages: readonly Message[] = [];
 
   await runAgentLoop(
     "real",
     context,
-    makeConfig(events),
+    makeConfig(),
     async function* (_model, context) {
       requestMessages = [...context.messages];
       yield { type: "done", message: assistantMsg("done") };
@@ -237,7 +240,7 @@ test("agent/context intercept reaches the model without replacing history", asyn
 
 // ── Tool interception and facts ──
 
-test("tools/pre-execute does not replace arguments before validation", async () => {
+test("invalid arguments fail before tools/pre-execute runs", async () => {
   const tool = new TypedTool();
   const tools = new AgentToolRegistry();
   tools.register(tool);
@@ -248,18 +251,28 @@ test("tools/pre-execute does not replace arguments before validation", async () 
     arguments: { value: 1 },
   };
   const events = new Events();
-  events.on("tools/pre-execute", (input, proceed) => proceed({
-    ...input,
-    arguments: { value: "fixed" },
-  }));
+  let preCalls = 0;
+  events.on("tools/pre-execute", (input, proceed) => {
+    preCalls += 1;
+    return proceed(input);
+  });
+  const results: AgentToolResult[] = [];
+  events.on("agent/tool-result", (input) => {
+    if (input.sessionId === "session-1") results.push(input.result);
+  });
 
   await runAgentLoop(
     "run",
-    memoryContext(tools),
-    makeConfig(events),
+    memoryContext(tools, undefined, events),
+    makeConfig(),
     streamForToolCall(call),
   );
+
   assert.equal(tool.ran, false);
+  assert.equal(preCalls, 0);
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.isError, true);
+  assert.match(results[0]!.content, /Invalid arguments for tool 'typed'/);
 });
 
 test("tools/pre-execute can block execution", async () => {
@@ -267,7 +280,6 @@ test("tools/pre-execute can block execution", async () => {
   const tools = new AgentToolRegistry();
   tools.register(tool);
   const history: AgentMessage[] = [];
-  const context = memoryContext(tools, history);
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
@@ -276,6 +288,7 @@ test("tools/pre-execute can block execution", async () => {
     kind: "deny",
     reason: "denied by policy",
   }));
+  const context = memoryContext(tools, history, events);
   const results: AgentToolResult[] = [];
   events.on("agent/tool-result", (input) => {
     if (input.sessionId === "session-1") results.push(input.result);
@@ -284,7 +297,7 @@ test("tools/pre-execute can block execution", async () => {
   await runAgentLoop(
     "run",
     context,
-    makeConfig(events),
+    makeConfig(),
     streamForToolCall(call),
   );
 
@@ -298,7 +311,6 @@ test("tools/post-execute transformed result is identical in tool message and nex
   const tools = new AgentToolRegistry();
   tools.register(tool);
   const history: AgentMessage[] = [];
-  const context = memoryContext(tools, history);
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
@@ -307,6 +319,7 @@ test("tools/post-execute transformed result is identical in tool message and nex
     ...input,
     result: { content: "patched", isError: true },
   }));
+  const context = memoryContext(tools, history, events);
   let secondRequest: readonly Message[] = [];
   const stream = streamWithEvents([
     [
@@ -323,7 +336,7 @@ test("tools/post-execute transformed result is identical in tool message and nex
     if (input.sessionId === "session-1") results.push(input.result);
   });
 
-  await runAgentLoop("run", context, makeConfig(events), stream);
+  await runAgentLoop("run", context, makeConfig(), stream);
 
   assert.deepEqual(results[0], { content: "patched", isError: true });
   assert.deepEqual(history[2], {
@@ -359,10 +372,9 @@ test("the same AbortSignal reaches every control listener", async () => {
 
   await runAgentLoop(
     "run",
-    memoryContext(tools),
-    makeConfig(events),
+    memoryContext(tools, undefined, events, controller.signal),
+    makeConfig(),
     streamForToolCall(call),
-    controller.signal,
   );
 
   assert.deepEqual(seen.map(({ type }) => type), [

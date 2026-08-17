@@ -1,10 +1,42 @@
 import { Events } from "../../core/events/events.js";
-import type { CodingAgentInteractions } from "../ui/interactions.js";
-import { registerPermission } from "./builtin/permission.js";
+import type { Interactions } from "../interaction/interactions.js";
+import { decidePermission, type PermissionRule } from "./permission/permission.js";
 
-export function registerCodingEvents(
-  events: Events,
-  interactions: CodingAgentInteractions,
-): void {
-  registerPermission(events, interactions);
+/**
+ * Composition root: creates the Coding runtime's Events bus and registers the
+ * default Permission listener on tools/pre-execute (spec §11). An external
+ * assembler hands the returned bus to the Project that consumes it.
+ *
+ * The options object receives caller-owned, Project-scoped state (approved and
+ * trustedDirectories), listener configuration and the Interaction port
+ * directly; no environment abstraction hides them. ToolCallEvent carries the
+ * Session cwd needed by Permission.
+ */
+export function createBuiltinEvents(options: {
+  readonly interactions: Interactions;
+  readonly approved: PermissionRule[];
+  readonly trustedDirectories: readonly string[];
+  readonly onListenerError?: (
+    error: unknown,
+    name: string,
+    input: unknown,
+  ) => void;
+}): Events {
+  const events = new Events(options.onListenerError);
+
+  events.on("tools/pre-execute", async (input, proceed, signal) => {
+    const decision = await decidePermission(
+      input,
+      {
+        cwd: input.cwd,
+        trustedDirectories: options.trustedDirectories,
+        approved: options.approved,
+        interactions: options.interactions,
+      },
+      signal,
+    );
+    return decision.kind === "allow" ? proceed(input) : decision;
+  });
+
+  return events;
 }

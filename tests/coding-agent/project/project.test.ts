@@ -9,6 +9,7 @@ import { Type } from "typebox";
 import { AgentTool, type AgentToolResult } from "../../../src/core/agent/tools/types.js";
 import type { AssistantMessage, ModelConfig, Tool } from "../../../src/core/ai/types.js";
 import { SessionRepository } from "../../../src/core/harness/session/repository.js";
+import { Events } from "../../../src/core/events/events.js";
 import { Project } from "../../../src/coding-agent/project/project.js";
 import type { ProjectInfo } from "../../../src/coding-agent/project/project.js";
 import { runtimeFromStream, type TestStream } from "../../fixtures/model-runtime.js";
@@ -45,16 +46,6 @@ function validInfo(directory: string, overrides: Partial<ProjectInfo> = {}): Pro
   };
 }
 
-class TestTool extends AgentTool {
-  constructor(name: string) {
-    super(name, "test tool", Type.Object({}));
-  }
-
-  async execute(): Promise<AgentToolResult> {
-    return { content: "ok", isError: false };
-  }
-}
-
 async function makeProject(options: {
   readonly info?: ProjectInfo;
   readonly sessions?: SessionRepository;
@@ -74,9 +65,10 @@ async function makeProject(options: {
   };
   const project = new Project({
     info: options.info ?? validInfo(resolve(projectDir)),
-    sessions: options.sessions ?? new SessionRepository(join(await tempDir(), "sessions")),
+    sessions: options.sessions ?? new SessionRepository(join(projectDir, ".test-sessions")),
     runtime: runtimeFromStream(stream),
     modelConfig,
+    events: new Events(),
   });
   return { project, projectDir, prompts, toolsList };
 }
@@ -100,6 +92,20 @@ test("info returns a defensive snapshot and invalid info is rejected at construc
         sessions: new SessionRepository(join(invalidSessionsDir, "sessions")),
         runtime: runtimeFromStream(simpleStream),
         modelConfig,
+        events: new Events(),
+      }),
+      /invalid/i,
+    );
+    assert.throws(
+      () => new Project({
+        info: {
+          ...validInfo(resolve(projectDir)),
+          id: [VALID_ID],
+        } as unknown as ProjectInfo,
+        sessions: new SessionRepository(join(invalidSessionsDir, "sessions")),
+        runtime: runtimeFromStream(simpleStream),
+        modelConfig,
+        events: new Events(),
       }),
       /invalid/i,
     );
@@ -159,24 +165,6 @@ test("relative cwd resolves from the Project directory and absolute cwd must sta
   }
 });
 
-test("missing paths, files, and paths outside the Project directory reject", async () => {
-  const { project, projectDir } = await makeProject();
-  const outside = await tempDir();
-  try {
-    await assert.rejects(
-      project.createHarness({ cwd: join(projectDir, "missing") }),
-      /does not exist/i,
-    );
-    const file = join(projectDir, "file.txt");
-    await writeFile(file, "not a directory");
-    await assert.rejects(project.createHarness({ cwd: file }), /is not a directory/i);
-    await assert.rejects(project.createHarness({ cwd: outside }), /outside/i);
-    assert.equal((await project.listSessions()).length, 0);
-  } finally {
-    await rm(projectDir, { recursive: true, force: true });
-    await rm(outside, { recursive: true, force: true });
-  }
-});
 
 test("createHarnessFromSession opens exactly that Session and never creates a replacement", async () => {
   const { project, projectDir } = await makeProject();
@@ -195,61 +183,7 @@ test("createHarnessFromSession opens exactly that Session and never creates a re
   }
 });
 
-test("restoration rejects when the recorded cwd is missing or outside the Project directory", async () => {
-  const missing = await makeProject();
-  const outsideDir = await tempDir();
-  const projectDir = await tempDir();
-  try {
-    await mkdir(join(missing.projectDir, "work"), { recursive: true });
-    const harness = await missing.project.createHarness({ cwd: "work" });
-    await rm(join(missing.projectDir, "work"), { recursive: true });
-    await assert.rejects(
-      missing.project.createHarnessFromSession(harness.sessionId),
-      /does not exist/i,
-    );
 
-    const sessions = new SessionRepository(join(await tempDir(), "sessions"));
-    const session = await sessions.create({ cwd: outsideDir });
-    const project = new Project({
-      info: validInfo(resolve(projectDir)),
-      sessions,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-    });
-    await assert.rejects(project.createHarnessFromSession(session.id), /outside/i);
-  } finally {
-    await rm(missing.projectDir, { recursive: true, force: true });
-    await rm(outsideDir, { recursive: true, force: true });
-    await rm(projectDir, { recursive: true, force: true });
-  }
-});
-
-test("each Harness gets a distinct empty tool registry while sharing the Project Events", async () => {
-  const { project, projectDir, toolsList } = await makeProject();
-  try {
-    const first = await project.createHarness();
-    const second = await project.createHarness();
-
-    await first.prompt("a");
-    await second.prompt("b");
-    assert.deepEqual(toolsList[0], []);
-    assert.deepEqual(toolsList[1], []);
-
-    const tool = new TestTool("shared-name");
-    first.registerTool(tool);
-    second.registerTool(tool);
-
-    const runSessions: string[] = [];
-    project.events.on("harness/run-start", (run) => {
-      runSessions.push(run.sessionId);
-    });
-    await first.prompt("c");
-    await second.prompt("d");
-    assert.deepEqual(runSessions, [first.sessionId, second.sessionId]);
-  } finally {
-    await rm(projectDir, { recursive: true, force: true });
-  }
-});
 
 test("the system prompt contains the Project directory and the Session cwd", async () => {
   const { project, projectDir, prompts } = await makeProject();

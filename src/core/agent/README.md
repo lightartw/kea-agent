@@ -30,13 +30,16 @@ function runAgentLoop(
   context: AgentContext,
   config: AgentLoopConfig,
   streamFn: StreamFn,
-  signal?: AbortSignal,
 ): Promise<void>;
 
 interface AgentContext {
+  readonly sessionId: string;
+  readonly runId: string;
   readonly systemPrompt: string;
   readonly messages: readonly AgentMessage[];
   readonly tools: AgentToolRegistry;
+  readonly events: Events;
+  readonly signal?: AbortSignal;
   appendMessage(message: AgentMessage): Promise<void>;
 }
 
@@ -47,8 +50,6 @@ interface AgentLoopConfig {
   readonly convertToLlm: (
     messages: readonly AgentMessage[],
   ) => readonly Message[];
-  readonly events: Events;
-  readonly run: AgentRunIdentity;
 }
 
 interface AgentRunIdentity {
@@ -59,7 +60,8 @@ interface AgentRunIdentity {
 
 `AgentMessage` 是 ai 层 `Message` 的别名。`AgentRunIdentity`（`sessionId`、`runId`）标识一次
 Agent Run：`sessionId` 让共享 dispatcher 上的 listener 按 Session 过滤，`runId` 关联一次 Run
-的所有事件。所有完整消息都通过 `context.appendMessage()` 提交给
+的所有事件。Run 的身份、事件通道与取消信号都来自 `AgentContext`：`context.events` 发布事实并
+执行控制拦截，`context.signal` 取消整个 Run。所有完整消息都通过 `context.appendMessage()` 提交给
 拥有方（Harness 负责落盘），提交成功后才发布对应的事实事件。Loop 不直接修改
 `context.messages`。
 
@@ -105,6 +107,13 @@ abstract class AgentTool<
   ): Promise<AgentToolResult<TDetails>>;
 }
 
+interface ToolExecutionContext {
+  readonly sessionId: string;
+  readonly runId: string;
+  readonly events: Events;
+  readonly signal?: AbortSignal;
+}
+
 class AgentToolRegistry {
   constructor(timeout?: number);  // 秒，默认 120
   register(tool: AgentTool): void;
@@ -113,31 +122,34 @@ class AgentToolRegistry {
   all(): AgentTool[];
   execute(
     call: AgentToolCall,
-    events: Events,
-    signal?: AbortSignal,
+    executionContext: ToolExecutionContext,
   ): Promise<AgentToolResult<unknown>>;
 }
 ```
 
-Registry 是 Tool 的唯一执行入口：它接收原始 `AgentToolCall`，内部完成 lookup、TypeBox 校验，
-并把执行过程交给三个 Tool 拦截阶段（见第 5 节）。`execute()` 的最终 `handler` 通过 timeout
-helper 调用 `AgentTool.execute()`，并把抛出的异常归一化为错误结果。
+`ToolExecutionContext` 是一次 Tool Call 的 Registry 编排环境：Run 身份、共享事件通道与 Run
+取消信号。`call` 是执行对象本身，作为 `execute()` 的第一个参数独立传入，不放进执行环境——
+Context 只描述“在哪里执行”。Registry 是 Tool 的唯一执行入口：它接收原始 `AgentToolCall`，内部
+完成 lookup、TypeBox 校验，并把执行过程交给三个 Tool 拦截阶段（见第 5 节）。`execute()` 的最终
+`handler` 通过 timeout helper 调用 `AgentTool.execute()`，并把抛出的异常归一化为错误结果。
+具体 Tool 只收到验证后的参数与合并后的 timeout signal，不知道 Session、Run 或 Events。
 
 ## 5. Tool 拦截：pre-execute / execute / post-execute
 
 每个 Tool Call 在 `AgentToolRegistry.execute()` 内经过三个 `intercept()` 阶段，均由
-`src/core/agent/tools/events.ts` 声明：
+`src/core/agent/tools/events.ts` 声明：执行顺序为 lookup → validate → pre-execute → execute
+→ post-execute；未知 Tool 或无效参数直接产生错误结果，不进入任何拦截阶段。
 
-- **`tools/pre-execute`**：接收原始 call，返回 `PreToolDecision`。listener 调用
-  `proceed(call)` 以继续检查，或返回可选原因的 `deny` 以阻止执行。Registry 收到 `deny`
-  后统一生成错误 `AgentToolResult`。`proceed(changedCall)` 会把值交给后续 pre-execute
-  listener，但这个阶段的最终结果只有 allow/deny；所有 listener 都允许后，Registry 使用传给
-  `execute()` 的原始 call 做 lookup 和 TypeBox 验证。
-- **`tools/execute`**：以已经 lookup、验证过的 call 作为初始输入，最终 handler 使用这一阶段
-  传到末端的 `call.arguments` 运行之前选中的 Tool。listener 可以包裹执行，也可以通过
-  `proceed(changedCall)` 改变实际执行参数；Registry 不会在这一阶段重新 lookup 或验证。
-- **`tools/post-execute`**：接收 `{ call, result }`，listener 可以在结果写入 Session 前修改它。
-  最终 handler 原样返回 `input.result`。
+- **`tools/pre-execute`**：接收 `ToolCallEvent`（`sessionId`、`runId`、`call`），返回
+  `PreToolDecision`。listener 调用 `proceed(input)` 以继续检查，或返回可选原因的 `deny` 以阻止
+  执行。Registry 收到 `deny` 后统一生成错误 `AgentToolResult`。这是只读决策点：进入这一阶段前
+  Registry 已经完成 lookup 和 TypeBox 校验，`proceed(input)` 必须传递同一个 input，listener
+  不能借此替换实际执行的 Tool Call。
+- **`tools/execute`**：以已经 lookup、校验过的 `ToolCallEvent` 作为输入，最终 handler 使用
+  `input.call.arguments` 运行之前选中的 Tool。listener 可以包裹执行，也可以通过
+  `proceed(changedInput)` 改变实际执行参数；Registry 不会在这一阶段重新 lookup 或验证。
+- **`tools/post-execute`**：接收 `ToolResultEvent`（`ToolCallEvent` 加上 `result`），listener
+  可以在结果写入 Session 前修改它。最终 handler 原样返回 `input.result`。
 
 未知、参数无效、被阻止或已中止的调用跳过无法执行的阶段，但 `execute()` 仍返回一个错误
 `AgentToolResult`。listener 抛出的错误被归一化为当前调用自己的错误结果，不会影响其他调用或
@@ -188,7 +200,8 @@ Turn 后是否继续不是扩展点，而是 Loop 的内建结构规则：`toolR
 
 从 `src/core/agent/tools/index.ts`：
 - `AgentTool`, `AgentToolRegistry`
-- `AgentToolCall`, `AgentToolResult`, `PreToolDecision`
+- `AgentToolCall`, `AgentToolResult`, `ToolExecutionContext`, `PreToolDecision`,
+  `ToolCallEvent`, `ToolResultEvent`
 
 从 `src/core/agent/types.ts`（经根入口）：
 - `AgentContext`, `AgentLoopConfig`, `AgentMessage`, `AgentRunIdentity`, `StreamFn`

@@ -1,14 +1,16 @@
 import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
+// Include Agent's EventMap augmentation when Project is compiled in isolation.
 import type {} from "../../core/agent/events.js";
-import { AgentToolRegistry } from "../../core/agent/tools/registry.js";
 import type { ModelConfig, ModelRuntime } from "../../core/ai/types.js";
-import { Events } from "../../core/events/events.js";
+import type { Events } from "../../core/events/events.js";
 import { AgentHarness } from "../../core/harness/agent-harness.js";
 import { SessionRepository } from "../../core/harness/session/repository.js";
 import type { Session } from "../../core/harness/session/session.js";
 import type { SessionMetadata } from "../../core/harness/session/types.js";
+import { createSystemPrompt } from "../system-prompt.js";
+import { createBuiltinToolRegistry } from "../tools/factory.js";
 
 /** One durable Project record: identity plus the normalized Project directory. */
 export interface ProjectInfo {
@@ -39,7 +41,7 @@ function isUtcTimestamp(value: unknown): value is string {
 
 /** Shared field validation for ProjectInfo values from any source. */
 export function validateProjectInfo(info: ProjectInfo): void {
-  if (!PROJECT_ID_PATTERN.test(info.id)) {
+  if (typeof info.id !== "string" || !PROJECT_ID_PATTERN.test(info.id)) {
     throw new ProjectError(`Project ID is invalid: ${info.id}`);
   }
   if (typeof info.name !== "string" || info.name.trim() === "") {
@@ -79,14 +81,21 @@ export class Project {
     readonly sessions: SessionRepository;
     readonly runtime: ModelRuntime;
     readonly modelConfig: ModelConfig;
+    readonly events: Events;
   }) {
     validateProjectInfo(options.info);
-    this.infoState = { ...options.info };
+    this.infoState = {
+      id: options.info.id,
+      name: options.info.name,
+      directory: options.info.directory,
+      createdAt: options.info.createdAt,
+      updatedAt: options.info.updatedAt,
+    };
     this.projectDirectory = this.infoState.directory;
     this.sessions = options.sessions;
     this.runtime = options.runtime;
     this.modelConfig = options.modelConfig;
-    this.events = new Events();
+    this.events = options.events;
   }
 
   get info(): ProjectInfo {
@@ -98,18 +107,18 @@ export class Project {
   }
 
   async createHarness(options?: { readonly cwd?: string }): Promise<AgentHarness> {
-    const cwd = await this.resolveProjectCwd(options?.cwd ?? this.projectDirectory);
+    const cwd = await this.resolveSessionCwd(options?.cwd ?? this.projectDirectory);
     const session = await this.sessions.create({ cwd });
     return this.buildHarness(session);
   }
 
   async createHarnessFromSession(sessionId: string): Promise<AgentHarness> {
     const session = await this.sessions.open(sessionId);
-    await this.resolveProjectCwd(session.metadata.cwd);
+    await this.resolveSessionCwd(session.metadata.cwd);
     return this.buildHarness(session);
   }
 
-  private async resolveProjectCwd(cwd: string): Promise<string> {
+  private async resolveSessionCwd(cwd: string): Promise<string> {
     const candidate = isAbsolute(cwd) ? cwd : resolve(this.projectDirectory, cwd);
     let real: string;
     try {
@@ -123,33 +132,18 @@ export class Project {
     if (!info.isDirectory()) {
       throw new ProjectError(`Session working directory is not a directory: ${real}`);
     }
-    const contained = relative(this.projectDirectory, real);
-    const outside = contained === ".."
-      || contained.startsWith(`..${sep}`)
-      || isAbsolute(contained);
-    if (contained !== "" && outside) {
-      throw new ProjectError(`Session working directory is outside the Project directory: ${real}`);
-    }
     return real;
   }
 
   private buildHarness(session: Session): AgentHarness {
+    const cwd = session.metadata.cwd;
     return new AgentHarness({
       session,
       runtime: this.runtime,
       modelConfig: this.modelConfig,
-      toolRegistry: new AgentToolRegistry(),
-      systemPrompt: this.formatSystemPrompt(session.metadata.cwd),
+      toolRegistry: createBuiltinToolRegistry(cwd),
+      systemPrompt: createSystemPrompt(this.projectDirectory, cwd),
       events: this.events,
     });
-  }
-
-  private formatSystemPrompt(cwd: string): string {
-    return [
-      "You are Kea, a coding agent working inside a Project directory.",
-      `Project directory: ${this.projectDirectory}`,
-      `Session working directory: ${cwd}`,
-      "Keep all work inside the Project directory.",
-    ].join("\n");
   }
 }

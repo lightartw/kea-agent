@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
@@ -10,7 +19,14 @@ import {
 } from "./project.js";
 
 const PROJECT_VERSION = 1;
-const RECORD_KEYS = ["version", "id", "name", "directory", "createdAt", "updatedAt"] as const;
+const RECORD_KEYS = [
+  "version",
+  "id",
+  "name",
+  "directory",
+  "createdAt",
+  "updatedAt",
+] as const;
 const RECORD_FILE = "project.json";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -48,7 +64,7 @@ async function assertAbsent(path: string): Promise<void> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  throw new ProjectError(`Project directory already exists: ${path}`);
+  throw new ProjectError(`Project data directory already exists: ${path}`);
 }
 
 /**
@@ -65,14 +81,23 @@ export class ProjectStorage {
 
   /** Project data directory for a valid ID; performs no I/O. */
   dataDirectory(projectId: string): string {
-    if (!PROJECT_ID_PATTERN.test(projectId)) {
+    if (typeof projectId !== "string" || !PROJECT_ID_PATTERN.test(projectId)) {
       throw new ProjectError(`Project ID is invalid: ${projectId}`);
     }
     return join(this.projectsDir, projectId);
   }
 
   async findByDirectory(directory: string): Promise<ProjectInfo | undefined> {
-    const normalized = resolve(directory);
+    let normalized = resolve(directory);
+    try {
+      normalized = await realpath(normalized);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new ProjectError(`Could not resolve Project directory ${directory}`, {
+          cause: error,
+        });
+      }
+    }
     let entries: string[];
     try {
       entries = await readdir(this.projectsDir);
@@ -107,7 +132,14 @@ export class ProjectStorage {
       await mkdir(tmpDir);
       await writeFile(
         join(tmpDir, RECORD_FILE),
-        `${JSON.stringify({ version: PROJECT_VERSION, ...info }, null, 2)}\n`,
+        `${JSON.stringify({
+          version: PROJECT_VERSION,
+          id: info.id,
+          name: info.name,
+          directory: info.directory,
+          createdAt: info.createdAt,
+          updatedAt: info.updatedAt,
+        }, null, 2)}\n`,
         "utf8",
       );
       await assertAbsent(finalDir);
@@ -134,10 +166,19 @@ export class ProjectStorage {
         cause: error,
       });
     }
-    const info = parseProjectDocument(raw);
-    if (info.id !== projectId) {
-      throw new ProjectError(`Project record ID ${info.id} does not match directory ${projectId}`);
+    try {
+      const info = parseProjectDocument(raw);
+      if (info.id !== projectId) {
+        throw new ProjectError(
+          `Project record ID ${info.id} does not match directory ${projectId}`,
+        );
+      }
+      return info;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new ProjectError(`Project record ${recordPath} is invalid: ${detail}`, {
+        cause: error,
+      });
     }
-    return info;
   }
 }

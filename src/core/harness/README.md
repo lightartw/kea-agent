@@ -108,8 +108,9 @@ interface HarnessConfig {
 
 1. 创建本次 Run 的 `AbortController` 和 `{ sessionId, runId }`；
 2. 发布 `harness/run-start`；
-3. 从 `runtime.stream` 绑定出 `StreamFn`，调用一次 `runAgentLoop()`，传入已有消息、system prompt、
-   Tools、Events 和 Run 身份；完整 `ModelRuntime` 不进入 Agent Loop；
+3. 构造一个 `AgentContext`（含 Run 身份、消息、system prompt、Tools、Events 与取消信号），
+   从 `runtime.stream` 绑定出 `StreamFn`，调用一次 `runAgentLoop()`；完整 `ModelRuntime`
+   不进入 Agent Loop；
 4. Agent 产生完整消息时，`appendMessage` 先调用 `session.append()` 持久化，成功后才把消息加入
    本次 Run 的消息数组；首条 user message 持久化后，Harness 先尝试生成并保存 Session 标题，再开始
    主模型 Turn；

@@ -5,8 +5,7 @@ import type { Interface } from "node:readline/promises";
 
 import { CliFrontend } from "../../src/ui/cli-frontend.js";
 import type {
-  CodingAgentInteractions,
-  ConfirmationRequest,
+  PermissionRequest,
   Project,
 } from "../../src/coding-agent/index.js";
 import type { AgentHarness } from "../../src/core/harness/index.js";
@@ -27,10 +26,14 @@ class FakeInput extends EventEmitter {
   }
 }
 
-const confirmation: ConfirmationRequest = {
-  source: "permission",
-  title: "Allow Bash command?",
-  message: "file deletion requires approval\nTool: bash({\"command\":\"rm file.txt\"})",
+const permissionRequest: PermissionRequest = {
+  kind: "dangerous-command",
+  sessionId: "session-1",
+  runId: "run-1",
+  call: { type: "toolCall", id: "c1", name: "bash", arguments: {} },
+  command: "rm file.txt",
+  cwd: "/work/project",
+  reason: "file deletion requires approval",
 };
 
 function fakeReadline(question: QuestionFn): Interface {
@@ -56,12 +59,12 @@ function frontendWithQuestion(
 
 // ── Run-listener suspension/restoration ──
 
-test("run suspends its ESC listener during confirm and restores it after", async () => {
+test("run suspends its ESC listener during permission and restores it after", async () => {
   const input = new FakeInput();
   let mainQuestions = 0;
   let aborts = 0;
   const cli = frontendWithQuestion(async (query) => {
-    if (query.includes("Allow?")) {
+    if (query.includes("Allow once")) {
       assert.equal(input.listenerCount("data"), 1);
       return "y";
     }
@@ -76,7 +79,7 @@ test("run suspends its ESC listener during confirm and restores it after", async
     },
     async prompt() {
       assert.equal(input.listenerCount("data"), 1);
-      assert.equal(await cli.interactions.confirm(confirmation), true);
+      assert.deepEqual(await cli.interactions.permission(permissionRequest), { kind: "once" });
       assert.equal(input.listenerCount("data"), 1);
       assert.equal(input.rawModes.at(-1), true);
       input.emit("data", Buffer.from([0x1b]));
@@ -84,7 +87,6 @@ test("run suspends its ESC listener during confirm and restores it after", async
   } as unknown as AgentHarness;
   const project = {
     events: new Events(),
-    renderTool: () => "tool",
   } as unknown as Project;
 
   await cli.run(project, harness);

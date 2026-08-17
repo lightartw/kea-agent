@@ -1,259 +1,307 @@
-Coding Agent 管理一个持久化 Project。一个 Project 拥有稳定的随机 ID、显示名、一组规范化绝对
-源目录和一个 primary 目录；它管理一个 Project 下的全部 Session，每个打开的 Session 由独立
-的 AgentHarness 驱动。
+# coding-agent
 
-Coding Agent 给 Harness 提供完成代码任务所需的各种能力：
+`coding-agent` 是 Kea 的项目级应用层。`core` 提供通用的模型请求、Agent Loop、Harness、Session
+和 Events；本包把这些能力组合成一个能够理解项目目录、使用内置开发工具并请求权限的 Coding
+Agent。
 
-- coding system prompt；
-- Tools：Bash、文件、Glob 和 Todo；
-- 控制事件：如 permission listener；
-- UI 接口：confirm、notify 和工具展示。
+本包负责：
 
-## 1. Project
+- 识别并持久化 Project；
+- 在 Project 中创建和恢复 Session；
+- 为每个 Session 构造 `AgentHarness`、system prompt 和内置 Tool Registry；
+- 创建 Project 级 Events，并注册默认 Permission listener；
+- 通过 `Interactions` 把权限请求交给外部 UI 或终端。
 
-```ts
-interface ProjectInfo {
-  readonly id: string;
-  readonly name: string;
-  readonly directories: readonly string[];
-  readonly primaryDirectory: string;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
-```
+Agent Loop、模型 Provider、Session 文件格式和 Events 分发机制仍由 `core` 负责。基础规则分别见
+[ai](../core/ai/README.md)、[agent](../core/agent/README.md)、
+[harness](../core/harness/README.md) 和 [events](../core/events/README.md)。`coding-agent` 不包含 UI，
+也不决定权限请求应当怎样展示给用户。
 
-- `directories` 是一个或多个规范化绝对目录；`primaryDirectory` 是其中默认使用的一个。
-- Project 元数据持久化在 `<keaHome>/projects/<id>/project.json`，每次启动用
-  `createProject()` 重新打开，同一 `id` 保持不变。
-- 没有 `Workspace` 概念——`directories` 只是文件工具允许访问的边界，不是独立实体。
+## 最小用法
 
-### 1.1 根目录发现
-
-`createProject({ keaHome, directory?, cwd? })` 决定 Project 的根目录：
-
-1. 先扫描已注册 Project；当 `initialCwd` 等于或位于某个已注册 `directories` 之下时，选择
-   匹配该目录（嵌套时选最长最具体的一条）并复用该 Project。
-2. 否则，显式提供的 `directory` 直接作为新 Project 的根目录（不 Git 遍历）。
-3. 否则用 `git rev-parse --show-toplevel` 从 `initialCwd` 发现 work-tree 根；失败时回退为
-   `initialCwd`。
-
-Git 只影响发现。每个非 Git 根目录都有独立的 Project 和 Session 存储；同一目录被两个
-Project 注册会报错。
-
-## 2. 创建并继续最近的 Session
+调用方先创建模型运行时，并提供一个 `Interactions` 实现。随后打开 Project、创建 Harness，再像
+使用普通 `AgentHarness` 一样提交 prompt：
 
 ```ts
 import { createModelRuntime } from "../core/ai/index.js";
-import { createProject } from "./index.js";
+import {
+  openOrCreateProject,
+  type Interactions,
+} from "./index.js";
 
 const { runtime, modelConfig } = createModelRuntime();
-const project = await createProject({
-  keaHome: process.env.KEA_HOME,
+
+const interactions: Interactions = {
+  async permission(request) {
+    console.log(request);
+    return { kind: "deny", reason: "No permission adapter is configured." };
+  },
+};
+
+const project = await openOrCreateProject({
+  keaHome: ".kea",
+  cwd: process.cwd(),
   runtime,
   modelConfig,
+  interactions,
 });
 
-const harness = await project.continueRecent();
-await harness.prompt("修复测试失败");
+const harness = await project.createHarness();
+await harness.prompt("Explain this project.");
 ```
 
-`createProject()` 建立 Project 的 Session 入口、共享 `Events` 和默认 coding 能力，但不会提前
-打开 Session。`continueRecent()` 打开最近更新的 Session；如果 Project 尚无历史，则按启动
-`cwd` 创建一份。它返回可以直接 `prompt()`、`abort()` 或 `switchModel()` 的 `AgentHarness`。
+`Interactions` 必须由调用方显式提供。上面的实现只用于展示接口形状；实际应用通常会等待用户
+选择允许一次、始终允许或拒绝。
 
-## 3. Project API
+## 1. 从目录到 Project
+
+`openOrCreateProject()` 是本包唯一的组合根。它接收一个启动目录，并按下面的顺序建立运行时：
+
+1. 把 `cwd` 转成绝对路径，解析符号链接并确认它是现存目录；
+2. 运行 `git rev-parse --show-toplevel`；在 Git worktree 中使用仓库根目录，否则使用启动目录；
+3. 在 `ProjectStorage` 中查找拥有该规范目录的 Project 记录；
+4. 找不到记录时生成 UUID、目录名和 UTC 时间，创建新的 Project 记录；
+5. 为该 Project 创建 `SessionRepository`、内存权限记录和共享 `Events`；
+6. 返回组合完成的 `Project`。
 
 ```ts
-interface Project extends ProjectInfo {
+function openOrCreateProject(options: {
+  readonly keaHome: string;
+  readonly cwd?: string;
+  readonly runtime: ModelRuntime;
+  readonly modelConfig: ModelConfig;
+  readonly interactions: Interactions;
+  readonly onListenerError?: (
+    error: unknown,
+    name: string,
+    input: unknown,
+  ) => void;
+}): Promise<Project>;
+```
+
+`cwd` 省略时使用 `process.cwd()`。无法访问目录、无法确定 Git 根目录或 Project 记录损坏时，
+函数抛出 `ProjectError`。
+
+### Project 持久化
+
+Project 记录位于：
+
+```text
+<keaHome>/projects/<projectId>/project.json
+```
+
+记录保存 `id`、`name`、规范化后的 `directory`、`createdAt` 和 `updatedAt`。同一目录只能匹配一
+条 Project 记录；出现多个匹配项会被视为数据错误。Project 目录同时作为该 Project 的 Session
+存储目录，Session 的具体格式由 `core/harness` 管理。
+
+`ProjectStorage` 只处理 Project 记录。它不解析启动目录、不运行 Git、不创建 Session，也不构造
+`Project`。这些步骤由 `openOrCreateProject()` 编排。
+
+## 2. Project、Session 与 Harness
+
+`Project` 是一个 Project 的运行时聚合对象。它持有不可变的 `ProjectInfo`、Session Repository、
+模型运行时、初始模型和共享 Events，并提供三项行为：
+
+```ts
+interface Project {
   readonly events: Events;
-  listSessions(): Promise<readonly SessionInfo[]>;
-  createSession(options?): Promise<AgentHarness>;
-  openSession(sessionId: string): Promise<AgentHarness>;
-  continueRecent(): Promise<AgentHarness>;
-  update(input: UpdateProjectInput): Promise<ProjectInfo>;
-  renderTool(input: ToolPresentationInput): string;
+  readonly info: ProjectInfo;
+
+  listSessions(): Promise<readonly SessionMetadata[]>;
+  createHarness(options?: { readonly cwd?: string }): Promise<AgentHarness>;
+  createHarnessFromSession(sessionId: string): Promise<AgentHarness>;
 }
 ```
 
-- `events` 是 Project 拥有的唯一 `Events` 实例，所有 Session 共享（见第 5 节）。
-- `listSessions()` 返回按 `updatedAt` 从新到旧排列的 `SessionInfo`；没有 Session 时返回空数组。
-- `createSession()` 用当前 `primaryDirectory` 创建 Session（`cwd: "."`），并返回绑定它的新
-  Harness；`createSession({ cwd })` 从 `primaryDirectory` 解析并存储相对 cwd。
-- `openSession(sessionId)` 打开指定 Session，并校验 header 的 `projectId`、已注册目录、
-  目录包含关系和文件系统存在性；无效或损坏的 Session 错误原样传播。
-- `continueRecent()` 打开列表中的第一份 Session；列表为空时在启动 `initialCwd` 创建。
-- `update(input)` 原子地更新 name/directories/primaryDirectory 并持久化；更改 primary 不会
-  改写已有 Session 文件。
-- `renderTool(input)` 按工具名把 `call` / `result` 渲染成 UI 文本。
+`createHarness()` 创建一份新 Session。相对 `cwd` 从 Project 目录解析；绝对 `cwd` 直接使用。
+最终路径必须存在且是目录，规范路径随后写入 Session metadata。
 
-`AgentHarness.sessionId` 是 Harness 所绑定 Session 的只读标识。Harness 不持有 Repository，
-也不负责切换 Session；再次选择 Session 会得到另一个 Harness，而不会改写已有 Harness。
+`createHarnessFromSession()` 打开已有 Session，重新验证 metadata 中保存的 `cwd`，再为它创建
+Harness。目录已被删除或不再是目录时恢复失败，不会悄悄回退到 Project 目录。
 
-## 4. Session 与 cwd
+每次构造 Harness 都会：
 
-一份 Session 存储一个选中的 Project 目录（`directory`）加一个相对 `cwd`：
+1. 从 `session.metadata.cwd` 取得唯一的工作目录；
+2. 创建一份新的内置 Tool Registry，所有路径型 Tool 都绑定该目录；
+3. 用 Project 目录和 Session cwd 填充 system prompt；
+4. 把 Project 的同一个 `Events` 实例交给 Harness。
 
-```ts
-interface SessionInfo {
-  readonly id: string;
-  readonly projectId: string;
-  readonly directory: string;   // Project 的一个绝对目录
-  readonly cwd: string;         // 相对该目录
-  readonly title: string;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
-```
+### 生命周期
 
-`createProject` 给每份 Session 的 Harness 以**解析后的绝对 cwd**，并把 Project 的完整
-`directories` 交给 Coding Tools。相对文件路径从 Session `cwd` 解析，但允许访问任一 Project
-目录；离开全部 Project 目录的路径被拒绝。切换 `primaryDirectory` 只影响之后创建的 Session。
+| 对象或状态 | 生命周期 | 说明 |
+|---|---|---|
+| Project 记录 | 持久化 | 由 `ProjectStorage` 保存，通过规范目录查找 |
+| Session | 持久化 | 由 `SessionRepository` 创建和恢复 |
+| `Project` 实例 | 一次 `openOrCreateProject()` | 组合运行时依赖，不提供保存、更新或删除 Project 的操作 |
+| `Events` | Project 实例 | 同一 Project 实例创建的全部 Harness 共享 |
+| `approved` 权限记录 | Project 实例 | 只存在于内存，重新打开 Project 后清空 |
+| `AgentHarness` | 一次创建或恢复 | 绑定一份 Session |
+| Tool Registry | Harness | 每个 Harness 都有独立的内置 Tool 实例 |
+| system prompt | Harness | 构造 Harness 时根据 Project 目录和 Session cwd 生成 |
 
-## 5. 一份 Project，一个共享 Events
+Project 级 Events 让调用方只注册一次 listener，就能观察该 Project 的全部 Session；事件中的
+`sessionId` 和 `runId` 用于区分具体运行。Tool Registry 不共享，因此每个 Harness 的工具始终绑定
+自己的 Session cwd。
 
-`createProject()` 构造**一个** `Events` 实例：
+## 3. 一次完整的 Tool 调用
 
-```ts
-const events = new Events(config.onEventListenerError);
-registerCodingEvents(events, interactions);
-```
+当模型在一次 Run 中请求 Tool 时，调用沿着下面的真实路径执行：
 
-`createSession()`、`openSession()` 和 `continueRecent()` 每次组装 Harness 时都把这个**同一个**
-实例交给新的 `AgentHarness`；Harness 把绑定后的 `StreamFn` 传给 `runAgentLoop()`。因此一份 Project 的全部
-Session 共享同一套 listener 注册，而 `sessionId`（来自 `AgentRunIdentity`）区分它们属于哪份
-Session：
+1. `AgentHarness` 从 Session 取得 cwd、历史和模型状态，进入 `core/agent` 的 Agent Loop；
+2. Agent Loop 把 Tool Call 交给该 Harness 的 `AgentToolRegistry`；
+3. Registry 完成 Tool lookup 和参数校验，然后通过共享 Events 触发 `tools/pre-execute`；
+4. Coding Agent 注册的 Permission listener 根据 Tool、目标路径、Session cwd 和内存授权作出决定；
+5. 需要用户决定时，listener 调用外部 `Interactions.permission()`；
+6. 允许后 Registry 执行 Tool，Tool Result 写回 Session，并由 Agent Loop 交给下一轮模型请求。
 
-```ts
-project.events.on("agent/turn-end", (input) => {
-  if (input.sessionId !== selectedSessionId) return;
-  render(input.message);
-});
-```
+因此权限不在具体 Tool 内实现。Tool 只负责把已验证的参数转换成文件系统或 shell 操作；Project
+边界、已批准目录和用户交互集中在 Permission listener 中。
 
-同时打开的 Session 依然拥有独立的可变 Tool、模型和 run 状态；它们共享的是 Project 配置、
-共享的 `Events`、Permission listener、调用方依赖和工具展示规则。
+## 4. Session cwd 与 system prompt
 
-## 6. 每份 Session 的 Harness 组装
+Session cwd 是一份 Session 执行文件操作和命令的基准目录。它可以是 Project 目录，也可以是其他
+现存目录。相对 Tool 路径统一从这个 cwd 解析。
 
-每次 `createSession()`、`openSession()` 或 `continueRecent()` 分配 Harness 时，Coding Agent
-都重新组装：
+`system-prompt.ts` 保存模块级 `SYSTEM_PROMPT_TEMPLATE`。`createSystemPrompt()` 在构造 Harness
+时填入：
 
-1. 根据 `session.metadata.cwd` 和 Project `directories`，为 Bash、read、write、edit、Glob 和
-   Todo 建立新的 `AgentToolRegistry`；
-2. 复用 Project 共享的 `Events`（Permission 等 coding listener 已注册其上）；
-3. 把 system prompt 模板中的 `{{cwd}}`、`{{date}}` 替换成当前值；
-4. 把选中的 Session、Runtime、模型配置、最终 system prompt、Tool Registry 和 Events 交给新的
-   `AgentHarness`。
+- `projectDirectory`：Project 的规范根目录；
+- `cwd`：当前 Session 的规范工作目录。
 
-## 7. Bash、文件与 Glob
+生成后的字符串直接传给 `AgentHarness`，不写入 Session 历史。恢复 Session 时会基于已保存的 cwd
+重新生成。System prompt 只描述工作空间和通用工作原则；工具 schema 仍由 Tool Registry 提供。
+
+## 5. 内置 Tools
+
+`createBuiltinToolRegistry(cwd)` 每次创建一个新的 `AgentToolRegistry`，并注册以下 Tools：
+
+| Tool | 行为 |
+|---|---|
+| `bash` | 在 Session cwd 中运行 shell command；非零退出码产生错误结果 |
+| `read_file` | 读取文本文件，或按稳定顺序列出目录；支持一基 `offset` 和 `limit` |
+| `write_file` | 写入完整 UTF-8 内容，必要时创建父目录 |
+| `edit_file` | 精确替换唯一出现的一段文本；缺失或出现多次时拒绝修改 |
+| `glob` | 从 Session cwd 匹配、去重并稳定排序路径 |
+| `todo_write` | 返回调用方提交的完整任务列表；Tool 本身不跨调用保存状态 |
+
+`bash` 在非 Windows 平台使用 `bash -c`。Windows 优先使用 Git Bash，找不到时使用
+`bash.exe -s`。stdout 和 stderr 按收到的顺序合并；结果保留输出尾部，因为命令的最终状态通常位于
+末尾。
+
+文件读取保留输出头部。通用文本输出最多保留 2,000 行和 50 KiB UTF-8 内容；截断时 Tool Result
+附带原始与展示范围。`glob` 另有 1,000 个结果的上限。结构化指标放在 Tool Result 的 `details`
+中，模型可见的说明放在 `content` 中。
+
+路径解析函数只执行 `resolve(cwd, input)`，不检查目标是否位于 Project 内。这项分离使 Tool 不需要
+知道 Project 或交互层；外部目录访问由执行前的 Permission listener 判断。
+
+## 6. Permission
+
+`createBuiltinEvents()` 创建一个 `Events`，并在 `tools/pre-execute` 上注册默认 Permission
+listener。它使用 Project 目录作为初始 trusted directory，并共享 `openOrCreateProject()` 创建的
+`approved` 数组。
+
+### 文件类 Tool
+
+`read_file`、`write_file`、`edit_file` 和 `glob` 的目标位于 trusted directory 中时直接允许。
+目标在 Project 外时，Permission 发送 `external-directory` 请求。用户选择 `always` 后，该目录在
+当前 Project 实例的后续调用中被视为已批准目录。
+
+`glob` 在第一个通配符之前截取静态路径前缀，用它判断访问目录。其他文件 Tool 使用目标文件的
+父目录组织权限请求。
 
 ### Bash
 
-`bash` 接收 `{ command: string }`，每次在 Session `cwd` 中启动一个新的非交互 Bash 进程，
-并把标准输出和错误输出合并为文本结果。
+Permission 先确认 Bash 的执行 cwd 是否受信任，再对 command 分类：
 
-执行使用同一份三级策略：
+- hard deny：始终拒绝，例如 `sudo`、关机、格式化文件系统、原始 `dd` 输入、`/dev`
+  重定向和强制递归删除根目录；
+- ask：需要用户确认，例如文件删除、写入 `/etc` 或 `chmod 777`；
+- allow：没有命中上述规则的 command 直接通过。
 
-| 判断 | 例子 | 行为 |
-| ---- | ---- | ---- |
-| allow | `pwd`、`git status` | 直接执行 |
-| ask | `rm file.txt`、`chmod 777` | permission listener 调用 `confirm()` |
-| deny | `sudo`、`mkfs`、`rm -rf /` | 直接拒绝，不询问 UI |
+`always` 对 Bash 记录的是完整 command 与 cwd 的组合。同一 command 换到另一个 cwd 后需要重新
+判断。Hard deny 不会被已记住的授权覆盖。
 
-Permission listener 注册在 `tools/pre-execute` 拦截上，使用完整策略；Bash Tool 自身再次
-检查 deny 规则，避免绕过 listener 后执行硬拒绝命令。Bash 失败和非零退出码会成为
-`isError: true` 的 Tool Result。
-
-### 文件与 Glob
-
-- `read_file` 读取相对路径，可用 `limit` 限制返回行数；
-- `write_file` 写入完整内容，并按需创建父目录；
-- `edit_file` 只替换第一次出现的精确文本，找不到时返回错误结果；
-- `glob` 从 Session `cwd` 匹配文件，统一使用 `/` 分隔输出，无结果时返回 `(no matches)`。
-
-文件路径经过 Project 目录边界检查（`safePath(cwd, directories, path)`），不能逃出全部
-Project 目录。
-
-## 8. 无状态 Todo 与 Session 持久化
-
-`todo_write` 每次接收完整任务列表：
+### 回复和失败
 
 ```ts
-interface TodoItem {
-  readonly content: string;
-  readonly status: "pending" | "in_progress" | "completed";
-}
-
-interface TodoDetails {
-  readonly todos: readonly TodoItem[];
-}
+type PermissionReply =
+  | { readonly kind: "once" }
+  | { readonly kind: "always" }
+  | { readonly kind: "deny"; readonly reason?: string };
 ```
 
-Todo Tool 不保存上一次调用。它同时返回模型可见的 `content` 和程序可读的
-`details: { todos }`；Harness 把整个 Tool Result 写入 Session。这样，恢复 Session 后模型仍能
-从 `content` 看见列表，UI 或程序也能从 `details` 读取结构化数据。Todo 状态属于 Session，
-不属于 Tool 实例或单次 run。
+- `once`：仅允许当前 Tool Call；
+- `always`：先写入 Project 实例的内存授权，再允许当前 Tool Call；
+- `deny`：返回错误 Tool Result，不执行 Tool。
 
-## 9. Interactions 与工具展示
+`Interactions.permission()` 抛错时，Permission 默认拒绝并把错误信息作为原因。Run 已被取消时，
+取消错误继续传播，不会被转换成普通拒绝。
 
-控制事件是执行前的控制通道。默认 permission listener 处理 Bash 的 allow/ask/deny；ask 时通过
-`CodingAgentInteractions.confirm()` 请求 UI 决策。没有传入 interactions 时使用
-`NO_INTERACTIONS`，其 `confirm()` 总是返回 `false`。
+## 7. Interactions：外部交互端口
+
+`Interactions` 是 Coding Agent 到外部决策者的最小端口：
 
 ```ts
-interface CodingAgentInteractions {
-  confirm(request: ConfirmationRequest, signal?: AbortSignal): Promise<boolean>;
-  notify(notification: Notification): void | Promise<void>;
+interface Interactions {
+  permission(
+    request: PermissionRequest,
+    signal?: AbortSignal,
+  ): Promise<PermissionReply>;
 }
 ```
 
-事实事件报告已经发生的事实。UI 订阅 `project.events`，把带 `sessionId` 的 `agent/tool-call`、
-`agent/tool-result` 投影成 `ToolPresentationInput`，再交给 Project 级的展示入口：
+`PermissionRequest` 有两种：
 
-```ts
-project.events.on("agent/tool-result", (input) => {
-  if (input.sessionId !== selectedSessionId) return;
-  console.log(project.renderTool({ type: "result", call: input.call, result: input.result }));
-});
-```
+- `dangerous-command`：包含 Session/Run 身份、原始 Tool Call、command、cwd 和原因；
+- `external-directory`：包含 Session/Run 身份、原始 Tool Call、目标路径、申请目录和原因。
 
-每个 `ToolDefinition` 可以提供 `CodingToolPresentation`。没有专用规则、规则返回
-`undefined` 或规则抛错时，Coding Agent 使用通用文本；展示失败不会改变 Tool Result。
+终端、桌面 UI 或其他调用方负责把 request 呈现给用户并返回 reply。请求 ID、窗口状态、队列或
+传输协议属于 adapter 自己，不进入 `coding-agent`。本包没有默认 `Interactions`，避免在没有用户
+确认渠道时静默放行。
 
-## 10. 源码结构
+## 8. 错误边界
 
-- `factory.ts`：`createProject()`、共享 Events、Project 生命周期和 Session 选择；
-- `types.ts`：`CreateProjectConfig`；
-- `events/factory.ts`、`events/builtin/permission.ts`：coding 控制事件（Permission）；
-- `project/types.ts`：`Project`、`ProjectInfo`、更新/创建输入；
-- `project/storage.ts`：Project 文件读写、注册表扫描和根目录发现；
-- `coding-system-prompt.ts`：默认 coding system prompt；
-- `tools/factory.ts`、`tools/definition.ts`、`tools/builtin/*`：内置 Tool；
-- `ui/interactions.ts`、`ui/presentation.ts`：UI 交互与工具展示。
+Project 发现、记录校验、Session cwd 校验中的失败使用 `ProjectError`。底层错误通过 `cause`
+保留，消息说明失败发生在哪个目录或记录。
 
-具体 UI 依赖 Coding Agent；Coding Agent 组装 Harness 和 Agent 能力；Harness 驱动 Agent；Agent
-使用 AI。Coding Agent 不导入 `src/ui`。
+内置 Tool 的普通执行失败通常转换成 `isError: true` 的 Tool Result，让模型能够读取失败原因并决定
+下一步。参数 lookup、超时、Tool listener 和 Agent Run 的通用规则仍由 `core/agent` 与
+`core/harness` 负责。
 
-## 11. 完整公共 API
+`onListenerError` 只交给 Project 级 `Events`，用于报告 `emit()` listener 的错误；Permission
+使用的 `intercept()` 错误遵循 core Events 的传播规则。
 
-以下清单与 `src/coding-agent/index.ts` 一致。
+## 9. 公共导出
+
+`src/coding-agent/index.ts` 保持最小公开接口。
 
 ### 值
 
-- `createProject`：创建或打开持久化 Project；
-- `CODING_SYSTEM_PROMPT`：默认 coding system prompt；
-- `NO_INTERACTIONS`：fail-closed 的无 UI interactions；
-- `openOrCreateProject`、`persistProject`、`applyProjectUpdate`、
-  `assertDirectoryOwnership`（Project 存储层）。
+- `openOrCreateProject`：发现或创建 Project，并组合 Project 级运行时；
+- `ProjectError`：Project 发现、数据和 cwd 错误。
 
 ### 类型
 
-- Project：`Project`、`ProjectInfo`、`OpenedProject`、`OpenProjectInput`、
-  `UpdateProjectInput`、`CreateSessionOptions`、`CreateProjectConfig`；
-- UI 交互：`CodingAgentInteractions`、`ConfirmationRequest`、`Notification`；
-- Tool 展示：`CodingToolPresentation`、`ToolPresentationCall`、`ToolPresentationInput`；
-- Tool 定义：`CodingToolContext`、`ToolDefinition`；
-- Todo：`TodoItem`、`TodoDetails`。
+- `Project`、`ProjectInfo`；
+- `Interactions`、`PermissionRequest`、`PermissionReply`。
 
-内置 Tool/事件工厂、`toAgentTool()`、Bash policy 和 presentation registry 是包内实现，不是
-稳定公共接口。
+`ProjectStorage`、system prompt builder、内置 Tool/Event factory、权限规则和各 Tool 的 details
+类型都是内部实现，不从包入口重新导出。
+
+## 10. 源码位置与包边界
+
+- `factory.ts`：唯一组合根，负责目录发现、Project 记录和 Project 级运行时组装；
+- `project/project.ts`：Project 运行时行为、ProjectInfo 校验和 Harness 构造；
+- `project/storage.ts`：Project JSON 记录的持久化；
+- `system-prompt.ts`：Coding Agent system prompt 模板和动态值填充；
+- `tools/factory.ts`：为一个 Harness 创建内置 Tool Registry；
+- `tools/builtin/`：具体 Tool；
+- `events/factory.ts`：创建 Project 级 Events 并安装默认 listener；
+- `events/permission/`：路径权限、Bash policy 和内存授权；
+- `interaction/interactions.ts`：外部权限决策端口；
+- `index.ts`：最小公共入口。
+
+本包向下依赖 `core/ai`、`core/agent`、`core/events` 和 `core/harness`，向外只要求一个
+`Interactions` adapter。UI 可以订阅 `project.events` 并实现交互端口，但 `coding-agent` 不反向依赖
+任何具体 UI。

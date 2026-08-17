@@ -32,22 +32,35 @@ export type StreamFn = (
 ) => AsyncIterable<StreamChunk>;
 
 /**
- * Agent state passed into the loop. The messages view is read-only from
- * the Agent's perspective; every completed message is committed through
- * `appendMessage()` so the owning Session persists it before the corresponding
- * events are emitted.
+ * State of one Agent Run, constructed by the caller for each
+ * `runAgentLoop()` call. The messages view is read-only from the Agent's
+ * perspective; every completed message is committed through
+ * `appendMessage()` so the owning Session persists it before the
+ * corresponding events are emitted.
  */
 export interface AgentContext {
+  /** Identifies the Session this Run belongs to, for event listeners. */
+  readonly sessionId: string;
+  /** Correlates every Turn and Tool Call of this Run. */
+  readonly runId: string;
+  /** Working directory in which this Session executes Tool Calls. */
+  readonly cwd: string;
+
   readonly systemPrompt: string;
   readonly messages: readonly AgentMessage[];
   readonly tools: AgentToolRegistry;
+
+  /** Shared event dispatcher; control listeners wrap pending behavior via intercept(). */
+  readonly events: Events;
+  /** Cancellation for the whole Run. */
+  readonly signal?: AbortSignal;
+
   appendMessage(message: AgentMessage): Promise<void>;
 }
 
 /**
- * Configuration consumed by the agent loop.
- * Control flows through the shared `Events` dispatcher using emit()/intercept();
- * the loop never calls hooks directly.
+ * Loop policy for one Agent Run. Execution state lives in `AgentContext`;
+ * everything in here only steers the loop itself.
  */
 export interface AgentLoopConfig {
   readonly model: ModelConfig;
@@ -57,8 +70,4 @@ export interface AgentLoopConfig {
   readonly convertToLlm: (
     messages: readonly AgentMessage[],
   ) => readonly Message[];
-  /** Shared event dispatcher; control listeners wrap pending behavior via intercept(). */
-  readonly events: Events;
-  /** Identity of the current run, attached to every event. */
-  readonly run: AgentRunIdentity;
 }

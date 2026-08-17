@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { ProjectStorage } from "../../../src/coding-agent/project/storage.js";
-import type { ProjectInfo } from "../../../src/coding-agent/project/project.js";
+import { ProjectError, type ProjectInfo } from "../../../src/coding-agent/project/project.js";
 
 const VALID_ID = "550e8400-e29b-41d4-a716-446655440000";
 
@@ -75,6 +84,57 @@ test("create persists version 1 and all five fields; findByDirectory finds the s
   } finally {
     await rm(keaHome, { recursive: true, force: true });
     await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("create persists only ProjectInfo fields and cannot have its version overridden", async () => {
+  const keaHome = await tempDir();
+  const projectDir = await tempDir();
+  try {
+    const storage = new ProjectStorage(keaHome);
+    const info = {
+      ...validInfo(resolve(projectDir)),
+      version: 2,
+      extra: "must not be persisted",
+    };
+
+    await storage.create(info);
+
+    const raw = JSON.parse(
+      await readFile(join(keaHome, "projects", info.id, "project.json"), "utf8"),
+    ) as Record<string, unknown>;
+    assert.deepEqual(raw, {
+      version: 1,
+      id: info.id,
+      name: info.name,
+      directory: info.directory,
+      createdAt: info.createdAt,
+      updatedAt: info.updatedAt,
+    });
+    assert.deepEqual(await storage.findByDirectory(info.directory), validInfo(info.directory));
+  } finally {
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("findByDirectory canonicalizes a directory link with the same rule as Project discovery", async () => {
+  const keaHome = await tempDir();
+  const parent = await tempDir();
+  try {
+    const target = join(parent, "target");
+    const link = join(parent, "link");
+    await mkdir(target);
+    await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+
+    const storage = new ProjectStorage(keaHome);
+    const info = validInfo(await realpath(target));
+    await storage.create(info);
+
+    assert.deepEqual(await storage.findByDirectory(link), info);
+  } finally {
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(parent, { recursive: true, force: true });
   }
 });
 
@@ -148,6 +208,31 @@ test("malformed, unsupported, and mismatched project records reject", async () =
   }
 });
 
+test("record validation errors identify the corrupt project.json and preserve their cause", async () => {
+  const keaHome = await tempDir();
+  const projectDir = await tempDir();
+  try {
+    const projectId = uuid(1);
+    const recordPath = join(keaHome, "projects", projectId, "project.json");
+    await persistDocument(keaHome, projectId, {
+      ...validDocument(resolve(projectDir)),
+      version: 2,
+    });
+
+    const storage = new ProjectStorage(keaHome);
+    await assert.rejects(
+      storage.findByDirectory(resolve(projectDir)),
+      (error: unknown) =>
+        error instanceof Error
+        && error.message.includes(recordPath)
+        && error.cause instanceof Error,
+    );
+  } finally {
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
 test("two valid records claiming the same normalized directory reject as duplicate ownership", async () => {
   const keaHome = await tempDir();
   const claimedDir = await tempDir();
@@ -186,7 +271,7 @@ test("create rejects an existing target directory without changing its contents"
   const keaHome = await tempDir();
   try {
     const storage = new ProjectStorage(keaHome);
-    const info = validInfo(resolve(await tempDir()));
+    const info = validInfo(resolve(join(keaHome, "source")));
 
     const target = join(keaHome, "projects", info.id);
     await mkdir(target, { recursive: true });
@@ -203,7 +288,7 @@ test("a failed create removes only its own temporary directory and propagates th
   const keaHome = await tempDir();
   try {
     const storage = new ProjectStorage(keaHome);
-    const info = validInfo(resolve(await tempDir()));
+    const info = validInfo(resolve(join(keaHome, "source")));
 
     await mkdir(join(keaHome, "projects", info.id), { recursive: true });
 
@@ -227,6 +312,10 @@ test("dataDirectory returns the projects path for a valid ID and rejects travers
     assert.throws(() => storage.dataDirectory("not-a-uuid"), /invalid/i);
     assert.throws(() => storage.dataDirectory(""), /invalid/i);
     assert.throws(() => storage.dataDirectory(resolve("C:/elsewhere")), /invalid/i);
+    assert.throws(
+      () => storage.dataDirectory([VALID_ID] as unknown as string),
+      (error: unknown) => error instanceof ProjectError && /invalid/i.test(error.message),
+    );
   } finally {
     await rm(keaHome, { recursive: true, force: true });
   }

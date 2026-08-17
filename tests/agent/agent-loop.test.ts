@@ -19,7 +19,6 @@ import type { AgentToolCall } from "../../src/core/agent/tools/types.js";
 import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
 import { Events } from "../../src/core/events/events.js";
 
-const run = { sessionId: "session-1", runId: "run-1" } as const;
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 const testModel: ModelConfig = { provider: "test", model: "test-model" };
 
@@ -27,8 +26,6 @@ function makeConfig(overrides?: Partial<AgentLoopConfig>): AgentLoopConfig {
   return {
     model: testModel,
     convertToLlm: (msgs) => msgs,
-    events: new Events(),
-    run,
     ...overrides,
   };
 }
@@ -66,13 +63,22 @@ function streamWithEvents(
   };
 }
 
-function memoryContext(tools = new AgentToolRegistry()): AgentContext {
-  const messages: AgentMessage[] = [];
+function memoryContext(
+  tools = new AgentToolRegistry(),
+  history: AgentMessage[] = [],
+  events = new Events(),
+  signal?: AbortSignal,
+): AgentContext {
   return {
+    sessionId: "session-1",
+    runId: "run-1",
+    cwd: process.cwd(),
     systemPrompt: "",
-    messages,
+    messages: history,
     tools,
-    appendMessage: async (message) => { messages.push(message); },
+    events,
+    ...(signal === undefined ? {} : { signal }),
+    appendMessage: async (message) => { history.push(message); },
   };
 }
 
@@ -154,8 +160,8 @@ test("successful two-Turn order matches the lifecycle", async () => {
   events.on("tools/post-execute", (input, proceed) => { factOrder.push("tools/post-execute"); return proceed(input); });
   await runAgentLoop(
     "run",
-    memoryContext(registry),
-    makeConfig({ events }),
+    memoryContext(registry, [], events),
+    makeConfig(),
     stream,
   );
 
@@ -198,8 +204,8 @@ test("agent/tool-call is emitted once per model-requested call", async () => {
 
   await runAgentLoop(
     "run",
-    memoryContext(registry),
-    makeConfig({ events }),
+    memoryContext(registry, [], events),
+    makeConfig(),
     stream,
   );
 
@@ -260,9 +266,13 @@ test("tool results are in history before the next model stream", async () => {
   );
   const history: AgentMessage[] = [];
   const context: AgentContext = {
+    sessionId: "session-1",
+    runId: "run-1",
+    cwd: process.cwd(),
     systemPrompt: "",
     messages: history,
     tools: registry,
+    events: new Events(),
     appendMessage: async (message) => { history.push(message); },
   };
 
@@ -282,16 +292,20 @@ test("agent/tool-result is emitted only after its Tool message is appended", asy
   const registry = new AgentToolRegistry();
   registry.register(new NoopTool());
   const history: AgentMessage[] = [];
+  const events = new Events();
   const context: AgentContext = {
+    sessionId: "session-1",
+    runId: "run-1",
+    cwd: process.cwd(),
     systemPrompt: "",
     messages: history,
     tools: registry,
+    events,
     appendMessage: async (message) => { history.push(message); },
   };
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
-  const events = new Events();
   const checks: string[] = [];
   events.on("agent/tool-result", (input) => {
     if (input.sessionId !== "session-1") return;
@@ -310,7 +324,7 @@ test("agent/tool-result is emitted only after its Tool message is appended", asy
   await runAgentLoop(
     "run",
     context,
-    makeConfig({ events }),
+    makeConfig(),
     streamForToolCall(call),
   );
 
@@ -363,9 +377,13 @@ test("unknown, invalid, blocked, and thrown tools each produce exactly one error
     scenario.event(events);
     const history: AgentMessage[] = [];
     const context: AgentContext = {
+      sessionId: "session-1",
+      runId: "run-1",
+      cwd: process.cwd(),
       systemPrompt: "",
       messages: history,
       tools: registry,
+      events,
       appendMessage: async (message) => { history.push(message); },
     };
     const results: AgentToolResult[] = [];
@@ -376,7 +394,7 @@ test("unknown, invalid, blocked, and thrown tools each produce exactly one error
     await runAgentLoop(
       "run",
       context,
-      makeConfig({ events }),
+      makeConfig(),
       streamForToolCall(scenario.call),
     );
 
@@ -414,8 +432,8 @@ test("failing agent/user-prompt or agent/context interceptors reject the Run", a
     await assert.rejects(
       runAgentLoop(
         "start",
-        memoryContext(),
-        makeConfig({ events }),
+        memoryContext(undefined, [], events),
+        makeConfig(),
         streamWithEvents([[{ type: "done", message: assistantMsg("") }]]),
       ),
       new RegExp(`${name} failed`),
@@ -434,9 +452,13 @@ test("AI error terminal chunk appends its message and finishes", async () => {
   };
   const history: AgentMessage[] = [];
   const context: AgentContext = {
+    sessionId: "session-1",
+    runId: "run-1",
+    cwd: process.cwd(),
     systemPrompt: "",
     messages: history,
     tools: new AgentToolRegistry(),
+    events,
     appendMessage: async (message) => { history.push(message); },
   };
   const turnEnds: Array<{ message: AgentMessage; toolResults: readonly AgentMessage[] }> = [];
@@ -447,7 +469,7 @@ test("AI error terminal chunk appends its message and finishes", async () => {
   await runAgentLoop(
     "start",
     context,
-    makeConfig({ events }),
+    makeConfig(),
     streamWithEvents([[{ type: "error", message: failed }]]),
   );
 
@@ -465,10 +487,9 @@ test("pre-aborted run rejects with AbortError before model streaming", async () 
   await assert.rejects(
     runAgentLoop(
       "start",
-      memoryContext(),
-      makeConfig({ events }),
+      memoryContext(undefined, [], events, controller.signal),
+      makeConfig(),
       streamWithEvents([]),
-      controller.signal,
     ),
     (error: unknown) => (error as Error).name === "AbortError",
   );
@@ -478,9 +499,13 @@ test("stream ending without a terminal chunk rejects and emits no turn-end", asy
   const events = new Events();
   const history: AgentMessage[] = [];
   const context: AgentContext = {
+    sessionId: "session-1",
+    runId: "run-1",
+    cwd: process.cwd(),
     systemPrompt: "",
     messages: history,
     tools: new AgentToolRegistry(),
+    events,
     appendMessage: async (message) => { history.push(message); },
   };
   let turnEnds = 0;
@@ -492,7 +517,7 @@ test("stream ending without a terminal chunk rejects and emits no turn-end", asy
     runAgentLoop(
       "hello",
       context,
-      makeConfig({ events }),
+      makeConfig(),
       async function* () {},
     ),
     /stream.*terminal|done.*error/i,
@@ -539,25 +564,29 @@ test("abort during execution still produces exactly one result per call", async 
   };
 
   const history: AgentMessage[] = [];
+  const events = new Events();
+  const controller = new AbortController();
   const context: AgentContext = {
+    sessionId: "session-1",
+    runId: "run-1",
+    cwd: process.cwd(),
     systemPrompt: "",
     messages: history,
     tools: registry,
+    events,
+    signal: controller.signal,
     appendMessage: async (message) => { history.push(message); },
   };
-  const events = new Events();
   const results: AgentToolResult[] = [];
   events.on("agent/tool-result", (input) => {
     if (input.sessionId === "session-1") results.push(input.result);
   });
-  const controller = new AbortController();
 
   const run = runAgentLoop(
     "run",
     context,
-    makeConfig({ events }),
+    makeConfig(),
     stream,
-    controller.signal,
   );
 
   await started;

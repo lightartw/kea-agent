@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 
 import { runAgentLoop } from "../agent/agent-loop.js";
-import type { AgentLoopConfig, AgentMessage, AgentRunIdentity } from "../agent/types.js";
+import type {
+  AgentContext,
+  AgentLoopConfig,
+  AgentMessage,
+  AgentRunIdentity,
+} from "../agent/types.js";
 import type { AgentTool } from "../agent/tools/types.js";
 import type { AgentToolRegistry } from "../agent/tools/registry.js";
 import type { Events } from "../events/events.js";
@@ -55,12 +60,10 @@ export class AgentHarness {
     if (this.running) throw new Error("AgentHarness is busy");
   }
 
-  private createLoopConfig(run: AgentRunIdentity): AgentLoopConfig {
+  private createLoopConfig(): AgentLoopConfig {
     return {
       model: this.currentModel,
       convertToLlm: (messages) => messages,
-      events: this.events,
-      run,
     };
   }
 
@@ -86,31 +89,36 @@ export class AgentHarness {
       await this.events.emit("harness/run-start", run);
 
       if (!this.abortRequested) {
-        const config = this.createLoopConfig(run);
+        const config = this.createLoopConfig();
         const messages = [...this.session.messages()];
+        const agentContext: AgentContext = {
+          sessionId: this.session.id,
+          runId: run.runId,
+          cwd: this.session.metadata.cwd,
+          systemPrompt: this.systemPrompt,
+          messages,
+          tools: this.toolRegistry,
+          events: this.events,
+          signal: abortController.signal,
+          appendMessage: async (message) => {
+            await this.session.append({ type: "message", message });
+            messages.push(message);
+            if (message.role === "user") {
+              await ensureSessionTitle({
+                session: this.session,
+                prompt: message.content,
+                runtime: this.runtime,
+                model: this.currentModel,
+                signal: abortController.signal,
+              });
+            }
+          },
+        };
         await runAgentLoop(
           input,
-          {
-            systemPrompt: this.systemPrompt,
-            messages,
-            tools: this.toolRegistry,
-            appendMessage: async (message) => {
-              await this.session.append({ type: "message", message });
-              messages.push(message);
-              if (message.role === "user") {
-                await ensureSessionTitle({
-                  session: this.session,
-                  prompt: message.content,
-                  runtime: this.runtime,
-                  model: this.currentModel,
-                  signal: abortController.signal,
-                });
-              }
-            },
-          },
+          agentContext,
           config,
           this.runtime.stream.bind(this.runtime),
-          abortController.signal,
         );
       }
     } catch (error) {

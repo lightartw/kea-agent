@@ -1,5 +1,5 @@
 import { AgentToolRegistry } from "../../core/agent/tools/registry.js";
-import { createBashTool } from "./builtin/bash/bash.js";
+import { createBashTool } from "./builtin/bash.js";
 import { createEditFileTool } from "./builtin/edit-file.js";
 import { createGlobTool } from "./builtin/glob.js";
 import { createReadFileTool } from "./builtin/read-file.js";

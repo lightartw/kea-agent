@@ -3,21 +3,16 @@ import test from "node:test";
 
 import { CliHarnessRenderer } from "../../src/ui/cli-harness-renderer.js";
 import type { AgentToolCall } from "../../src/core/agent/tools/types.js";
-import type { ToolPresentationInput } from "../../src/coding-agent/ui/presentation.js";
 import { Events } from "../../src/core/events/events.js";
 
-const run = { sessionId: "session-1", runId: "run-1" } as const;
+const run = { sessionId: "session-1", runId: "run-1", cwd: "/work/project" } as const;
 
-function rendererWith(
-  renderToolEvent: (event: ToolPresentationInput) => string = (event) =>
-    `[${event.type}] ${event.call.name}`,
-) {
+function rendererWith() {
   const writes: string[] = [];
   const logs: string[] = [];
   const events = new Events();
   const renderer = new CliHarnessRenderer(
     { write: (text) => writes.push(text), log: (text) => logs.push(text) },
-    renderToolEvent,
   );
   renderer.bind(events, run.sessionId);
   return { renderer, events, writes, logs };
@@ -44,22 +39,24 @@ test("run-start is no-output and run-end prints the tool-count summary", async (
   assert.deepEqual(logs, ["session used 0 tool calls"]);
 });
 
-test("tool call/result events are delegated to the runtime rendering function", async () => {
-  const { events, logs } = rendererWith((event) => {
-    if (event.type === "call") return "todo call";
-    return "todo result";
-  });
+test("tool call/result events render arguments and results directly", async () => {
+  const { events, logs } = rendererWith();
   const call: AgentToolCall = {
-    type: "toolCall", id: "c1", name: "todo_write", arguments: {},
+    type: "toolCall", id: "c1", name: "todo_write", arguments: { path: "a.ts" },
   };
 
   await events.emit("harness/run-start", run);
   await events.emit("agent/tool-call", { ...run, call });
-  await events.emit("agent/tool-result", { ...run, call, result: { content: "ok", isError: false } });
+  await events.emit("agent/tool-result", {
+    ...run,
+    call,
+    result: { content: "ok", isError: false },
+  });
 
   assert.deepEqual(logs, [
-    "\n\x1b[33mtodo call\x1b[0m",
-    "todo result",
+    "\x1b[33m  {\"path\":\"a.ts\"}\x1b[0m",
+    "\n\x1b[32m[result] todo_write\x1b[0m",
+    "ok",
   ]);
 });
 
@@ -75,8 +72,8 @@ test("tool-result above 100000 characters emits the large-output warning", async
     result: { content: "x".repeat(100_001), isError: false },
   });
 
-  assert.equal(logs.length, 2);
-  assert.match(logs[1] ?? "", /Large output from bash \(100001 characters\)/);
+  assert.equal(logs.length, 3);
+  assert.match(logs[2] ?? "", /Large output from bash \(100001 characters\)/);
 });
 
 test("run-end emits the final tool-count summary", async () => {
@@ -95,10 +92,42 @@ test("run-end emits the final tool-count summary", async () => {
   await events.emit("harness/run-end", { ...run, reason: "completed" });
 
   assert.deepEqual(logs, [
-    "[result] bash",
-    "[result] bash",
+    "\n\x1b[32m[result] bash\x1b[0m",
+    "one",
+    "\n\x1b[31m[result] bash\x1b[0m",
+    "two",
     "session used 2 tool calls",
   ]);
+});
+
+test("run failure is rendered after the tool-count summary", async () => {
+  const { events, logs } = rendererWith();
+  await events.emit("harness/run-start", run);
+  await events.emit("harness/run-end", {
+    ...run,
+    reason: "error",
+    errorMessage: "boom",
+  });
+
+  assert.deepEqual(logs, [
+    "session used 0 tool calls",
+    "\x1b[31mrun failed: boom\x1b[0m",
+  ]);
+});
+
+test("large arguments are truncated in the tool-call preview", async () => {
+  const { events, logs } = rendererWith();
+  const call: AgentToolCall = {
+    type: "toolCall", id: "c1", name: "bash",
+    arguments: { command: "x".repeat(500) },
+  };
+
+  await events.emit("harness/run-start", run);
+  await events.emit("agent/tool-call", { ...run, call });
+
+  const line = logs[0] ?? "";
+  assert.ok(line.includes("…"));
+  assert.ok(line.length < 250);
 });
 
 test("facts from other sessions are filtered out", async () => {
@@ -108,16 +137,4 @@ test("facts from other sessions are filtered out", async () => {
 
   assert.deepEqual(writes, []);
   assert.deepEqual(logs, []);
-});
-
-test("throwing tool rendering is isolated and never throws through the renderer", async () => {
-  const { events, logs } = rendererWith(() => { throw new Error("crash"); });
-  const call: AgentToolCall = {
-    type: "toolCall", id: "c1", name: "todo_write", arguments: {},
-  };
-
-  await events.emit("harness/run-start", run);
-  await events.emit("agent/tool-call", { ...run, call });
-
-  assert.deepEqual(logs, ["[ui error] crash"]);
 });

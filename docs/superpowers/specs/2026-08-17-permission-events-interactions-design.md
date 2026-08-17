@@ -141,13 +141,6 @@ Interactions 使用 Coding Agent 的领域语义，不暴露 `confirm()`、`sele
 操作。建议文件为 `src/coding-agent/interactions.ts`。
 
 ```ts
-type PermissionOperation =
-  | "read"
-  | "write"
-  | "edit"
-  | "glob"
-  | "execute";
-
 type PermissionRequest =
   | {
       readonly kind: "dangerous-command";
@@ -163,7 +156,6 @@ type PermissionRequest =
       readonly sessionId: string;
       readonly runId: string;
       readonly call: AgentToolCall;
-      readonly operation: PermissionOperation;
       readonly targetPath: string;
       readonly directory: string;
       readonly reason: string;
@@ -189,7 +181,8 @@ interface Interactions {
 - `kind` 区分危险命令和外部目录两种授权语义；
 - `reason` 说明 Permission 为什么没有直接 allow；
 - 命令请求额外提供 command 和执行 cwd；
-- 目录请求额外提供操作类型、目标路径和 `always` 将授权的目录。
+- 目录请求额外提供目标路径和 `always` 将授权的目录。外部 adapter 通过原始 `call` 中的 Tool
+  名称与参数展示操作，契约不重复暴露 Permission 内部的 Tool 分类。
 
 这些字段描述逻辑，不规定标题、正文、按钮文字或排版。adapter 根据自己的界面生成展示。
 Promise 已经关联本次 request 和 reply，因此领域对象不需要 `requestId`。
@@ -219,14 +212,9 @@ Error: 不要删除这个文件，改为移动到回收站
 本阶段没有其他确定的主动交互需求，因此不增加 `question()`，也不预先增加通用 UI primitives。
 以后出现新的领域请求时再扩展 Interactions。单向通知继续使用 Event，不进入 Interactions。
 
-没有外部 adapter 时，默认实现返回带有明确原因的 deny：
-
-```ts
-{
-  kind: "deny",
-  reason: "Permission request failed: interaction unavailable",
-}
-```
+没有外部 adapter 时不能构造完整的 builtin Events：`createBuiltinEvents()` 要求装配方显式提供
+`Interactions`，缺失依赖在构造阶段暴露，而不是由 Agent 猜测默认行为。默认实现的 deny 语义在
+装配方缺失 adapter 时无从产生，因此本设计不提供 `NO_INTERACTIONS`。
 
 ## 6. Permission listener
 
@@ -288,8 +276,11 @@ sandbox；需要强安全边界时应使用 OS 级执行隔离。
 
 ### 7.3 生命周期
 
-当前规则保存在 Permission listener 的内存状态中，生命周期与所在 Coding Agent runtime 相同。
-内存规则写入完成后才继续 `always` 请求，不增加 RuleStore 抽象。
+`approved` 由 Project 创建并保存在内存中，同一 Project 的 Session 共享。Permission 不拥有该
+数组，只在 `always` 时追加当前请求生成的规则。Project 实例释放或进程退出后规则消失；当前阶段
+不落盘。可信目录来自 Project 配置，不写入 `approved`。
+
+规则写入完成后才继续 `always` 请求，不增加 RuleStore 抽象。
 
 持久化属于后续 Project 设计。未来接入持久化后，只有规则保存成功才能执行当前调用；保存失败不能
 静默退化成 `once`。
@@ -312,7 +303,7 @@ sandbox；需要强安全边界时应使用 OS 级执行隔离。
 | Tool | 根据已校验参数执行操作并返回结果 |
 | Registry | 按顺序执行 Tool Event，并落实 PreToolDecision |
 | Events | 分发 Tool 执行控制点和事实 |
-| Permission | 计算策略、维护授权规则、调用 Interactions |
+| Permission | 计算策略并更新外部批准数组、调用 Interactions |
 | Interactions | 定义内部主动向外部请求回答的端口 |
 | 外部 adapter | 展示 PermissionRequest 并返回 PermissionReply |
 
@@ -336,21 +327,22 @@ sandbox；需要强安全边界时应使用 OS 级执行隔离。
 - 调整三个 Tool Event 的输入；
 - 调整 Registry 的 lookup、validate 和三个拦截阶段顺序；
 - 定义 UI 无关的 `Interactions.permission()`；
-- 让 Permission 的策略判断、规则状态以及 Interaction/`PreToolDecision` 映射脱离 UI，并能用显式
-  环境数据独立测试；
-- 保持 Tool 不感知 Permission。
+- 让 Permission 的策略判断、外部 `approved` 数组以及 Interaction/`PreToolDecision` 映射脱离
+  UI，并能用显式数据独立测试；
+- 保持 Tool 不感知 Permission；
+- 由 `createBuiltinEvents()` 接收装配数据（`interactions`、`approved`、`trustedDirectories`、
+  `getSessionCwd`、`onListenerError`），创建 Events 并注册默认 Permission listener（含
+  `proceed()` 落实）；Permission 只返回决定，不接触 Events 链。
 
 后续 Project 阶段负责：
 
-- 按 sessionId 提供实际 cwd 和 Project trusted directories；
-- 构造和判断 external-directory request；
-- 决定 command/directory rule 的持久化方式；
+- 创建 Project 级 `approved` 内存数组并传给 `createBuiltinEvents()`；
+- 按 sessionId 提供 `getSessionCwd` 的实现（Session cwd）与 Project trusted directories；
+- 决定 command/directory rule 的持久化方式（当前不落盘）；
 - 用 Permission 替代 Project 当前对外部 cwd 的硬性拒绝。
 
 危险命令 request 和 command rule 需要 Session cwd；外部目录判断还需要 Project trusted
-directories。在 Project 提供这些数据前，当前阶段不伪造缺失值，也不把 cwd 或 trusted
-directories 加入通用 core Tool Event。按 Session 构造 PermissionRequest 和注册完整 runtime
-listener 的装配在 Project 阶段完成，Project 接入不改变 Tool API 或本文的 Interaction 契约。
+directories。Project 接入不改变 Tool API 或本文的 Interaction 契约。
 
 ## 12. 验证要求
 
