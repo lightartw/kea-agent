@@ -1,17 +1,32 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Static } from "typebox";
 import { Type } from "typebox";
 
-import { hardDeniedBashReason } from "./bash-policy.js";
-import type { ToolDefinition } from "../../definition.js";
+import { AgentTool } from "../../../../core/agent/tools/types.js";
+import { truncateTail } from "../../output.js";
 
-type ExecuteBash = (
+/** How a command is executed. Injected for tests; defaults to the local shell. */
+export type ExecuteBash = (
   command: string,
   cwd: string,
   signal: AbortSignal,
-) => Promise<string>;
+) => Promise<{ readonly output: string; readonly exitCode: number | null }>;
+
+/** Metrics about the bounded output attached to every bash result. */
+export interface BashToolDetails {
+  readonly exitCode: number | null;
+  readonly truncated: boolean;
+  readonly totalLines: number;
+  readonly shownLines: number;
+  readonly totalBytes: number;
+  readonly shownBytes: number;
+}
+
+const parameters = Type.Object(
+  { command: Type.String({ minLength: 1, description: "Shell command to execute." }) },
+  { additionalProperties: false },
+);
 
 interface Shell {
   readonly command: string;
@@ -19,11 +34,7 @@ interface Shell {
   readonly commandOnStdin: boolean;
 }
 
-const parameters = Type.Object(
-  { command: Type.String({ description: "Shell command to execute." }) },
-  { additionalProperties: false },
-);
-
+/** Resolve the preferred bash for this platform, Git Bash on Windows. */
 function getShell(): Shell {
   if (process.platform !== "win32") {
     return { command: "bash", arguments: ["-c"], commandOnStdin: false };
@@ -40,13 +51,17 @@ function getShell(): Shell {
   return { command: "bash.exe", arguments: ["-s"], commandOnStdin: true };
 }
 
+/**
+ * Run a command in the local shell and return its raw output and exit code.
+ * stdout and stderr chunks are collected into one stream in arrival order.
+ */
 async function executeLocalBash(
   command: string,
   cwd: string,
   signal: AbortSignal,
-): Promise<string> {
+): Promise<{ output: string; exitCode: number | null }> {
   if (signal.aborted) throw signal.reason;
-  return new Promise<string>((resolvePromise, rejectPromise) => {
+  return new Promise((resolvePromise, rejectPromise) => {
     const shell = getShell();
     const child = spawn(
       shell.command,
@@ -60,59 +75,65 @@ async function executeLocalBash(
     );
     if (shell.commandOnStdin) child.stdin?.end(command);
 
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
+    const chunks: Buffer[] = [];
     child.stdout?.on("data", (chunk: Buffer | string) => {
-      stdout.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     });
     child.stderr?.on("data", (chunk: Buffer | string) => {
-      stderr.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     });
     child.once("error", rejectPromise);
     child.once("close", (code) => {
-      const output = Buffer.concat([...stdout, ...stderr]).toString("utf8").trim();
-      if (code !== 0) {
-        rejectPromise(new Error(
-          `Command exited with code ${String(code)}${output ? `\n${output}` : ""}`,
-        ));
-        return;
-      }
-      resolvePromise(output || "(no output)");
+      resolvePromise({
+        output: Buffer.concat(chunks).toString("utf8"),
+        exitCode: code,
+      });
     });
   });
 }
 
-export function createBashToolDefinition(
+class BashTool extends AgentTool<typeof parameters, BashToolDetails> {
+  private readonly cwd: string;
+
+  constructor(
+    cwd: string,
+    private readonly executeBash: ExecuteBash,
+  ) {
+    super("bash", "Run a shell command.", parameters);
+    this.cwd = resolve(cwd);
+  }
+
+  async execute(
+    arguments_: { command: string },
+    signal: AbortSignal,
+  ): Promise<{ content: string; details: BashToolDetails; isError: boolean }> {
+    const executed = await this.executeBash(arguments_.command, this.cwd, signal);
+    const selected = truncateTail(executed.output);
+    const output = selected.content === "" ? "(no output)" : selected.content;
+    const status = executed.exitCode === 0
+      ? output
+      : `${output}\n\nCommand exited with code ${String(executed.exitCode)}`;
+    return {
+      content: selected.truncated
+        ? `${status}\n\n[Output truncated: showing ${selected.shownLines} of ${selected.totalLines} lines and ${selected.shownBytes} of ${selected.totalBytes} bytes]`
+        : status,
+      details: {
+        exitCode: executed.exitCode,
+        truncated: selected.truncated,
+        totalLines: selected.totalLines,
+        shownLines: selected.shownLines,
+        totalBytes: selected.totalBytes,
+        shownBytes: selected.shownBytes,
+      },
+      isError: executed.exitCode !== 0,
+    };
+  }
+}
+
+/** Create the built-in bash tool, running commands relative to the given cwd. */
+export function createBashTool(
+  cwd: string,
   executeBash: ExecuteBash = executeLocalBash,
-): ToolDefinition<typeof parameters> {
-  return {
-    name: "bash",
-    description: "Run a shell command.",
-    parameters,
-    async execute(
-      arguments_: Static<typeof parameters>,
-      signal: AbortSignal,
-      context,
-    ) {
-      const { command } = arguments_;
-      const reason = hardDeniedBashReason(command);
-      if (reason !== undefined) {
-        return {
-          content: `Error: Permission denied: ${reason}`,
-          isError: true,
-        };
-      }
-      try {
-        return {
-          content: await executeBash(command, resolve(context.cwd), signal),
-          isError: false,
-        };
-      } catch (error) {
-        return {
-          content: error instanceof Error ? error.message : String(error),
-          isError: true,
-        };
-      }
-    },
-  };
+): AgentTool<typeof parameters, BashToolDetails> {
+  return new BashTool(cwd, executeBash);
 }
