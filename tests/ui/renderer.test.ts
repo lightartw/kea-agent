@@ -169,3 +169,27 @@ test("user input echo and error messages render plainly", () => {
   assert.ok(text.includes("hello"));
   assert.ok(text.includes("something failed"));
 });
+
+test("session activation renders a banner and replays history", () => {
+  const { renderer, output } = rendererWith({});
+  renderer.renderSession({
+    sessionId: "session-1",
+    model: { provider: "openai", model: "gpt-5" },
+    messages: [
+      { role: "user", content: "earlier question" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "earlier answer" }],
+        model: "m",
+        stopReason: "stop",
+        latencyMs: 1,
+      },
+    ],
+  });
+
+  const text = output();
+  assert.ok(text.includes("Session session-1"));
+  assert.ok(text.includes("openai/gpt-5"));
+  assert.ok(text.includes("earlier question"));
+  assert.ok(text.includes("earlier answer"));
+});

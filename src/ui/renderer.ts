@@ -1,4 +1,5 @@
 import type { AgentMessage, AgentToolCall, AgentToolResult } from "../core/agent/index.js";
+import type { ModelConfig } from "../core/ai/index.js";
 import type { HarnessEvent } from "../core/harness/index.js";
 
 type HarnessRunEnd = Extract<HarnessEvent, { readonly type: "run-end" }>;
@@ -70,6 +71,18 @@ export class Renderer {
   /** Echo the user's submitted Prompt before the Harness runs it. */
   renderUser(text: string): void {
     this.writeFn(`\n> ${text}`);
+  }
+
+  /** Session banner plus the stored history when a Harness becomes active. */
+  renderSession(harness: {
+    readonly sessionId: string;
+    readonly model: ModelConfig;
+    readonly messages: readonly AgentMessage[];
+  }): void {
+    this.writeFn(
+      `\nSession ${harness.sessionId} — ${harness.model.provider}/${harness.model.model}`,
+    );
+    this.renderHistory(harness.messages);
   }
 
   /** Replay a Session's stored messages after restoring it. */
