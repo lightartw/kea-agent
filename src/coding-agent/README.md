@@ -13,9 +13,8 @@ Agent。
 - 通过 `Interactions` 把权限请求交给外部 UI 或终端。
 
 Agent Loop、模型 Provider、Session 文件格式和 Events 分发机制仍由 `core` 负责。基础规则分别见
-[ai](../core/ai/README.md)、[agent](../core/agent/README.md)、
-[harness](../core/harness/README.md) 和 [events](../core/events/README.md)。`coding-agent` 不包含 UI，
-也不决定权限请求应当怎样展示给用户。
+[ai](../core/ai/README.md) 和 [harness](../core/harness/README.md)（含事件契约）。`coding-agent`
+不包含 UI，也不决定权限请求应当怎样展示给用户。
 
 ## 最小用法
 
@@ -157,7 +156,7 @@ Session cwd。
 
 当模型在一次 Run 中请求 Tool 时，调用沿着下面的真实路径执行：
 
-1. `AgentHarness` 从 Session 取得 cwd、历史和模型状态，进入 `core/agent` 的 Agent Loop；
+1. `AgentHarness` 从 Session 取得 cwd、历史和模型状态，进入 `core/harness` 的 Agent Loop；
 2. Agent Loop 把 Tool Call 交给该 Harness 的 `AgentToolRegistry`；
 3. Registry 完成 Tool lookup 和参数校验，然后通过共享 Events 触发 `tools/pre-execute`；
 4. Coding Agent 注册的 Permission listener 根据 Tool、目标路径、Session cwd 和内存授权作出决定；
@@ -276,8 +275,7 @@ Project 发现、记录校验、Session cwd 校验中的失败使用 `ProjectErr
 保留，消息说明失败发生在哪个目录或记录。
 
 内置 Tool 的普通执行失败通常转换成 `isError: true` 的 Tool Result，让模型能够读取失败原因并决定
-下一步。参数 lookup、超时、Tool listener 和 Agent Run 的通用规则仍由 `core/agent` 与
-`core/harness` 负责。
+下一步。参数 lookup、超时、Tool listener 和 Agent Run 的通用规则由 `core/harness` 负责。
 
 `onListenerError` 只交给 Project 级 `Events`，用于报告 `emit()` listener 的错误；Permission
 使用的 `intercept()` 错误遵循 core Events 的传播规则。
@@ -312,6 +310,6 @@ Project 发现、记录校验、Session cwd 校验中的失败使用 `ProjectErr
 - `interaction/interactions.ts`：外部权限决策端口；
 - `index.ts`：最小公共入口。
 
-本包向下依赖 `core/ai`、`core/agent`、`core/events` 和 `core/harness`，向外只要求一个
+本包向下依赖 `core/ai`、`core/events` 和 `core/harness`，向外只要求一个
 `Interactions` adapter。UI 通过 `harness.subscribe()` 观察事件并实现交互端口，但 `coding-agent`
 不反向依赖任何具体 UI。

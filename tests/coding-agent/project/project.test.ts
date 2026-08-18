@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { Type } from "typebox";
 
-import { AgentTool, type AgentToolResult } from "../../../src/core/agent/tools/types.js";
+import { AgentTool, type AgentToolResult } from "../../../src/core/harness/tools/types.js";
 import type { AssistantMessage, ModelConfig, Tool } from "../../../src/core/ai/types.js";
 import { SessionRepository } from "../../../src/core/harness/session/repository.js";
 import { Events } from "../../../src/core/events/events.js";

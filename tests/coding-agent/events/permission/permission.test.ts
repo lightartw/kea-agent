@@ -4,8 +4,8 @@ import { dirname, join, resolve } from "node:path";
 
 import type {
   AgentToolCall,
-} from "../../../../src/core/agent/tools/types.js";
-import type { ToolCallEvent } from "../../../../src/core/agent/tools/events.js";
+} from "../../../../src/core/harness/tools/types.js";
+import type { ToolCallEvent } from "../../../../src/core/harness/tools/events.js";
 import {
   type Interactions,
   type PermissionReply,

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
-import type { AgentMessage } from "../../src/core/agent/types.js";
+import type { AgentMessage } from "../../src/core/harness/types.js";
 import type { ModelConfig } from "../../src/core/ai/types.js";
 import { Session } from "../../src/core/harness/session/session.js";
 import { SessionRepository } from "../../src/core/harness/session/repository.js";

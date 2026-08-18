@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 
-import { runAgentLoop } from "../agent/agent-loop.js";
+import { runAgentLoop } from "./agent-loop.js";
 import type {
   AgentContext,
   AgentLoopConfig,
   AgentMessage,
   AgentRunIdentity,
-} from "../agent/types.js";
-import type { AgentTool } from "../agent/tools/types.js";
-import type { AgentToolRegistry } from "../agent/tools/registry.js";
+} from "./types.js";
+import type { AgentTool } from "./tools/types.js";
+import type { AgentToolRegistry } from "./tools/registry.js";
 import type { Events } from "../events/events.js";
 import type { ModelConfig, ModelRuntime } from "../ai/types.js";
 import { errorMessage } from "../util/index.js";

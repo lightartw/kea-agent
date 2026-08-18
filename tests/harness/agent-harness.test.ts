@@ -3,8 +3,8 @@ import test from "node:test";
 
 import { AgentHarness } from "../../src/core/harness/agent-harness.js";
 import { Session } from "../../src/core/harness/session/session.js";
-import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
-import { AgentTool } from "../../src/core/agent/tools/types.js";
+import { AgentToolRegistry } from "../../src/core/harness/tools/registry.js";
+import { AgentTool } from "../../src/core/harness/tools/types.js";
 import { Events } from "../../src/core/events/events.js";
 import type {
   AssistantMessage,
@@ -15,7 +15,7 @@ import type {
   AgentMessage,
   AgentToolCall,
   AgentToolResult,
-} from "../../src/core/agent/index.js";
+} from "../../src/core/harness/index.js";
 import type { HarnessEvent } from "../../src/core/harness/index.js";
 import { runtimeFromStream, type TestStream } from "../fixtures/model-runtime.js";
 import { Type } from "typebox";

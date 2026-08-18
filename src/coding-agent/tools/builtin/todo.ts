@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 
-import { AgentTool } from "../../../core/agent/tools/types.js";
+import { AgentTool } from "../../../core/harness/tools/types.js";
 
 export interface TodoItem {
   readonly content: string;

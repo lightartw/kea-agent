@@ -1,12 +1,15 @@
 # Harness
 
-`ai` 提供一次 LLM 请求所需的 `ModelRuntime`，`agent` 提供一次完整运行所需的
-`runAgentLoop()`，`events` 提供共享事件通道。Harness 把它们和一个 Session 组合起来：
+`harness` 是通用 agent 的实现，把 `ai` 的 `ModelRuntime` 和 `events` 的共享通道组合成一次完整
+运行。一个通用 agent 包含三大能力与一个组合根：
+
+- **agent-loop**：`runAgentLoop()` 无状态执行一次多 Turn Agent Run；
+- **tools**：`AgentTool`/`AgentToolRegistry` 提供工具定义、校验、执行与三阶段拦截；
+- **session**：`Session`/`SessionRepository` 提供会话数据与持久化；
+- **AgentHarness**：session-bound 的组合根，把三者在共享 `Events` 上绑成一份 Session 的运行器。
+
 `AgentHarness` 在同一份会话历史中反复运行 Agent，并把每次运行的边界发布到调用方提供的
 `Events`。
-
-本章只解释 Harness 新增的职责。`ModelRuntime`、`runAgentLoop()`、Tool Registry、`Events` 和
-`EventMap` 的基础规则不再重复，请先阅读各自模块的 README。
 
 ## 最小用法
 
@@ -14,9 +17,8 @@
 
 ```ts
 import { createModelRuntime } from "../ai/index.js";
-import { AgentToolRegistry } from "../agent/index.js";
 import { Events } from "../events/index.js";
-import { AgentHarness, Session } from "./index.js";
+import { AgentHarness, AgentToolRegistry, Session } from "./index.js";
 
 const runtime = createModelRuntime({
   providers: [
@@ -44,22 +46,25 @@ unsubscribe();
 `subscribe(listener)` 把 Harness 收到的 `HarnessEvent` 按 `sessionId` 过滤后转交给 listener，
 返回的取消函数幂等。调用方不需要直接接触共享 `Events` 实例。
 
-## Harness Events
+## Events
 
-[`events.ts`](./events.ts) 没有运行时代码。它只扩充公共 `EventMap`，声明 Harness 自己拥有的
-两个 Run 边界事件：
+事件契约统一由本包声明：顶层 [`events.ts`](./events.ts) 声明 `harness/*` 的 Run 边界、`agent/*`
+的 Turn/流式/工具事实，以及两个控制拦截器（`agent/user-prompt`、`agent/context`）；
+[`tools/events.ts`](./tools/events.ts) 声明 `tools/pre-execute`、`tools/execute`、
+`tools/post-execute` 三个拦截阶段。这些文件没有运行时代码，只通过 `EventMap` 扩充声明类型。
 
 ```ts
 // "harness/run-start": (input: AgentRunIdentity) => void | Promise<void>;
 // "harness/run-end": (input: HarnessRunEnd) => void | Promise<void>;
+// "agent/turn-start" | "agent/turn-end" | "agent/text-delta" ...（emit 事实）
+// "agent/user-prompt" | "agent/context"（intercept 控制点）
+// "tools/pre-execute" | "tools/execute" | "tools/post-execute"（intercept 控制点）
 ```
 
 `harness/run-start` 表示 Harness 已经创建本次 Run 的身份和中止控制，即将进入 Agent；
 `harness/run-end` 表示 Agent 已经结束，而且 Harness 已经清除了本次 Run 的运行状态。只要发布过
 一次 `run-start`，就会在随后发布恰好一次 `run-end`。结束原因分别表示正常完成、主动中止和
 运行失败；失败事件额外携带 `errorMessage`。
-
-Agent 内部的 Turn、流式内容和 Tool 事件仍由 Agent 模块声明，Harness 不重复声明。
 
 `AgentHarness` 使用调用方传入的 `Events`，并把同一个实例交给 Agent。多份 Harness 可以共享
 一个实例；此时 listener 用 `AgentRunIdentity` 中的 `sessionId` 过滤目标 Session：
@@ -72,6 +77,51 @@ events.on("agent/turn-end", (input) => {
 ```
 
 事件注册、错误隔离和取消规则完全沿用 [Events README](../events/README.md)。
+
+## Agent Loop
+
+`runAgentLoop()` 是一次 Agent Run 的无状态驱动函数：每次调用 LLM 是一个 Turn，当 assistant
+消息带 tool call 时顺序执行工具、保存结果并开始下一 Turn；没有 tool call 时结束。Agent Run
+的身份、事件通道与取消信号都来自 `AgentContext`，所有完整消息都通过 `context.appendMessage()`
+提交给拥有方（Harness 负责落盘），提交成功后才发布对应事实事件。
+
+```ts
+function runAgentLoop(
+  input: string,
+  context: AgentContext,
+  config: AgentLoopConfig,
+  streamFn: StreamFn,
+): Promise<void>;
+```
+
+- `AgentContext` 提供 Run 身份（`sessionId`、`runId`）、`cwd`、system prompt、消息、Tool
+  Registry、共享 `Events` 与取消信号；`appendMessage()` 由 Harness 提供。
+- `AgentLoopConfig` 携带本轮模型选择（`model`）、可选 `maxTurns` 上限和 `convertToLlm` 消息
+  转换。
+- `AgentRunIdentity`（`sessionId`、`runId`）让共享 dispatcher 上的 listener 按 Session 过滤，
+  `runId` 关联一次 Run 的所有事件。
+
+一个完整 Turn 的顺序为 `agent/turn-start` → `agent/context`（整理消息快照）→ 流式
+`agent/text-delta`/`agent/thinking-delta`/`agent/tool-call-start`/`agent/tool-call-delta` →
+`done` 终止块后完整 assistant 消息写入 → 逐个执行 Tool → `agent/turn-end`。Turn 后是否继续
+由 Loop 内建决定：本轮有 Tool Result 就继续让模型消费；没有则结束。`maxTurns` 是不可绕过的
+硬上限。模型返回 `error` 终止块时 Run 结束；Stream 缺终止块时 Run 失败。
+
+## Tool
+
+`AgentTool` 定义工具 schema 与执行，`AgentToolRegistry` 是工具的唯一执行入口：它接收原始
+`AgentToolCall`，内部完成 lookup、TypeBox 校验，并把执行过程交给三个拦截阶段
+（`tools/pre-execute`、`tools/execute`、`tools/post-execute`）。`execute()` 的最终 handler 通过
+timeout helper 调用 `AgentTool.execute()`，并把抛出的异常归一化为错误结果。具体 Tool 只收到
+验证后的参数与合并后的 timeout signal，不知道 Session、Run 或 Events。
+
+- `AgentTool<TParameters, TDetails>`：`validate()` 校验参数，`execute()` 返回
+  `AgentToolResult<TDetails>`（`content` 模型可见，`details` 结构化）；
+- `AgentToolRegistry`：`register()`/`unregister()`/`schemas()`/`all()`/`execute(call, context)`；
+- `ToolExecutionContext` 是执行环境（Run 身份、`cwd`、`Events`、取消信号），`call` 作为
+  `execute()` 第一个参数独立传入。
+
+未知、无效、被阻止、已中止或失败的调用都会以恰好一个 `agent/tool-result` 结束。
 
 ## AgentHarness
 
@@ -386,15 +436,18 @@ Session 只更新 `metadataState`。
 ## 包边界和源码位置
 
 Harness 组合下层能力：`ai` 提供 `ModelRuntime` 与 `ModelConfig`；Harness 把
-`runtime.stream` 适配成 agent 定义的 `StreamFn`。`agent` 提供 `runAgentLoop()`、消息、
-`AgentRunIdentity` 和 Tool Registry；`events` 提供共享 dispatcher。
-具体 Tool 和项目级组装属于 Harness 上层。Harness 还通过仅供 core 内部使用的 `core/util`
+`runtime.stream` 适配成 `StreamFn`，并实现 `runAgentLoop()`、`AgentTool`/`AgentToolRegistry`、
+Session 与 `AgentHarness`；`events` 提供共享 dispatcher。具体 coding Tool 和项目级组装属于
+Harness 上层（`coding-agent`）。Harness 还通过仅供 core 内部使用的 `core/util`
 复用通用错误处理。
 
 - `index.ts`：包入口；
+- `agent-loop.ts`：无状态多 Turn Agent Run 驱动；
 - `agent-harness.ts`：Session 的运行与控制；
-- `types.ts`：`HarnessConfig`；
-- `events.ts`：Run 边界事件契约；
+- `types.ts`：`AgentContext`/`AgentLoopConfig`/`AgentMessage`/`AgentRunIdentity`/`StreamFn` 与
+  `HarnessConfig`；
+- `events.ts`：`harness/*`、`agent/*` 事件契约与 `HarnessEvent` 投影；
+- `tools/`：`AgentTool`、`AgentToolRegistry` 与 `tools/*` 拦截事件契约；
 - `session/types.ts`：公开契约，以及内部的 `SessionRecord`/`SessionStorage` 契约；
 - `session/records.ts`：纯解析、脱离、ID 生成与树校验；
 - `session/session.ts`：单份 Session 的内存状态与行为；
@@ -407,15 +460,19 @@ Harness 组合下层能力：`ai` 提供 `ModelRuntime` 与 `ModelConfig`；Harn
 
 ### 值
 
+- `runAgentLoop`：无状态多 Turn Agent Run 驱动；
 - `AgentHarness`：运行绑定的 Session；
 - `Session`：保存和重建一份会话；
 - `SessionRepository`：在一个存储目录中创建、打开、列举、fork 和删除 Session；
-- `SessionError`：带有 `SessionErrorCode` 的会话错误。
+- `SessionError`：带有 `SessionErrorCode` 的会话错误；
+- `AgentTool`、`AgentToolRegistry`：工具定义、校验与执行。
 
 ### 类型
 
-- Harness：`HarnessConfig`、`HarnessRunEnd`；
+- Agent：`AgentContext`、`AgentLoopConfig`、`AgentMessage`、`AgentRunIdentity`、`StreamFn`、
+  `HarnessConfig`、`HarnessRunEnd`、`HarnessEvent`；
+- Tool：`AgentToolCall`、`AgentToolResult`、`ToolExecutionContext`、`ToolCallEvent`、
+  `ToolResultEvent`、`PreToolDecision`；
 - Session：`SessionMetadata`、`SessionNode`、`SessionErrorCode`。
 
-Harness 事件载荷使用 agent 包定义的 `AgentRunIdentity`，但 harness 入口不重新导出这个类型；
-需要显式使用时从 `core/agent` 入口导入。
+事件载荷中的 `AgentRunIdentity`、`AgentToolCall` 等类型现在都从本包入口直接导出。

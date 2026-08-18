@@ -2,7 +2,7 @@ import { glob } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { Type } from "typebox";
 
-import { AgentTool } from "../../../core/agent/tools/types.js";
+import { AgentTool } from "../../../core/harness/tools/types.js";
 import { MAX_OUTPUT_BYTES } from "../output.js";
 
 /** Glob match lists are capped at 1,000 entries, tighter than line output. */

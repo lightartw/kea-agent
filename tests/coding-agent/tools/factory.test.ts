@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { Type } from "typebox";
 
-import { AgentTool } from "../../../src/core/agent/tools/types.js";
+import { AgentTool } from "../../../src/core/harness/tools/types.js";
 import { Events } from "../../../src/core/events/events.js";
 import { createBuiltinToolRegistry } from "../../../src/coding-agent/tools/factory.js";
 

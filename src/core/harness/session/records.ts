@@ -6,7 +6,7 @@ import type {
   StopReason,
   TokenUsage,
 } from "../../ai/types.js";
-import type { AgentMessage } from "../../agent/types.js";
+import type { AgentMessage } from "../types.js";
 import {
   SessionError,
   type SessionNode,

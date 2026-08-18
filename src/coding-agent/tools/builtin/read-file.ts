@@ -1,7 +1,7 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { Type } from "typebox";
 
-import { AgentTool } from "../../../core/agent/tools/types.js";
+import { AgentTool } from "../../../core/harness/tools/types.js";
 import { resolveToolPath } from "../resolve-path.js";
 import { MAX_OUTPUT_LINES, truncateHead } from "../output.js";
 

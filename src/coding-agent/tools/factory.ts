@@ -1,4 +1,4 @@
-import { AgentToolRegistry } from "../../core/agent/tools/registry.js";
+import { AgentToolRegistry } from "../../core/harness/tools/registry.js";
 import { createBashTool } from "./builtin/bash.js";
 import { createEditFileTool } from "./builtin/edit-file.js";
 import { createGlobTool } from "./builtin/glob.js";

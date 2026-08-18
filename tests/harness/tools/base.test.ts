@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { Type, type Static } from "typebox";
 
-import { AgentTool, type AgentToolResult } from "../../../src/core/agent/tools/types.js";
+import { AgentTool, type AgentToolResult } from "../../../src/core/harness/tools/types.js";
 
 const parameters = Type.Object({ value: Type.String() });
 

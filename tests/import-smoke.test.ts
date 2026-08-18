@@ -4,18 +4,15 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  AgentHarness,
   AgentTool,
   AgentToolRegistry,
   runAgentLoop,
-} from "../src/core/agent/index.js";
-
-import { Events } from "../src/core/events/index.js";
-
-import {
-  AgentHarness,
   Session,
   SessionRepository,
 } from "../src/core/harness/index.js";
+
+import { Events } from "../src/core/events/index.js";
 
 import {
   openOrCreateProject,
@@ -28,9 +25,6 @@ import type {
   AgentRunIdentity,
   AgentToolCall,
   AgentToolResult,
-} from "../src/core/agent/index.js";
-
-import type {
   HarnessConfig,
   HarnessEvent,
   SessionMetadata,

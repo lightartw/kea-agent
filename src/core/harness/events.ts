@@ -1,6 +1,7 @@
-import type { AgentMessage, AgentToolCall, AgentToolResult } from "../agent/index.js";
-import type { AgentRunIdentity } from "../agent/types.js";
-import type { EmitEvent } from "../events/types.js";
+import type { AgentMessage, AgentRunIdentity } from "./types.js";
+import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
+import type { ToolCallEvent, ToolResultEvent } from "./tools/events.js";
+import type { EmitEvent, InterceptEvent } from "../events/types.js";
 
 export type HarnessRunEnd = AgentRunIdentity & (
   | { readonly reason: "completed" | "aborted" }
@@ -62,7 +63,41 @@ export type HarnessEvent =
 
 declare module "../events/types.js" {
   interface EventMap {
+    // Run boundaries owned by the Harness.
     "harness/run-start": EmitEvent<AgentRunIdentity>;
     "harness/run-end": EmitEvent<HarnessRunEnd>;
+
+    // Control interceptors dispatched with intercept().
+    "agent/user-prompt": InterceptEvent<
+      AgentRunIdentity & { readonly prompt: string },
+      string | undefined
+    >;
+    "agent/context": InterceptEvent<
+      AgentRunIdentity & { readonly messages: readonly AgentMessage[] },
+      readonly AgentMessage[]
+    >;
+
+    // Facts dispatched with emit().
+    "agent/turn-start": EmitEvent<AgentRunIdentity>;
+    "agent/turn-end": EmitEvent<
+      AgentRunIdentity & {
+        readonly message: AgentMessage;
+        readonly toolResults: readonly AgentMessage[];
+      }
+    >;
+    "agent/text-delta": EmitEvent<
+      AgentRunIdentity & { readonly text: string }
+    >;
+    "agent/thinking-delta": EmitEvent<
+      AgentRunIdentity & { readonly thinking: string }
+    >;
+    "agent/tool-call-start": EmitEvent<
+      AgentRunIdentity & { readonly id: string; readonly name: string }
+    >;
+    "agent/tool-call-delta": EmitEvent<
+      AgentRunIdentity & { readonly id: string; readonly argumentsDelta: string }
+    >;
+    "agent/tool-call": EmitEvent<ToolCallEvent>;
+    "agent/tool-result": EmitEvent<ToolResultEvent>;
   }
 }

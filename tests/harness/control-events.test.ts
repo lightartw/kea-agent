@@ -3,16 +3,16 @@ import test from "node:test";
 
 import { Type, type Static } from "typebox";
 
-import { runAgentLoop } from "../../src/core/agent/agent-loop.js";
+import { runAgentLoop } from "../../src/core/harness/agent-loop.js";
 import type {
   AgentContext,
   AgentLoopConfig,
   AgentMessage,
-} from "../../src/core/agent/types.js";
+} from "../../src/core/harness/types.js";
 import { Events } from "../../src/core/events/events.js";
-import { AgentTool, type AgentToolResult } from "../../src/core/agent/tools/types.js";
-import type { AgentToolCall } from "../../src/core/agent/tools/types.js";
-import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
+import { AgentTool, type AgentToolResult } from "../../src/core/harness/tools/types.js";
+import type { AgentToolCall } from "../../src/core/harness/tools/types.js";
+import { AgentToolRegistry } from "../../src/core/harness/tools/registry.js";
 import type {
   AssistantMessage,
   ContentBlock,

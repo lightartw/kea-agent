@@ -1,5 +1,5 @@
 import type { ModelRuntime } from "../../src/core/ai/types.js";
-import type { StreamFn } from "../../src/core/agent/types.js";
+import type { StreamFn } from "../../src/core/harness/types.js";
 
 export type TestStream = StreamFn;
 

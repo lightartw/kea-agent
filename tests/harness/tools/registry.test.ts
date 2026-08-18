@@ -8,8 +8,8 @@ import {
   type AgentToolCall,
   type AgentToolResult,
   type ToolExecutionContext,
-} from "../../../src/core/agent/tools/types.js";
-import { AgentToolRegistry } from "../../../src/core/agent/tools/registry.js";
+} from "../../../src/core/harness/tools/types.js";
+import { AgentToolRegistry } from "../../../src/core/harness/tools/registry.js";
 import { Events } from "../../../src/core/events/events.js";
 
 const parameters = Type.Object({ value: Type.String() });

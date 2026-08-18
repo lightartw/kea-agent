@@ -1,4 +1,4 @@
-import type { AgentToolCall } from "../../core/agent/tools/types.js";
+import type { AgentToolCall } from "../../core/harness/tools/types.js";
 
 export type PermissionRequest =
   | {

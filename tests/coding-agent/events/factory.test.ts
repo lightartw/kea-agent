@@ -8,8 +8,8 @@ import {
   AgentTool,
   type AgentToolCall,
   type AgentToolResult,
-} from "../../../src/core/agent/tools/types.js";
-import { AgentToolRegistry } from "../../../src/core/agent/tools/registry.js";
+} from "../../../src/core/harness/tools/types.js";
+import { AgentToolRegistry } from "../../../src/core/harness/tools/registry.js";
 import { createBuiltinEvents } from "../../../src/coding-agent/events/factory.js";
 import type { PermissionRule } from "../../../src/coding-agent/events/permission/permission.js";
 import {

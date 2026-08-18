@@ -3,8 +3,8 @@ import test from "node:test";
 
 import { Type, type Static } from "typebox";
 
-import { runAgentLoop } from "../../src/core/agent/agent-loop.js";
-import type { AgentContext, AgentLoopConfig, AgentMessage } from "../../src/core/agent/types.js";
+import { runAgentLoop } from "../../src/core/harness/agent-loop.js";
+import type { AgentContext, AgentLoopConfig, AgentMessage } from "../../src/core/harness/types.js";
 import type {
   AssistantMessage,
   ContentBlock,
@@ -14,9 +14,9 @@ import type {
   StreamChunk,
 } from "../../src/core/ai/types.js";
 import type { TestStream } from "../fixtures/model-runtime.js";
-import { AgentTool, type AgentToolResult } from "../../src/core/agent/tools/types.js";
-import type { AgentToolCall } from "../../src/core/agent/tools/types.js";
-import { AgentToolRegistry } from "../../src/core/agent/tools/registry.js";
+import { AgentTool, type AgentToolResult } from "../../src/core/harness/tools/types.js";
+import type { AgentToolCall } from "../../src/core/harness/tools/types.js";
+import { AgentToolRegistry } from "../../src/core/harness/tools/registry.js";
 import { Events } from "../../src/core/events/events.js";
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { Type } from "typebox";
 
-import { AgentTool } from "../../../core/agent/tools/types.js";
+import { AgentTool } from "../../../core/harness/tools/types.js";
 import { truncateTail } from "../output.js";
 
 /** How a command is executed. Injected for tests; defaults to the local shell. */

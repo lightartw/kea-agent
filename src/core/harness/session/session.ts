@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 
-import type { AgentMessage } from "../../agent/types.js";
+import type { AgentMessage } from "../types.js";
 import type { ModelConfig } from "../../ai/types.js";
 import { newId, parseSessionRecord } from "./records.js";
 import {

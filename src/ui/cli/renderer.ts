@@ -1,6 +1,10 @@
-import type { AgentMessage, AgentToolCall, AgentToolResult } from "../../core/agent/index.js";
+import type {
+  AgentMessage,
+  AgentToolCall,
+  AgentToolResult,
+  HarnessEvent,
+} from "../../core/harness/index.js";
 import type { ModelConfig } from "../../core/ai/index.js";
-import type { HarnessEvent } from "../../core/harness/index.js";
 
 type HarnessRunEnd = Extract<HarnessEvent, { readonly type: "run-end" }>;
 

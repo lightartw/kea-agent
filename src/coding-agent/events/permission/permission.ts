@@ -1,6 +1,6 @@
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
-import type { PreToolDecision, ToolCallEvent } from "../../../core/agent/tools/events.js";
+import type { PreToolDecision, ToolCallEvent } from "../../../core/harness/tools/events.js";
 import type {
   Interactions,
   PermissionReply,

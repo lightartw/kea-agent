@@ -3,10 +3,13 @@ import test from "node:test";
 
 import type { Interface } from "node:readline/promises";
 
-import type { AgentMessage } from "../../../src/core/agent/index.js";
+import type {
+  AgentHarness,
+  AgentMessage,
+  HarnessEvent,
+  SessionMetadata,
+} from "../../../src/core/harness/index.js";
 import type { ModelConfig } from "../../../src/core/ai/index.js";
-import type { AgentHarness, SessionMetadata } from "../../../src/core/harness/index.js";
-import type { HarnessEvent } from "../../../src/core/harness/index.js";
 import type { Project, PermissionRequest } from "../../../src/coding-agent/index.js";
 
 import { CliUi } from "../../../src/ui/cli/cli-ui.js";

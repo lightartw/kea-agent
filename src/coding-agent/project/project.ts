@@ -2,7 +2,7 @@ import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
 // Include Agent's EventMap augmentation when Project is compiled in isolation.
-import type {} from "../../core/agent/events.js";
+import type {} from "../../core/harness/events.js";
 import type { ModelConfig, ModelRuntime } from "../../core/ai/types.js";
 import type { Events } from "../../core/events/events.js";
 import { AgentHarness } from "../../core/harness/agent-harness.js";

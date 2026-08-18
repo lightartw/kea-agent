@@ -2,7 +2,7 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Type } from "typebox";
 
-import { AgentTool } from "../../../core/agent/tools/types.js";
+import { AgentTool } from "../../../core/harness/tools/types.js";
 import { resolveToolPath } from "../resolve-path.js";
 
 /** The absolute target, the UTF-8 byte count, and whether the file was new. */
