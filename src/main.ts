@@ -40,17 +40,9 @@ export async function selectInitialHarness(
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
   const args = parseArguments(argv);
   const keaHome = resolve(homedir(), ".kea");
-  if (args.command === "init") {
-    const { config, auth } = await initializeUserConfiguration(keaHome);
-    console.log(`${join(keaHome, "config.json")}: ${config}`);
-    console.log(`${join(keaHome, "auth.json")}: ${auth}`);
-    return;
-  }
-
   const projectDirectory = await resolveProjectDirectory(args.directory);
-  // First-run fallback: `kea` without a prior `kea init` must not fail on
-  // missing user files. Reuse init semantics (never overwrite) and report
-  // only what was actually created.
+  // First-run fallback: create missing user templates with init semantics
+  // (never overwrite) and report only what was actually created.
   const created = await initializeUserConfiguration(keaHome);
   if (created.config === "created") {
     console.log(`${join(keaHome, "config.json")}: created`);

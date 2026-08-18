@@ -1,30 +1,17 @@
 import { resolve } from "node:path";
 
-export type Arguments =
-  | { readonly command: "init" }
-  | {
-      readonly command: "run";
-      readonly continue: boolean;
-      readonly config?: string;
-      readonly verbose: boolean;
-      readonly directory: string;
-    };
+export type Arguments = {
+  readonly continue: boolean;
+  readonly config?: string;
+  readonly verbose: boolean;
+  readonly directory: string;
+};
 
 /**
  * Parse production argv before any file, Project, or Runtime work. The
  * optional directory and --config value resolve against process.cwd().
  */
 export function parseArguments(argv: readonly string[]): Arguments {
-  const [first] = argv;
-  if (first === "init") {
-    if (argv.length > 1) {
-      throw new Error(
-        `kea init does not accept arguments: ${argv.slice(1).join(" ")}`,
-      );
-    }
-    return { command: "init" };
-  }
-
   let continueFlag = false;
   let verbose = false;
   let config: string | undefined;
@@ -61,7 +48,6 @@ export function parseArguments(argv: readonly string[]): Arguments {
   }
 
   return {
-    command: "run",
     continue: continueFlag,
     ...(config === undefined ? {} : { config }),
     verbose,

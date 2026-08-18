@@ -309,7 +309,7 @@ Session 或模型切换失败时保留旧 Harness、订阅和模型。
 
 `src/application/` 提供无长期状态的启动能力：`arguments.ts`（argv 解析）、
 `project-directory.ts`（启动目录 → Git 根 → 规范目录）、`config.ts`（唯一 Config）和
-`init.ts`（`kea init`）。这些模块只被 `main.ts` 和测试导入。
+`init.ts`（用户配置模板）。这些模块只被 `main.ts` 和测试导入。
 
 ### Config
 
@@ -327,9 +327,9 @@ model 非空 → defaultProvider 解析（单 provider 推断 / 多 provider 必
 
 ### 启动顺序
 
-1. 解析 argv；`kea init` 时创建缺失模板（独占创建，绝不覆盖）后直接返回；
+1. 解析 argv；
 2. `resolveProjectDirectory()` 得到规范 Project 目录；
-3. 用户配置文件（`~/.kea/config.json`、`auth.json`）缺失时先按 init 语义补建（绝不
+3. 用户配置文件（`~/.kea/config.json`、`auth.json`）缺失时补建模板（独占创建，绝不
    覆盖，只打印 `created`），然后 `Config.load()` 按上述顺序加载并验证；
 4. `createModelRuntime({ providers: config.runtimeProviders() })`；
 5. 构造 `CliUi`（models、display 设置、经 `redact()` 的 `reportError`）；
@@ -352,7 +352,7 @@ model 非空 → defaultProvider 解析（单 provider 推断 / 多 provider 必
 - `src/ui/cli/index.ts`：`CliUi`、`CliInteractions`、`Renderer`（命令行实现）；
 - `src/index.ts`：汇总以上入口和通用 workspace helpers。
 
-`src/application/` 保持应用内部：Config、argv/init 和目录发现只由 `main.ts` 与测试导入。
+`src/application/` 保持应用内部：Config、argv、模板创建和目录发现只由 `main.ts` 与测试导入。
 具体内置 Tool/事件工厂、Bash policy 和各 Tool 的 details 类型都是内部实现。
 
 ## 9. 边界约束

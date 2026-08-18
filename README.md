@@ -16,29 +16,25 @@
 ```bash
 npm ci
 npm run build
-npm start -- init        # 等价于 node dist/src/main.js init
-$EDITOR ~/.kea/auth.json # 填入 API key
 npm start
 ```
 
-Windows PowerShell 使用相同命令；编辑 `~/.kea/auth.json` 时用 `notepad` 代替 `$EDITOR`。
+Windows PowerShell 使用相同命令。
 
-`kea init`（`npm start -- init`）在 `~/.kea/` 下创建两个文件，都已存在时跳过并打印
-`skipped`，**绝不覆盖**已有文件：
+首次运行 `kea` 会自动检测 `~/.kea/config.json` 与 `auth.json`，缺失的文件按模板补建
+（独占创建、只打印 `created`、**绝不覆盖**已有文件），然后继续启动：
 
 - `config.json` — 用户配置模板（provider/model、agent、tools、ui 设置）；
 - `auth.json` — 凭据文件（权限 0600），只保存 provider 的 API key。
 
-也可以跳过 `kea init` 直接运行：首次启动会自动检测 `~/.kea/config.json` 与
-`auth.json`，缺失的文件按相同语义补建（只打印 `created`，绝不覆盖已有文件），然后继续
-启动。补建后 `auth.json` 里的 API key 仍是空的，填入后重新运行即可。
+补建后 `auth.json` 里的 API key 仍是空的，填入后重新运行即可。
 
 ## 配置
 
 配置按优先级分层加载：**内建默认值 < `~/.kea/config.json` < `<project>/.kea/config.json`
 < `--config <path>` 文件 < CLI 直接覆盖（`--verbose`）**。每个普通配置源独立验证后才合并。
 
-`kea init` 生成的 `config.json` 模板：
+首次运行生成的 `config.json` 模板：
 
 ```json
 {
@@ -120,13 +116,13 @@ Allow once [o/N] (a = always)?
 ## 启动路径
 
 ```text
-parseArguments → (init 分支直接返回) → resolveProjectDirectory → Config.load →
+parseArguments → resolveProjectDirectory → 补建用户配置模板 → Config.load →
 createModelRuntime({ providers }) → new CliUi(...) → openOrCreateProject →
 selectInitialHarness（-c 取最新 Session，否则新建）→ ui.run → finally ui.close()
 ```
 
-`main.ts` 是连接具体 UI、Coding Agent 和 AI provider 的唯一组合根：它解析 argv（`init`、
-`-c`、`--config <path>`、`--verbose`、可选目录），把启动目录解析为 Git worktree 根并规范化，
+`main.ts` 是连接具体 UI、Coding Agent 和 AI provider 的唯一组合根：它解析 argv（`-c`、
+`--config <path>`、`--verbose`、可选目录），把启动目录解析为 Git worktree 根并规范化，
 `Config.load()` 按上文分层加载配置，用 `config.runtimeProviders()` 构造显式
 `ModelRuntime`，然后组装 `CliUi` 和 `Project`，最后进入交互循环；`finally` 中幂等关闭
 UI。
@@ -142,7 +138,7 @@ Harness 核心代码统一位于 `src/core/`；产品适配与界面代码位于
 | `events` | [events/README.md](src/core/events/README.md) | 核心事件契约与统一分发器 |
 | `harness` | [harness/README.md](src/core/harness/README.md) | `AgentHarness`（`subscribe`）、Session/Repository、`HarnessEvent` |
 | `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | `Project`、`openOrCreateProject`、内置 Tools、Bash 策略、Interactions port |
-| `application` | — | `Config`（唯一设置实体）、argv/init、目录发现 |
+| `application` | — | `Config`（唯一设置实体）、argv、用户配置模板、目录发现 |
 | `ui` | — | 命令语言（`parseInput`/`UiAction`）；`ui/cli` 提供命令行实现（`CliUi`、`CliInteractions`、`Renderer`） |
 
 源码依赖方向始终向下：`main -> ui -> coding-agent -> core/harness -> core/agent ->

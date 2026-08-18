@@ -6,7 +6,6 @@ import { parseArguments } from "../../src/application/arguments.js";
 
 test("defaults when no arguments are given", () => {
   assert.deepEqual(parseArguments([]), {
-    command: "run",
     continue: false,
     verbose: false,
     directory: process.cwd(),
@@ -17,7 +16,6 @@ test("run arguments parse continue, override, verbose, and directory", () => {
   assert.deepEqual(
     parseArguments(["-c", "--config", "custom.json", "--verbose", "work"]),
     {
-      command: "run",
       continue: true,
       config: resolve("custom.json"),
       verbose: true,
@@ -28,22 +26,10 @@ test("run arguments parse continue, override, verbose, and directory", () => {
 
 test("a single positional directory resolves against the cwd", () => {
   assert.deepEqual(parseArguments(["work"]), {
-    command: "run",
     continue: false,
     verbose: false,
     directory: resolve("work"),
   });
-});
-
-test("init parses alone", () => {
-  assert.deepEqual(parseArguments(["init"]), { command: "init" });
-});
-
-test("init rejects unrelated arguments", () => {
-  assert.throws(
-    () => parseArguments(["init", "--config", "x.json"]),
-    /init.*does not accept/i,
-  );
 });
 
 test("unknown options and a missing option value fail", () => {
