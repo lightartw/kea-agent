@@ -48,8 +48,6 @@ assistant message。流没有终止块时它会拒绝。它不承担标题生成
 
 `createModelRuntime()` 只接收显式的 `RuntimeProviderConfig` 列表；每个条目给出 provider 名、
 协议、API key 和可选 base URL。生产启动由 application Config 提供这些值，不读取环境变量。
-`createModelRuntimeFromEnvironment()` 是从 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、
-`GEMINI_API_KEY` 及对应 `*_BASE_URL` 构造同一形状的便捷入口，仅供开发和测试。
 
 内置协议标识为 `anthropic`、`openai`、`gemini`。provider 名与协议分离，多个 provider 可共用
 同一协议；adapter 第一次使用时懒加载，之后复用；请求未配置的 provider 会抛出 `Unknown provider`。
@@ -90,10 +88,6 @@ interface RuntimeProviderConfig {
 function createModelRuntime(options: {
   readonly providers: readonly RuntimeProviderConfig[];
 }): ModelRuntime;
-
-function createModelRuntimeFromEnvironment(
-  env: Readonly<Record<string, string | undefined>>,
-): ModelRuntime;
 ```
 
 `Adapter` 出现在扩展函数签名中，但没有从 `ai/index.ts` 导出；自定义实现按结构满足
@@ -252,12 +246,11 @@ type StreamChunk =
 
 ## 使用范围与包边界
 
-全部 20 个公开导出的使用范围如下：
+全部 19 个公开导出的使用范围如下：
 
 | 导出 | 建议范围 |
 |---|---|
 | `createModelRuntime`, `RuntimeProviderConfig`, `ProtocolId` | 应用组合根用显式 provider 列表配置 ai 能力 |
-| `createModelRuntimeFromEnvironment` | 开发与测试入口；生产启动不读环境变量凭据 |
 | `ModelRuntime` | provider 路由和请求能力；由 Harness 或应用组合层持有 |
 | `ModelConfig` | 一次请求的模型选择；agent 和模型选择界面可直接使用 |
 | `Context`, `StreamChunk` | ai 调用边界；agent 内部消费，不继续向上透传 |
@@ -274,7 +267,7 @@ type StreamChunk =
 
 ## 内部接口与依赖
 
-`Adapter`、`ResolvedOptions`、`Environment`、`lazyAdapter` 以及三个具体 adapter
+`Adapter`、`ResolvedOptions`、`lazyAdapter` 以及三个具体 adapter
 没有从 `ai/index.ts` 导出，不属于稳定包接口。
 
 依赖：

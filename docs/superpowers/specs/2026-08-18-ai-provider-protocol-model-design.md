@@ -88,10 +88,6 @@ function createModelRuntime(options: {
 `ModelRuntime.stream(modelConfig, ...)` 的按 `modelConfig.provider` 路由逻辑不变；
 请求未配置的 provider 名仍抛 `Unknown provider`。
 
-`createModelRuntimeFromEnvironment(env)` 保留为开发/测试入口：每个协议存在对应
-`*_API_KEY` 环境变量时，生成 `{ name: 协议名, protocol: 协议名, apiKey, baseUrl? }`。
-生产 `main.ts` 不调用它。
-
 `Adapter`、`ResolvedOptions` 与三个具体 adapter 不变。
 
 ## 4. 配置文件结构
@@ -298,8 +294,7 @@ C:\Users\alice\.kea\auth.json: providers.deepseek.apiKey: must be non-empty
 - `createModelRuntime` 拒绝空列表、重复 provider 名、未知协议；
 - 两个不同 name 的 provider 可以共用同一协议，各自独立路由；
 - 请求未配置的 provider 名抛 `Unknown provider`；
-- `ModelConfig.model` 原样传给 adapter；
-- env 辅助入口为每个可用协议的 env key 生成 `name = 协议名` 的 provider。
+- `ModelConfig.model` 原样传给 adapter。
 
 ### 12.2 配置
 

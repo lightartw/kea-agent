@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   createModelRuntime,
-  createModelRuntimeFromEnvironment,
   createRoutedRuntime,
   lazyAdapter,
 } from "../../src/core/ai/factory.js";
@@ -98,29 +97,6 @@ test("routed runtime rejects unknown providers at stream time", async () => {
     })(),
     /Unknown provider/,
   );
-});
-
-test("environment helper does not select a model", () => {
-  const runtime = createModelRuntimeFromEnvironment({ OPENAI_API_KEY: "key" });
-  assert.equal(typeof runtime.stream, "function");
-  assert.equal(typeof runtime.complete, "function");
-});
-
-test("environment helper requires at least one provider key", () => {
-  assert.throws(
-    () => createModelRuntimeFromEnvironment({}),
-    /at least one provider/i,
-  );
-});
-
-test("environment helper ignores DEFAULT_PROVIDER and MODEL_ID", () => {
-  const runtime = createModelRuntimeFromEnvironment({
-    ANTHROPIC_API_KEY: "a",
-    OPENAI_API_KEY: "b",
-    DEFAULT_PROVIDER: "anthropic",
-    MODEL_ID: "m",
-  });
-  assert.equal(typeof runtime.stream, "function");
 });
 
 test("complete returns the terminal assistant message", async () => {

@@ -62,15 +62,11 @@ export interface RuntimeProviderConfig {
 
 const BUILTIN_PROTOCOLS: readonly {
   readonly id: ProtocolId;
-  readonly envApiKey: string;
-  readonly envBaseUrl?: string;
   readonly defaultBaseUrl?: string;
   readonly createAdapter: (apiKey: string, baseUrl?: string | null) => Adapter;
 }[] = [
   {
     id: "anthropic",
-    envApiKey: "ANTHROPIC_API_KEY",
-    envBaseUrl: "ANTHROPIC_BASE_URL",
     defaultBaseUrl: "https://api.anthropic.com",
     createAdapter: (apiKey, baseUrl) =>
       lazyAdapter(async () => {
@@ -80,8 +76,6 @@ const BUILTIN_PROTOCOLS: readonly {
   },
   {
     id: "openai",
-    envApiKey: "OPENAI_API_KEY",
-    envBaseUrl: "OPENAI_BASE_URL",
     defaultBaseUrl: "https://api.openai.com/v1",
     createAdapter: (apiKey, baseUrl) =>
       lazyAdapter(async () => {
@@ -91,8 +85,6 @@ const BUILTIN_PROTOCOLS: readonly {
   },
   {
     id: "gemini",
-    envApiKey: "GEMINI_API_KEY",
-    envBaseUrl: "GEMINI_BASE_URL",
     createAdapter: (apiKey, baseUrl) =>
       lazyAdapter(async () => {
         const { GeminiAdapter } = await import("./adapters/gemini.js");
@@ -161,25 +153,4 @@ export function createModelRuntime(options: {
     );
   }
   return createRoutedRuntime(adapters);
-}
-
-export type Environment = Readonly<Record<string, string | undefined>>;
-
-/** Development/test helper: map provider keys and base URLs into explicit providers. */
-export function createModelRuntimeFromEnvironment(env: Environment): ModelRuntime {
-  const providers: RuntimeProviderConfig[] = [];
-  for (const builtin of BUILTIN_PROTOCOLS) {
-    const apiKey = env[builtin.envApiKey];
-    if (apiKey === undefined || apiKey === "") continue;
-    const baseUrl = builtin.envBaseUrl === undefined
-      ? undefined
-      : env[builtin.envBaseUrl];
-    providers.push({
-      name: builtin.id,
-      protocol: builtin.id,
-      apiKey,
-      ...(baseUrl === undefined || baseUrl === "" ? {} : { baseUrl }),
-    });
-  }
-  return createModelRuntime({ providers });
 }
