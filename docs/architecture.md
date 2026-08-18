@@ -329,7 +329,8 @@ model 非空 → defaultProvider 解析（单 provider 推断 / 多 provider 必
 
 1. 解析 argv；`kea init` 时创建缺失模板（独占创建，绝不覆盖）后直接返回；
 2. `resolveProjectDirectory()` 得到规范 Project 目录；
-3. `Config.load()` 按上述顺序加载并验证；
+3. 用户配置文件（`~/.kea/config.json`、`auth.json`）缺失时先按 init 语义补建（绝不
+   覆盖，只打印 `created`），然后 `Config.load()` 按上述顺序加载并验证；
 4. `createModelRuntime({ providers: config.runtimeProviders() })`；
 5. 构造 `CliUi`（models、display 设置、经 `redact()` 的 `reportError`）；
 6. `openOrCreateProject()` 打开或创建 Project；

@@ -48,6 +48,16 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
 
   const projectDirectory = await resolveProjectDirectory(args.directory);
+  // First-run fallback: `kea` without a prior `kea init` must not fail on
+  // missing user files. Reuse init semantics (never overwrite) and report
+  // only what was actually created.
+  const created = await initializeUserConfiguration(keaHome);
+  if (created.config === "created") {
+    console.log(`${join(keaHome, "config.json")}: created`);
+  }
+  if (created.auth === "created") {
+    console.log(`${join(keaHome, "auth.json")}: created`);
+  }
   const config = await Config.load({
     keaHome,
     projectDirectory,

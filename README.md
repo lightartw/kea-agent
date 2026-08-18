@@ -29,6 +29,10 @@ Windows PowerShell 使用相同命令；编辑 `~/.kea/auth.json` 时用 `notepa
 - `config.json` — 用户配置模板（provider/model、agent、tools、ui 设置）；
 - `auth.json` — 凭据文件（权限 0600），只保存 provider 的 API key。
 
+也可以跳过 `kea init` 直接运行：首次启动会自动检测 `~/.kea/config.json` 与
+`auth.json`，缺失的文件按相同语义补建（只打印 `created`，绝不覆盖已有文件），然后继续
+启动。补建后 `auth.json` 里的 API key 仍是空的，填入后重新运行即可。
+
 ## 配置
 
 配置按优先级分层加载：**内建默认值 < `~/.kea/config.json` < `<project>/.kea/config.json`
@@ -225,8 +229,8 @@ npm install --save-dev --save-exact typescript@7.0.2
 
 ## 常见问题
 
-- 启动报 `auth file not found` 或 `must be non-empty`：运行 `npm start -- init` 生成
-  `~/.kea/auth.json`，或手动创建并填入所选 provider 的 API key。
+- 启动报 `must be non-empty`：`~/.kea/auth.json` 中的 API key 还是空的。首次运行会自动
+  补建缺失的 `config.json`/`auth.json`；填入所选 provider 的 key 后重新运行即可。
 - 提示没有配置 provider：在 `~/.kea/config.json` 的 `providers` 中至少配置一家 provider
   的 `model`。
 - 提示配置了多家 provider 但未指定默认：设置 `defaultProvider`，值为 `anthropic`、

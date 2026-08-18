@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { AgentHarness, SessionMetadata } from "../src/core/harness/index.js";
 import type { ModelConfig } from "../src/core/ai/index.js";
@@ -78,4 +81,35 @@ test("importing main is silent and does not open readline", () => {
   assert.equal(child.status, 0, child.stderr);
   assert.equal(child.stdout, "");
   assert.equal(child.stderr, "");
+});
+
+test("run without user configuration falls back to init templates", () => {
+  const home = mkdtempSync(join(tmpdir(), "kea-main-"));
+  try {
+    const run = (): SpawnSyncReturns<string> =>
+      spawnSync(
+        process.execPath,
+        ["dist/src/main.js"],
+        {
+          cwd: process.cwd(),
+          env: { ...process.env, HOME: home, USERPROFILE: home },
+          encoding: "utf8",
+        },
+      );
+
+    const first = run();
+    assert.match(first.stdout, /config\.json: created/);
+    assert.match(first.stdout, /auth\.json: created/);
+    assert.equal(existsSync(join(home, ".kea", "config.json")), true);
+    assert.equal(existsSync(join(home, ".kea", "auth.json")), true);
+    // Credentials still have to be filled in before the run can proceed.
+    assert.equal(first.status, 1, first.stderr);
+    assert.match(first.stderr, /must be non-empty/);
+
+    // Existing files are never re-created or reported again.
+    const second = run();
+    assert.doesNotMatch(second.stdout, /created/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
