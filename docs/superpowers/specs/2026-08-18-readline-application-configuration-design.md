@@ -112,12 +112,8 @@ function openOrCreateProject(options: {
   readonly runtime: ModelRuntime;
   readonly modelConfig: ModelConfig;
   readonly interactions: Interactions;
-  readonly agent: {
-    readonly maxTurns: number;
-  };
-  readonly tools: {
-    readonly timeoutSeconds: number;
-  };
+  readonly maxTurns: number;
+  readonly toolTimeoutSeconds: number;
   readonly onListenerError?: (
     error: unknown,
     name: string,
@@ -352,7 +348,7 @@ create/open candidate
 
 ### 5.5 模型切换
 
-`/model` 只展示配置解析得到的 `ResolvedConfig.models`。选择当前模型是 no-op；选择其他模型时调用：
+`/model` 只展示 `Config.models`。选择当前模型是 no-op；选择其他模型时调用：
 
 ```ts
 await current.switchModel(selected);
@@ -463,54 +459,64 @@ Auth 不参与普通配置合并。Project 配置和 `--config` 文件不能携�
 生产启动不调用 `dotenv`。`.env` 只作为开发和测试便利，由开发脚本或 Node 的开发期
 `--env-file` 支持加载；生产 application path 不从环境变量读取凭据。
 
-### 8.2 原始配置类型
+### 8.2 唯一的 Config 实体
 
-第一版只允许已有消费者的字段：
+配置在应用中只有一个实体。文件内容、合并中的中间值和最终验证只是 `Config.load()` 的内部阶段，
+不形成额外的应用类型。
 
 ```ts
 type ProviderId = "anthropic" | "openai" | "gemini";
 
-interface FileConfig {
-  readonly defaultProvider?: ProviderId;
+class Config {
+  readonly defaultProvider: ProviderId;
+  readonly maxTurns: number;
+  readonly toolTimeoutSeconds: number;
+  readonly thinking: "hidden" | "visible";
+  readonly toolDetails: "compact" | "full";
+  readonly verbose: boolean;
 
-  readonly providers?: Partial<Record<
+  #providers: ReadonlyMap<
     ProviderId,
     {
-      readonly model?: string;
+      readonly model: string;
       readonly baseUrl?: string;
-    }
-  >>;
-
-  readonly agent?: {
-    readonly maxTurns?: number;
-  };
-
-  readonly tools?: {
-    readonly timeoutSeconds?: number;
-  };
-
-  readonly ui?: {
-    readonly thinking?: "hidden" | "visible";
-    readonly toolDetails?: "compact" | "full";
-  };
-}
-
-interface AuthFile {
-  readonly providers?: Partial<Record<
-    ProviderId,
-    {
       readonly apiKey: string;
     }
-  >>;
+  >;
+
+  static load(options: {
+    readonly keaHome: string;
+    readonly projectDirectory: string;
+    readonly configOverride?: string;
+    readonly verbose: boolean;
+  }): Promise<Config>;
+
+  get models(): readonly ModelConfig[];
+  get defaultModel(): ModelConfig;
+  runtimeProviders(): readonly RuntimeProviderConfig[];
+  redact(message: string): string;
 }
 ```
+
+`Config` 构造成功就表示所有来源已经读取、合并并验证，所有启用 Provider 也已经取得凭据。Provider
+明细保持私有，避免普通日志或对象检查直接输出 API Key。Runtime 通过 `runtimeProviders()` 取得创建
+adapter 所需的短生命周期数组；其他调用方只读取模型和非秘密 setting。`redact()` 用已经加载的 Key
+清理下游错误文本，不引入单独的 redactor 对象。
+
+磁盘文件仍保持不同的安全 schema，但这些 schema 是 `Config.load()` 的内部校验规则，不是应用
+实体：
+
+- 普通 `config.json` 允许 `defaultProvider`、`providers.*.model`、`providers.*.baseUrl`、
+  `agent.maxTurns`、`tools.timeoutSeconds`、`ui.thinking` 和 `ui.toolDetails`；
+- `auth.json` 只允许 `providers.*.apiKey`；
+- CLI 的 `--verbose` 最后覆盖 `Config.verbose`。
 
 每个 Provider 第一版配置一个 UI 可选模型。一个 Provider 的 Runtime adapter 仍能按每次请求收到的
 model 字符串工作；“每 Provider 一个模型”只是当前应用配置和选择列表的限制，不是 ModelRuntime
 能力限制。
 
-`verification`、`memory` 和 `agent.maxToolCalls` 当前没有消费者，因此不进入 schema。配置中出现
-这些字段要作为未知字段报错，不能接受后忽略。
+`verification`、`memory` 和 `agent.maxToolCalls` 当前没有消费者，因此不进入内部 schema。配置中
+出现这些字段要作为未知字段报错，不能接受后忽略。
 
 ### 8.3 内建默认值
 
@@ -533,7 +539,7 @@ model 字符串工作；“每 Provider 一个模型”只是当前应用配置�
 
 ### 8.4 合并语义
 
-每个普通配置文件先从 `unknown` 独立解析和校验，再参与合并。合并规则固定为：
+`Config.load()` 把每个 JSON 文件读取为 `unknown`，独立校验后再放入内部合并值。合并规则固定为：
 
 - 普通对象递归合并；
 - `providers` 按 Provider ID 递归合并；
@@ -547,7 +553,7 @@ model 字符串工作；“每 Provider 一个模型”只是当前应用配置�
 
 ### 8.5 验证与解析
 
-完成合并后执行跨字段验证：
+完成合并并读入 auth 后执行跨字段验证：
 
 - 至少配置一个已知 Provider；
 - Provider 的 `model` 必须是非空字符串；
@@ -562,41 +568,8 @@ model 字符串工作；“每 Provider 一个模型”只是当前应用配置�
 Auth 可以保存当前普通配置未启用的已知 Provider 凭据，加载器忽略这些额外凭据；未知 Provider ID
 仍然报错。这样用户可以提前保存凭据，而 Project 配置决定本次运行实际启用哪些 Provider。
 
-解析结果分隔可展示配置和秘密：
-
-```ts
-interface LoadedConfiguration {
-  readonly config: ResolvedConfig;
-  readonly credentials: ResolvedAuth;
-}
-
-interface ResolvedConfig {
-  readonly defaultProvider: ProviderId;
-  readonly defaultModel: ModelConfig;
-  readonly models: readonly ModelConfig[];
-  readonly providers: Readonly<Partial<Record<
-    ProviderId,
-    {
-      readonly model: string;
-      readonly baseUrl?: string;
-    }
-  >>>;
-  readonly agent: {
-    readonly maxTurns: number;
-  };
-  readonly tools: {
-    readonly timeoutSeconds: number;
-  };
-  readonly ui: {
-    readonly thinking: "hidden" | "visible";
-    readonly toolDetails: "compact" | "full";
-  };
-  readonly verbose: boolean;
-}
-```
-
-`ResolvedConfig.models` 按内建 Provider 注册顺序稳定生成；默认模型在 UI 中标记，但不通过改变列表
-顺序表达语义。`ResolvedAuth` 不提供通用 stringify、inspect 或日志方法。
+`Config.models` 按内建 Provider 注册顺序稳定生成；默认模型在 UI 中标记，但不通过改变列表顺序表达
+语义。加载中任何一步失败都不产生半初始化 Config。
 
 ## 9. ModelRuntime 组装
 
@@ -662,13 +635,13 @@ function createModelRuntimeFromEnvironment(
 配置中的 `maxTurns` 和 Tool timeout 都是本次应用运行策略，不写入 Session：
 
 ```text
-config.agent.maxTurns
+config.maxTurns
 → Project
 → HarnessConfig
 → AgentHarness.createLoopConfig()
 → AgentLoopConfig.maxTurns
 
-config.tools.timeoutSeconds
+config.toolTimeoutSeconds
 → Project
 → createBuiltinToolRegistry(cwd, timeoutSeconds)
 → AgentToolRegistry(timeoutSeconds)
@@ -776,9 +749,9 @@ C:\Users\alice\.kea\auth.json: providers.openai.apiKey: must be non-empty
 
 ### 12.2 全局脱敏
 
-已加载凭据只进入 Runtime 组装，不进入 `ResolvedConfig`、UI state 或普通日志。最终顶层错误、verbose
-日志和 listener error 报告都经过凭据值替换：任何与已加载非空 Key 完全相同的片段都替换为
-`[REDACTED]`。
+已加载凭据只保存在 `Config` 的私有 Provider map，并通过 `runtimeProviders()` 进入 Runtime 组装；
+它们不进入 UI state 或普通日志。最终顶层错误、verbose 日志和 listener error 报告都经过
+`Config.redact()`：任何与已加载非空 Key 完全相同的片段都替换为 `[REDACTED]`。
 
 `--verbose` 可以展示：
 
@@ -818,8 +791,8 @@ C:\Users\alice\.kea\auth.json: providers.openai.apiKey: must be non-empty
 8. load --config file when specified
 9. apply direct CLI overrides such as --verbose
 10. load ~/.kea/auth.json
-11. validate and produce ResolvedConfig + ResolvedAuth
-12. create explicit ModelRuntime providers
+11. validate and construct the single Config
+12. create explicit ModelRuntime providers from Config
 13. create readline UI and obtain ui.interactions
 14. open/create Coding Agent Project
 15. create a new Harness, or for -c open sessions[0]
@@ -839,24 +812,29 @@ async function main(argv: readonly string[]): Promise<void> {
   }
 
   const projectDirectory = await resolveProjectDirectory(args.directory);
-  const loaded = await loadConfiguration({
+  const keaHome = resolveKeaHome();
+  const config = await Config.load({
+    keaHome,
     projectDirectory,
     configOverride: args.config,
     verbose: args.verbose,
   });
-  const runtime = createRuntime(loaded.config, loaded.credentials);
+  const runtime = createModelRuntime({
+    providers: config.runtimeProviders(),
+  });
   const ui = new ReadlineUi({
-    models: loaded.config.models,
-    config: loaded.config.ui,
+    models: config.models,
+    thinking: config.thinking,
+    toolDetails: config.toolDetails,
   });
   const project = await openOrCreateProject({
-    keaHome: resolveKeaHome(),
+    keaHome,
     projectDirectory,
     runtime,
-    modelConfig: loaded.config.defaultModel,
+    modelConfig: config.defaultModel,
     interactions: ui.interactions,
-    agent: loaded.config.agent,
-    tools: loaded.config.tools,
+    maxTurns: config.maxTurns,
+    toolTimeoutSeconds: config.toolTimeoutSeconds,
     onListenerError: ui.reportListenerError,
   });
   const initial = await selectInitialHarness(project, args.continue);
@@ -881,7 +859,7 @@ src/
   application/
     arguments.ts              # 启动参数解析
     project-directory.ts      # cwd / Git 根发现
-    configuration.ts          # 普通配置、Auth、合并、验证、脱敏
+    config.ts                 # Config 及其内部读取、合并、验证、脱敏
     init.ts                   # kea init
   ui/
     readline-ui.ts            # 主循环、Session 激活和命令执行
@@ -895,8 +873,8 @@ src/
   main.ts                     # 唯一生产组合根
 ```
 
-这些文件位置表达职责，不建立一套新的领域层。`application` 不能依赖 UI 的内部组件；UI 可以消费
-ResolvedConfig 的 UI 子集、Project 和 Harness 公共接口。
+这些文件位置表达职责，不建立一套新的领域层。`application` 不能依赖 UI 的内部组件；`main.ts`
+从 Config 取出 UI 实际需要的值传给 UI，UI 不持有整个 Config。
 
 ## 15. 不在第一版范围内
 
@@ -966,7 +944,7 @@ ResolvedConfig 的 UI 子集、Project 和 Harness 公共接口。
 - defaultProvider 单一推断、多 Provider 缺省错误和未知引用正确；
 - 普通配置中的所有 credential 字段被拒绝；
 - 启用 Provider 缺少 auth 时失败；
-- ResolvedConfig 不含秘密；
+- Config 只有私有 Provider map 持有秘密，普通字段、UI state 和日志不含秘密；
 - models 和 defaultModel 稳定生成；
 - 已删除功能字段不能被静默接受。
 
