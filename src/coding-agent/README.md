@@ -19,8 +19,8 @@ Agent Loop、模型 Provider、Session 文件格式和 Events 分发机制仍由
 
 ## 最小用法
 
-调用方先创建模型运行时，并提供一个 `Interactions` 实现。随后打开 Project、创建 Harness，再像
-使用普通 `AgentHarness` 一样提交 prompt：
+调用方先创建显式 Provider 的模型运行时，并提供一个 `Interactions` 实现。随后打开 Project、
+创建 Harness，再像使用普通 `AgentHarness` 一样提交 prompt：
 
 ```ts
 import { createModelRuntime } from "../core/ai/index.js";
@@ -29,7 +29,11 @@ import {
   type Interactions,
 } from "./index.js";
 
-const { runtime, modelConfig } = createModelRuntime();
+const runtime = createModelRuntime({
+  providers: [
+    { id: "openai", model: "gpt-5", baseUrl: "https://api.openai.com/v1", apiKey: "sk-..." },
+  ],
+});
 
 const interactions: Interactions = {
   async permission(request) {
@@ -39,11 +43,13 @@ const interactions: Interactions = {
 };
 
 const project = await openOrCreateProject({
-  keaHome: ".kea",
-  cwd: process.cwd(),
+  keaHome: resolve(homedir(), ".kea"),
+  projectDirectory: "/path/to/project",
   runtime,
-  modelConfig,
+  modelConfig: { provider: "openai", model: "gpt-5" },
   interactions,
+  maxTurns: 20,
+  toolTimeoutSeconds: 120,
 });
 
 const harness = await project.createHarness();
@@ -55,22 +61,27 @@ await harness.prompt("Explain this project.");
 
 ## 1. 从目录到 Project
 
-`openOrCreateProject()` 是本包唯一的组合根。它接收一个启动目录，并按下面的顺序建立运行时：
+目录发现属于 application 层：应用把启动目录解析为 Git worktree 根（或原目录）并规范化，再把
+规范结果作为 `projectDirectory` 交给 `openOrCreateProject()`。本包不再运行 Git。
 
-1. 把 `cwd` 转成绝对路径，解析符号链接并确认它是现存目录；
-2. 运行 `git rev-parse --show-toplevel`；在 Git worktree 中使用仓库根目录，否则使用启动目录；
-3. 在 `ProjectStorage` 中查找拥有该规范目录的 Project 记录；
-4. 找不到记录时生成 UUID、目录名和 UTC 时间，创建新的 Project 记录；
-5. 为该 Project 创建 `SessionRepository`、内存权限记录和共享 `Events`；
-6. 返回组合完成的 `Project`。
+`openOrCreateProject()` 是本包唯一的组合根。它验证并接受一个绝对、规范化、已存在的规范目录，
+然后按下面的顺序建立运行时：
+
+1. 校验 `projectDirectory`：绝对路径、`resolve()` 后不变、`realpath()` 后不变、且是现存目录；
+2. 在 `ProjectStorage` 中查找拥有该规范目录的 Project 记录；
+3. 找不到记录时生成 UUID、目录名和 UTC 时间，创建新的 Project 记录；
+4. 为该 Project 创建 `SessionRepository`、内存权限记录和共享 `Events`；
+5. 返回组合完成的 `Project`。
 
 ```ts
 function openOrCreateProject(options: {
   readonly keaHome: string;
-  readonly cwd?: string;
+  readonly projectDirectory: string;
   readonly runtime: ModelRuntime;
   readonly modelConfig: ModelConfig;
   readonly interactions: Interactions;
+  readonly maxTurns: number;
+  readonly toolTimeoutSeconds: number;
   readonly onListenerError?: (
     error: unknown,
     name: string,
@@ -79,8 +90,8 @@ function openOrCreateProject(options: {
 }): Promise<Project>;
 ```
 
-`cwd` 省略时使用 `process.cwd()`。无法访问目录、无法确定 Git 根目录或 Project 记录损坏时，
-函数抛出 `ProjectError`。
+`maxTurns` 和 `toolTimeoutSeconds` 是扁平的项目运行策略，直接传入，不嵌套配置对象。目录不可
+访问、路径不规范、非规范路径或 Project 记录损坏时，函数抛出 `ProjectError`。
 
 ### Project 持久化
 
@@ -100,11 +111,10 @@ Project 记录位于：
 ## 2. Project、Session 与 Harness
 
 `Project` 是一个 Project 的运行时聚合对象。它持有不可变的 `ProjectInfo`、Session Repository、
-模型运行时、初始模型和共享 Events，并提供三项行为：
+模型运行时、初始模型和私有 Events，并提供三项行为：
 
 ```ts
 interface Project {
-  readonly events: Events;
   readonly info: ProjectInfo;
 
   listSessions(): Promise<readonly SessionMetadata[]>;
@@ -124,7 +134,7 @@ Harness。目录已被删除或不再是目录时恢复失败，不会悄悄回�
 1. 从 `session.metadata.cwd` 取得唯一的工作目录；
 2. 创建一份新的内置 Tool Registry，所有路径型 Tool 都绑定该目录；
 3. 用 Project 目录和 Session cwd 填充 system prompt；
-4. 把 Project 的同一个 `Events` 实例交给 Harness。
+4. 把 Project 的同一个私有 `Events` 实例交给 Harness。
 
 ### 生命周期
 
@@ -133,15 +143,15 @@ Harness。目录已被删除或不再是目录时恢复失败，不会悄悄回�
 | Project 记录 | 持久化 | 由 `ProjectStorage` 保存，通过规范目录查找 |
 | Session | 持久化 | 由 `SessionRepository` 创建和恢复 |
 | `Project` 实例 | 一次 `openOrCreateProject()` | 组合运行时依赖，不提供保存、更新或删除 Project 的操作 |
-| `Events` | Project 实例 | 同一 Project 实例创建的全部 Harness 共享 |
+| `Events` | Project 实例 | 同一 Project 实例创建的全部 Harness 共享，不对外公开 |
 | `approved` 权限记录 | Project 实例 | 只存在于内存，重新打开 Project 后清空 |
 | `AgentHarness` | 一次创建或恢复 | 绑定一份 Session |
 | Tool Registry | Harness | 每个 Harness 都有独立的内置 Tool 实例 |
 | system prompt | Harness | 构造 Harness 时根据 Project 目录和 Session cwd 生成 |
 
-Project 级 Events 让调用方只注册一次 listener，就能观察该 Project 的全部 Session；事件中的
-`sessionId` 和 `runId` 用于区分具体运行。Tool Registry 不共享，因此每个 Harness 的工具始终绑定
-自己的 Session cwd。
+`Project.events` 是私有的；调用方通过 `harness.subscribe(listener)` 观察每个 Harness 的事件，
+按 `sessionId` 过滤、幂等取消订阅。Tool Registry 不共享，因此每个 Harness 的工具始终绑定自己的
+Session cwd。
 
 ## 3. 一次完整的 Tool 调用
 
@@ -278,8 +288,8 @@ Project 发现、记录校验、Session cwd 校验中的失败使用 `ProjectErr
 
 ### 值
 
-- `openOrCreateProject`：发现或创建 Project，并组合 Project 级运行时；
-- `ProjectError`：Project 发现、数据和 cwd 错误。
+- `openOrCreateProject`：为规范 Project 目录组装 Project 级运行时；
+- `ProjectError`：Project 数据、目录和 cwd 错误。
 
 ### 类型
 
@@ -291,7 +301,7 @@ Project 发现、记录校验、Session cwd 校验中的失败使用 `ProjectErr
 
 ## 10. 源码位置与包边界
 
-- `factory.ts`：唯一组合根，负责目录发现、Project 记录和 Project 级运行时组装；
+- `factory.ts`：唯一组合根，负责 Project 目录校验、Project 记录和 Project 级运行时组装；
 - `project/project.ts`：Project 运行时行为、ProjectInfo 校验和 Harness 构造；
 - `project/storage.ts`：Project JSON 记录的持久化；
 - `system-prompt.ts`：Coding Agent system prompt 模板和动态值填充；
@@ -303,5 +313,5 @@ Project 发现、记录校验、Session cwd 校验中的失败使用 `ProjectErr
 - `index.ts`：最小公共入口。
 
 本包向下依赖 `core/ai`、`core/agent`、`core/events` 和 `core/harness`，向外只要求一个
-`Interactions` adapter。UI 可以订阅 `project.events` 并实现交互端口，但 `coding-agent` 不反向依赖
-任何具体 UI。
+`Interactions` adapter。UI 通过 `harness.subscribe()` 观察事件并实现交互端口，但 `coding-agent`
+不反向依赖任何具体 UI。

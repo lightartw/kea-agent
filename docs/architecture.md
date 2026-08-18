@@ -1,30 +1,40 @@
 # Kea Agent 架构
 
-**更新：** 2026-08-15
+**更新：** 2026-08-18
 
 本文描述当前代码的所有权与边界。`ai`、`agent`、`events`、`harness` 共同组成
 `src/core/` 下的 Harness 核心。依赖方向是
-`ui -> coding-agent -> core/harness -> core/agent -> core/ai`；`core/events` 由核心运行时共享，
-`main.ts` 是连接具体 UI、Coding Agent 和 AI provider 的组合根。
+`main -> ui -> coding-agent -> core/harness -> core/agent -> core/ai`；`core/events` 由核心运行时共享，
+`src/application/` 提供配置、参数和目录发现等无长期状态的启动能力，`main.ts` 是连接具体 UI、
+Coding Agent 和 AI provider 的唯一组合根。
 
-## 1. AI：LLM 流式协议
+## 1. AI：LLM 流式协议与显式 Provider
 
 `src/core/ai/` 统一 Anthropic、OpenAI 和 Gemini 的流式协议，不保存会话，也不执行工具。
 
 ```ts
-type StreamFn = (
-  model: ModelConfig,
-  context: Context,
-  options?: Partial<StreamOptions>,
-) => AsyncIterable<StreamChunk>;
-
 interface ModelConfig {
   readonly provider: string;
   readonly model: string;
 }
+
+interface RuntimeProviderConfig {
+  readonly id: ProviderId;          // "anthropic" | "openai" | "gemini"
+  readonly apiKey: string;
+  readonly baseUrl?: string;
+}
+
+function createModelRuntime(options: {
+  readonly providers: readonly RuntimeProviderConfig[];
+}): ModelRuntime;
 ```
 
-`createStreamFn()` 返回 `stream` 和 `defaultModel`。Provider adapter 在流第一次迭代时动态加载。
+`createModelRuntime()` 只接收显式 Provider 列表；`ModelRuntime` 拥有 provider 路由和 lazy
+adapter，`ModelConfig` 是“这次请求选择哪个模型”的值，两者分离。Runtime 不保存默认模型；
+同一个 Runtime 可服务多个 provider、Session 和模型切换。`ModelRuntime.stream(modelConfig,
+context)` 的请求路由到 `modelConfig.provider` 对应的 adapter，请求未配置的 provider 会抛出
+`Unknown provider`。
+
 `ToolResultMessage.content` 是模型可见文本；`details` 是 Session、Agent 和 UI 使用的结构化数据，
 不会被 provider adapter 发到模型服务。
 
@@ -91,26 +101,11 @@ function runAgentLoop(
   config: AgentLoopConfig,
   streamFn: StreamFn,
 ): Promise<void>;
-
-interface AgentContext {
-  readonly sessionId: string;
-  readonly runId: string;
-  readonly systemPrompt: string;
-  readonly messages: readonly AgentMessage[];
-  readonly tools: AgentToolRegistry;
-  readonly events: Events;
-  readonly signal?: AbortSignal;
-  appendMessage(message: AgentMessage): Promise<void>;
-}
-
-interface AgentLoopConfig {
-  readonly model: ModelConfig;
-  readonly maxTurns?: number;
-  readonly convertToLlm: (
-    messages: readonly AgentMessage[],
-  ) => readonly Message[];
-}
 ```
+
+`AgentLoopConfig` 携带本轮模型选择（`model`）、可选 `maxTurns` 上限和 `convertToLlm`
+消息转换。`AgentContext` 提供 Run 身份、system prompt、消息、Tool Registry、共享 `Events`
+和取消信号；`appendMessage()` 由 Harness 提供，负责把完整消息持久化后再发布事实事件。
 
 ### 控制事件
 
@@ -154,49 +149,73 @@ timeout 与异常归一化。Agent Tool 不依赖 Coding Agent 或 UI，也不�
 消息和最后选择的模型。
 
 ```ts
+interface SessionMetadata {
+  readonly id: string;
+  readonly title: string;
+  readonly cwd: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly parentSessionId?: string;
+}
+
 class SessionRepository {
-  constructor(readonly storageDir: string);
-  create(): Promise<Session>;
+  constructor(storageDir: string);
+  create(options: { readonly cwd: string }): Promise<Session>;
   open(sessionId: string): Promise<Session>;
-  list(): Promise<readonly string[]>;
+  list(): Promise<readonly SessionMetadata[]>;
 }
 ```
 
 `SessionRepository` 是 Harness 层唯一管理多份 Session 的实体。它在一个 `storageDir` 中创建、
-打开和列举 Session；`list()` 通过 `Session.open()` 读取每个候选文件，按存储的 `updatedAt`
-从新到旧返回 `SessionInfo[]`。Repository 不创建 Harness，也不保存“当前 Session”。
+打开和列举 Session；`list()` 按存储的 `updatedAt` 从新到旧返回 `SessionMetadata[]`。
+Repository 不创建 Harness，也不保存“当前 Session”。
 
 ### AgentHarness
 
-一个 `AgentHarness` 在构造时绑定恰好一份 Session，之后不切换。它公开 `sessionId`，但不暴露
-可写 Session 或 Repository。
+一个 `AgentHarness` 在构造时绑定恰好一份 Session，之后不切换。它公开 `sessionId`、`model`、
+`messages` 和 `isRunning`，但不暴露可写 Session 或 Repository。
 
 ```ts
+interface HarnessConfig {
+  readonly session: Session;
+  readonly runtime: ModelRuntime;
+  readonly modelConfig: ModelConfig;
+  readonly maxTurns?: number;
+  readonly toolRegistry: AgentToolRegistry;
+  readonly systemPrompt: string;
+  readonly events: Events;
+}
+
 class AgentHarness {
   constructor(config: HarnessConfig);
   prompt(input: string): Promise<void>;
   abort(): void;
   switchModel(model: ModelConfig): Promise<void>;
-  registerTool(tool: AgentTool): void;
-  unregisterTool(name: string): void;
+  subscribe(listener: (event: HarnessEvent) => void): () => void;
   get sessionId(): string;
-  get messages(): readonly AgentMessage[];
   get model(): ModelConfig;
+  get messages(): readonly AgentMessage[];
   get isRunning(): boolean;
 }
 ```
 
 Harness 为这份 Session 持有消息视图、当前模型、Tool Registry、AbortController 和 run 状态。
-它构造时接收 Project 提供的共享 `Events`，在 `prompt()` 中创建 Run 身份
-（`sessionId`、`runId`），发布 `harness/run-start`，调用一次 `runAgentLoop()`，并发布
-`harness/run-end`。同一个 Harness 同时只运行一个 `prompt()`；运行时切换模型或修改 Tool 会抛错。
-Harness 没有 `subscribe()`，也没有私有的 EventBus。
+它构造时接收 Project 提供的共享 `Events`，在 `prompt()` 中创建 Run 身份（`sessionId`、
+`runId`），发布 `harness/run-start`，调用一次 `runAgentLoop()`，并发布 `harness/run-end`。
+同一个 Harness 同时只运行一个 `prompt()`；运行时切换模型或修改 Tool 会抛错。构造时 Session
+已保存的模型优先于 `modelConfig`；`switchModel()` 先持久化 `model_selection` 再更新当前模型，
+因此模型切换失败不会改变旧状态。
+
+`subscribe(listener)` 是 UI 唯一的事件入口：Harness 把共享 `Events` 中属于本 Session 的
+`emit` 事实投影成 `HarnessEvent`（去掉 Session 身份和所有 intercept 控制点）转发给 listener，
+返回幂等取消函数。Project 的原始 `Events` 不公开。
 
 ### Harness Event 边界
 
-`src/core/harness/events.ts` 把 `harness/run-start`、`harness/run-end` 直接加入
-`EventMap`（run-end 的输入内联了 `completed`、`aborted`、`error` 联合）。Listener 观察已经
-发生的事实，返回值不会改变运行；`emit` 的 listener 错误被隔离，并交给 `Events` 的错误处理器。
+`src/core/harness/events.ts` 声明 `HarnessEvent` 投影：`run-start`、`run-end` 加上
+`turn-start`、`turn-end`、`text-delta`、`thinking-delta`、`tool-call-*`、`tool-call`、
+`tool-result`。Listener 观察已经发生的事实，返回值不会改变运行；`emit` 的 listener 错误被
+隔离，并交给 `Events` 的错误处理器。
 
 ## 5. Coding Agent：Project 级所有者
 
@@ -206,133 +225,140 @@ Harness 没有 `subscribe()`，也没有私有的 EventBus。
 interface ProjectInfo {
   readonly id: string;
   readonly name: string;
-  readonly directories: readonly string[];
-  readonly primaryDirectory: string;
+  readonly directory: string;       // 绝对、规范化、已存在的 Project 目录
   readonly createdAt: string;
   readonly updatedAt: string;
 }
 
-interface Project extends ProjectInfo {
-  readonly events: Events;
-  listSessions(): Promise<readonly SessionInfo[]>;
-  createSession(options?: CreateSessionOptions): Promise<AgentHarness>;
-  openSession(sessionId: string): Promise<AgentHarness>;
-  continueRecent(): Promise<AgentHarness>;
-  update(input: UpdateProjectInput): Promise<ProjectInfo>;
-  renderTool(input: ToolPresentationInput): string;
+interface Project {
+  readonly info: ProjectInfo;
+  listSessions(): Promise<readonly SessionMetadata[]>;
+  createHarness(options?: { readonly cwd?: string }): Promise<AgentHarness>;
+  createHarnessFromSession(sessionId: string): Promise<AgentHarness>;
 }
 
-interface CreateProjectConfig {
+function openOrCreateProject(options: {
   readonly keaHome: string;
-  readonly directory?: string;
-  readonly cwd?: string;
-  readonly streamFn: StreamFn;
-  readonly model: ModelConfig;
-  readonly systemPrompt?: string;
-  readonly interactions?: CodingAgentInteractions;
-  readonly onEventListenerError?: (
-    error: unknown,
-    name: string,
-    input: unknown,
-  ) => void;
-}
-
-function createProject(config: CreateProjectConfig): Promise<Project>;
+  readonly projectDirectory: string;
+  readonly runtime: ModelRuntime;
+  readonly modelConfig: ModelConfig;
+  readonly interactions: Interactions;
+  readonly maxTurns: number;
+  readonly toolTimeoutSeconds: number;
+  readonly onListenerError?: (error: unknown, name: string, input: unknown) => void;
+}): Promise<Project>;
 ```
 
-Project 元数据持久化在 `<keaHome>/projects/<id>/project.json`。`createProject()` 先扫描已注册
-Project：当启动目录位于某 Project 的 `directories` 之下时复用该 Project（嵌套时选最长）；
-否则显式 `directory` 成为新根；否则从 `git rev-parse --show-toplevel` 发现根，失败则回退为
-启动 `cwd`。Git 只影响发现；每个非 Git 根目录都有独立 Project 存储。
+`openOrCreateProject()` 是本包唯一的组合根。目录发现属于 application 层：应用把启动目录
+解析为 Git worktree 根（或原目录）并规范化，再把规范结果作为 `projectDirectory` 传入；
+Coding Agent 只校验该目录（绝对、`resolve()` 后不变、`realpath()` 后不变、且是现存目录），
+不运行 Git。
 
-`Project` 用 `keaHome/projects/<id>` 建立 `SessionRepository`。`continueRecent()` 打开最近的
-Session；没有历史时按启动 cwd 创建。Session 方法返回 `AgentHarness`，调用方直接使用它。
+Project 记录持久化在 `<keaHome>/projects/<projectId>/project.json`，通过规范目录查找复用。
+找不到记录时生成 UUID、目录名和 UTC 时间创建新记录。每次组合同时创建
+`SessionRepository`、内存权限记录（`approved`，只存在于进程内）和**一个**共享 `Events`
+实例，并注册默认 Permission listener。`maxTurns` 和 `toolTimeoutSeconds` 是扁平的运行策略，
+直接传给每个 Harness。
 
-`createProject()` 构造**一个** `Events` 实例，并把 Permission 等 coding 控制 listener 注册其上，
-再把这个实例作为 `project.events` 传给每个 Harness。因此一份 Project 的全部 Session 共享同一
-listener 注册，由 `sessionId` 区分；它们依然拥有独立的可变 Tool、模型和 run 状态。
+`Project.events` 是私有的；UI 通过 `harness.subscribe()` 观察。`createHarness()` 创建新
+Session，`createHarnessFromSession()` 恢复已有 Session 并重新验证其 cwd；目录已被删除或不再
+是目录时恢复失败，不会悄悄回退到 Project 目录。`-c` 时应用选择 `listSessions()[0]`，空列表
+回退为新 Session。
 
 ### Session 与 cwd
 
-一份 Session 存储一个选中的 Project 目录加相对 `cwd`。Coding Agent 给每份 Session 的 Harness
-以解析后的绝对 cwd，并把完整 `directories` 交给 Coding Tools；文件 Tool 用
-`safePath(cwd, directories, path)` 拒绝离开全部 Project 目录的路径。切换 `primaryDirectory`
-只影响之后创建的 Session，不改写已有 Session 文件。
+一份 Session 存储绝对 `cwd`。Coding Agent 给每份 Session 的 Harness 以解析后的 cwd，
+工具路径统一从这个 cwd 解析。相对 `cwd` 从 Project 目录解析；最终路径必须存在且是目录。
 
 ### 默认 Coding 能力
 
 Coding Agent 提供 coding system prompt，以及 Bash、read、write、edit、Glob 和无状态 Todo。
 Bash permission 策略分为 allow、ask、deny；ask 通过 `Interactions.permission()` 端口请求外部
 回答（once / always / deny），deny 由 Permission listener 在 `tools/pre-execute` 上直接拒绝。
-未提供 interactions 时，`NO_INTERACTIONS` 总是返回带 `Permission request failed: interaction
-unavailable` 原因的 deny。
+`Interactions` 必须由调用方显式提供，本包没有默认实现，避免在没有用户确认渠道时静默放行。
 
-Todo 每次接收完整列表，同时返回模型可见的 `content` 和结构化的 `details.todos`。Harness 将
-Tool Result 写入 Session，因此恢复状态属于 Session，而不是 Todo Tool 实例。
+## 6. UI：readline 线性界面
 
-### 展示边界
-
-`ToolDefinition` 可以在执行定义旁提供 `CodingToolPresentation`。Coding Agent 向下把
-定义转换成 `AgentTool`，向上保留 Project 级的 `renderTool()`。`ToolPresentationInput` 只有
-`call` 与 `result` 两种变体，仅含渲染数据，不携带 Session/Run 身份。专用展示缺失、返回
-`undefined` 或抛错时使用通用 fallback；展示失败只通过 `interactions.notify()` 报告，不改变
-Tool 执行结果。
-
-## 6. UI：具体适配器
-
-`src/ui/` 实现 CLI，core 模块不导入它。`CliInteractions` 实现 `confirm()` 和 `notify()`；
-`CliHarnessRenderer` 绑定到 `project.events`，按 `sessionId` 过滤并渲染事实事件。
+`src/ui/` 实现一个 readline 终端应用，core 与 coding-agent 不导入它。
 
 ```ts
-class CliFrontend {
-  constructor(options?: CliFrontendOptions);
-  get interactions(): CodingAgentInteractions;
-  run(project: Project, harness: AgentHarness): Promise<void>;
+class ReadlineUi {
+  readonly interactions: ReadlineInteractions;
+  constructor(options: ReadlineUiOptions);   // models、display 设置、reportError、注入目标
+  run(project: Project, initialHarness: AgentHarness): Promise<void>;
   close(): void;
 }
 ```
 
-`run(project, harness)` 让 `CliHarnessRenderer.bind(project.events, harness.sessionId)` 订阅传入
-Project 的共享 Events；文本流和运行统计由 CLI 展示，`agent/tool-call` 与 `agent/tool-result`
-投影成 `ToolPresentationInput` 交给 `project.renderTool()`。ESC 调用当前 Harness 的 `abort()`。
-`confirm()` 显示 `[y/N]`，空输入或 ESC 都拒绝；外部 `AbortSignal` 与 ESC 信号合并。
+`ReadlineUi` 是线性 Session 循环：一次只读一个 Prompt，`await harness.prompt(text)` 期间不再
+读第二个普通 Prompt；Permission 提问发生在 `prompt()` 内部，通过同一 question 函数。命令只在
+字符 0 位置匹配精确 slash token（`/new`、`/session`、`/model`、`/help`、`/exit`）；其他输入
+原样作为 Prompt。`/session` 与 `/model` 使用一基编号选择器，空输入取消。
 
-## 7. main.ts：组合根
+`Renderer` 把 `HarnessEvent` 与用户输入投影到终端（thinking 默认隐藏、tool 事实默认 compact）；
+`ReadlineInteractions` 实现 `Interactions` 端口，把 `o`/`a`/其它回答映射为 once/always/deny。
+Run 取消中止 Permission 提问并传播，普通取消返回 deny。SIGINT 在 `current.isRunning` 时调用
+`current.abort()`（包括 Permission 持有提问时）；没有 Run 时留给 readline 自身的输入取消。
+Session 或模型切换失败时保留旧 Harness、订阅和模型。
 
-启动顺序如下：
+`ReadlineUi` 通过注入的 `reportError` 回调报告捕获的错误，不接触 Config 或凭据。
 
-1. 加载环境变量并创建 `StreamFn` 与默认模型；
-2. `createProject({ keaHome })` 打开或创建持久化 Project（内部建立共享 Events 并注册
-   Permission）；
-3. 创建 `CliFrontend`，把 `cli.interactions` 注入 `createProject()`；
-4. 调用 `project.continueRecent()` 选择 Session 并取得 Harness；
-5. 调用 `cli.run(project, harness)`。
+## 7. application 与 main.ts：组合根
 
-Session 的选择发生在 Coding Agent；CLI 只运行已选择的 Harness。
+`src/application/` 提供无长期状态的启动能力：`arguments.ts`（argv 解析）、
+`project-directory.ts`（启动目录 → Git 根 → 规范目录）、`config.ts`（唯一 Config）和
+`init.ts`（`kea init`）。这些模块只被 `main.ts` 和测试导入。
+
+### Config
+
+`Config` 是唯一的应用设置实体，按优先级分层加载：内建默认值 < `~/.kea/config.json` <
+`<project>/.kea/config.json` < `--config` 文件 < CLI 直接覆盖（`--verbose`）。每个普通配置源
+独立验证后才合并；普通源拒绝 credential 字段（`apiKey`/`token`/`secret`/`password`）。
+凭据只来自 `~/.kea/auth.json`，在所有普通源之后加载。跨字段验证顺序：至少一个 provider →
+model 非空 → defaultProvider 解析（单 provider 推断 / 多 provider 必须显式 / 必须引用已配置）→
+启用 provider 的 auth key 非空。
+
+`Config` 保持 Provider 凭据私有（`#providers`），公开 `models`、`defaultModel`、
+`runtimeProviders()`、`maxTurns`、`toolTimeoutSeconds`、`thinking`、`toolDetails`、`verbose`
+和 `redact()`。`redact()` 把所有已加载的非空 API key 替换为 `[REDACTED]`；顶层错误、verbose
+日志和 listener 错误都经它输出。
+
+### 启动顺序
+
+1. 解析 argv；`kea init` 时创建缺失模板（独占创建，绝不覆盖）后直接返回；
+2. `resolveProjectDirectory()` 得到规范 Project 目录；
+3. `Config.load()` 按上述顺序加载并验证；
+4. `createModelRuntime({ providers: config.runtimeProviders() })`；
+5. 构造 `ReadlineUi`（models、display 设置、经 `redact()` 的 `reportError`）；
+6. `openOrCreateProject()` 打开或创建 Project；
+7. `kea -c` 选择最新 Session，否则创建新 Session；
+8. `ui.run(project, initial)`；`finally` 中 `ui.close()`（幂等）。
+
+生产启动绝不调用 dotenv，也绝不从 `process.env` 读取 Provider 凭据。
 
 ## 8. 公共入口
 
 - `src/core/events/index.ts`：`Events`、`EventMap`；
-- `src/core/ai/index.ts`：AI 消息、模型、流和 provider 工厂；
+- `src/core/ai/index.ts`：AI 消息、模型、流和显式 Provider 工厂；
 - `src/core/agent/index.ts`：`runAgentLoop`、`AgentRunIdentity`、事件契约和 Tool API；
-- `src/core/harness/index.ts`：`AgentHarness`、`Session`、`SessionRepository`、Session 错误和 system
-  prompt；
-- `src/coding-agent/index.ts`：`createProject`、`Project`、`ProjectInfo`、默认 prompt、
-  interactions、`ToolDefinition`/presentation 和 Todo API；
-- `src/ui/index.ts`：`CliFrontend`、`CliInteractions`、`CliHarnessRenderer`；
-- `src/index.ts`：汇总以上入口和通用 timeout/workspace helpers。
+- `src/core/harness/index.ts`：`AgentHarness`、`HarnessEvent`、`Session`、`SessionRepository`、
+  Session 元数据和错误；
+- `src/coding-agent/index.ts`：`openOrCreateProject`、`Project`、`ProjectInfo`、`Interactions`
+  端口和权限类型；
+- `src/ui/index.ts`：`ReadlineUi`、`ReadlineInteractions`、`Renderer`、`parseInput`；
+- `src/index.ts`：汇总以上入口和通用 workspace helpers。
 
-具体内置 Tool/事件工厂、Bash policy、Coding Tool 到 Agent Tool 的转换和 presentation registry
-都是内部实现。
+`src/application/` 保持应用内部：Config、argv/init 和目录发现只由 `main.ts` 与测试导入。
+具体内置 Tool/事件工厂、Bash policy 和各 Tool 的 details 类型都是内部实现。
 
 ## 9. 边界约束
 
 - `ai` 不依赖 `agent`；
 - `agent` 不依赖 `harness`、`coding-agent` 或 `ui`；只声明自己的 `EventMap` 契约；
 - `harness` 不依赖具体 coding Tool 或 UI；
-- `coding-agent` 不依赖 `src/ui`，只定义 `CodingAgentInteractions` 端口；
+- `coding-agent` 不依赖 `src/ui` 或 `src/application`，只定义 `Interactions` 端口；
+- `application` 不依赖 UI 内部组件；main 从 Config 取出 UI 需要的值传给 UI；
 - `SessionRepository` 管理 Session 集合，`AgentHarness` 只绑定一份 Session；
-- `Project` 选择 Project 中的 Session，并直接返回独立 Harness；一份 Project 共享一个
-  `Events` 实例；
-- 控制事件负责提交前控制，`emit` 事实负责事实通知，presentation 负责 UI 文本；
-- `main.ts` 是唯一连接 provider、Project 和具体 CLI 的应用入口。
+- `Project` 的原始 `Events` 私有；UI 只能通过 `harness.subscribe()` 观察；
+- 控制事件负责提交前控制，`emit` 事实负责事实通知；
+- `main.ts` 是唯一连接 provider、Project 和具体 CLI 的应用入口；Config 是唯一应用设置实体。

@@ -10,7 +10,7 @@
 
 ## 最小用法
 
-下面的 Session 只存在于内存中。调用方订阅 `events` 后，`prompt()` 启动一次完整的 Run：
+下面的 Session 只存在于内存中。调用方订阅 Harness 后，`prompt()` 启动一次完整的 Run：
 
 ```ts
 import { createModelRuntime } from "../ai/index.js";
@@ -18,25 +18,31 @@ import { AgentToolRegistry } from "../agent/index.js";
 import { Events } from "../events/index.js";
 import { AgentHarness, Session } from "./index.js";
 
-const { runtime, modelConfig } = createModelRuntime();
+const runtime = createModelRuntime({
+  providers: [
+    { id: "openai", apiKey: "sk-...", baseUrl: "https://api.openai.com/v1" },
+  ],
+});
 const session = Session.inMemory({ cwd: process.cwd() });
-const events = new Events();
 const harness = new AgentHarness({
   session,
   runtime,
-  modelConfig,
+  modelConfig: { provider: "openai", model: "gpt-5" },
   toolRegistry: new AgentToolRegistry(),
   systemPrompt: "You are a helpful assistant.",
-  events,
+  events: new Events(),
 });
 
-const unsubscribe = events.on("agent/text-delta", (input) => {
-  if (input.sessionId === harness.sessionId) process.stdout.write(input.text);
+const unsubscribe = harness.subscribe((event) => {
+  if (event.type === "text-delta") process.stdout.write(event.text);
 });
 
 await harness.prompt("Explain what a session is.");
 unsubscribe();
 ```
+
+`subscribe(listener)` 把 Harness 收到的 `HarnessEvent` 按 `sessionId` 过滤后转交给 listener，
+返回的取消函数幂等。调用方不需要直接接触共享 `Events` 实例。
 
 ## Harness Events
 

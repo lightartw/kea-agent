@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -21,7 +22,7 @@ import {
   ProjectError,
 } from "../src/coding-agent/index.js";
 
-import { CliFrontend } from "../src/ui/index.js";
+import { ReadlineUi } from "../src/ui/index.js";
 
 import type {
   AgentRunIdentity,
@@ -31,6 +32,7 @@ import type {
 
 import type {
   HarnessConfig,
+  HarnessEvent,
   SessionMetadata,
   SessionNode,
 } from "../src/core/harness/index.js";
@@ -43,7 +45,12 @@ import type {
   ProjectInfo,
 } from "../src/coding-agent/index.js";
 
-import type { ModelRuntime, StreamChunk } from "../src/core/ai/index.js";
+import type {
+  ModelRuntime,
+  ProviderId,
+  RuntimeProviderConfig,
+  StreamChunk,
+} from "../src/core/ai/index.js";
 
 import type { EventMap } from "../src/core/events/index.js";
 
@@ -57,7 +64,7 @@ void [
   SessionRepository,
   openOrCreateProject,
   ProjectError,
-  CliFrontend,
+  ReadlineUi,
 ];
 
 // Type-only assertions — keep imports from being tree-shaken
@@ -69,6 +76,7 @@ type PublicAgentTypes = [
 
 type PublicHarnessTypes = [
   HarnessConfig,
+  HarnessEvent,
   SessionMetadata,
   SessionNode,
 ];
@@ -82,7 +90,7 @@ type PublicCodingAgentTypes = [
 ];
 
 type PublicEventTypes = [EventMap];
-type PublicAiTypes = [ModelRuntime, StreamChunk];
+type PublicAiTypes = [ModelRuntime, ProviderId, RuntimeProviderConfig, StreamChunk];
 
 void (null as PublicAgentTypes | null);
 void (null as PublicHarnessTypes | null);
@@ -121,4 +129,13 @@ test("CLI module import does not start the prompt", () => {
   assert.equal(child.status, 0, child.stderr);
   assert.equal(child.stdout, "");
   assert.equal(child.stderr, "");
+});
+
+test("production main does not load dotenv or read credential environment variables", () => {
+  const source = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
+  assert.ok(!source.includes("dotenv"), "main.ts must not load dotenv");
+  assert.ok(!source.includes("process.env"), "main.ts must not read process.env");
+  for (const name of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]) {
+    assert.ok(!source.includes(name), `main.ts must not read ${name}`);
+  }
 });

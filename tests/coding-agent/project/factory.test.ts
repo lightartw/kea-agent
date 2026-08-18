@@ -301,26 +301,3 @@ test("corrupt, unsupported, unreadable, and duplicate records reject without cre
   }
 });
 
-test("compatibility: the old cwd call shape still discovers the Git work-tree root (removed in Task 9)", async () => {
-  const keaHome = await tempDir();
-  const repo = await tempDir();
-  try {
-    await gitInit(repo);
-    const sub = join(repo, "packages", "web");
-    await mkdir(sub, { recursive: true });
-
-    const project = await openOrCreateProject({
-      keaHome,
-      cwd: sub,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-      maxTurns: 20,
-      toolTimeoutSeconds: 120,
-    });
-    assert.equal(project.info.directory, resolve(repo));
-  } finally {
-    await rm(keaHome, { recursive: true, force: true });
-    await rm(repo, { recursive: true, force: true });
-  }
-});

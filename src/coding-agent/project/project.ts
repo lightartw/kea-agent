@@ -68,8 +68,8 @@ export function validateProjectInfo(info: ProjectInfo): void {
  * update/save/delete operation.
  */
 export class Project {
-  /** Temporary UI compatibility until Task 9; new code must use harness.subscribe(). */
-  readonly events: Events;
+  /** Project-scoped Events bus; Harnesses observe it through subscribe(). */
+  private readonly events: Events;
 
   private readonly infoState: ProjectInfo;
   private readonly projectDirectory: string;

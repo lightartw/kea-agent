@@ -9,13 +9,24 @@ Session 或 Agent Run，也不执行工具或控制 agent loop。
 ```ts
 import { createModelRuntime, type Context } from "./core/ai/index.js";
 
-const { runtime, modelConfig } = createModelRuntime();
+const runtime = createModelRuntime({
+  providers: [
+    {
+      id: "openai",
+      apiKey: "sk-...",
+      baseUrl: "https://api.openai.com/v1",
+    },
+  ],
+});
 const context: Context = {
   systemPrompt: "You are helpful.",
   messages: [{ role: "user", content: "Hello" }],
 };
 
-for await (const event of runtime.stream(modelConfig, context)) {
+for await (const event of runtime.stream(
+  { provider: "openai", model: "gpt-5" },
+  context,
+)) {
   if (event.type === "text_delta") process.stdout.write(event.text);
   if (event.type === "error") console.error(event.message.errorMessage);
 }
@@ -34,26 +45,20 @@ assistant message。流没有终止块时它会拒绝。它不承担标题生成
 
 ## Provider 与模型切换
 
-`createModelRuntime()` 找出所有已配置 provider，为它们创建 lazy adapter，并返回同一个
-Runtime。内置配置如下：
+`createModelRuntime()` 只接收显式的 `RuntimeProviderConfig` 列表；每个条目给出 provider 标识、
+API key 和可选 base URL。生产启动由 application Config 提供这些值，不读取环境变量。
+`createModelRuntimeFromEnvironment()` 是从 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、
+`GEMINI_API_KEY` 及对应 `*_BASE_URL` 构造同一形状的便捷入口，仅供开发和测试。
 
-| Provider | API key | 可选 base URL |
-|---|---|---|
-| Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` |
-| OpenAI | `OPENAI_API_KEY` | `OPENAI_BASE_URL` |
-| Gemini | `GEMINI_API_KEY` | `GEMINI_BASE_URL` |
-
-`MODEL_ID` 必须提供。只有一家 provider 时自动作为默认；多家时必须设置
-`DEFAULT_PROVIDER`。默认项只决定 factory 返回的启动 `modelConfig`，不限制其他已配置 provider。
+内置 provider 标识为 `anthropic`、`openai`、`gemini`。adapter 第一次使用时懒加载，之后复用；
+请求未配置的 provider 会抛出 `Unknown provider`。
 
 ```ts
-const { runtime } = createModelRuntime({
-  env: {
-    ANTHROPIC_API_KEY: "...",
-    OPENAI_API_KEY: "...",
-    DEFAULT_PROVIDER: "anthropic",
-    MODEL_ID: "claude-sonnet-5",
-  },
+const runtime = createModelRuntime({
+  providers: [
+    { id: "anthropic", apiKey: "sk-ant-...", baseUrl: "https://api.anthropic.com" },
+    { id: "openai", apiKey: "sk-...", baseUrl: "https://api.openai.com/v1" },
+  ],
 });
 
 // 切换 model/provider 不需要重建 Runtime。
@@ -65,23 +70,6 @@ for await (const event of runtime.stream(
 }
 ```
 
-应用可以先从 JSON 等配置源准备环境变量；配置文件的读取、合并和保存不属于 `ai`。
-adapter 第一次使用时加载，之后复用。请求未配置 provider 会抛出 `Unknown provider`。
-
-自定义 provider 通过 `ProviderConfig` 追加：
-
-```ts
-const deepseek: ProviderConfig = {
-  id: "deepseek",
-  envApiKey: "DEEPSEEK_API_KEY",
-  envBaseUrl: "DEEPSEEK_BASE_URL",
-  defaultBaseUrl: "https://api.deepseek.com/v1",
-  createAdapter: (key, url) => new MyAdapter(key, url),
-};
-
-const { runtime, modelConfig } = createModelRuntime({ providers: [deepseek] });
-```
-
 ## 完整公开接口
 
 `ai/index.ts` 只公开下面这些符号。
@@ -89,24 +77,21 @@ const { runtime, modelConfig } = createModelRuntime({ providers: [deepseek] });
 ### Factory
 
 ```ts
-interface ProviderConfig {
-  readonly id: string;
-  readonly envApiKey: string;
-  readonly envBaseUrl?: string;
-  readonly defaultBaseUrl?: string;
-  readonly createAdapter: (
-    apiKey: string,
-    baseUrl?: string | null,
-  ) => Adapter;
+type ProviderId = "anthropic" | "openai" | "gemini";
+
+interface RuntimeProviderConfig {
+  readonly id: ProviderId;
+  readonly apiKey: string;
+  readonly baseUrl?: string;
 }
 
-function createModelRuntime(options?: {
-  providers?: ProviderConfig[];
-  env?: Readonly<Record<string, string | undefined>>;
-}): {
-  runtime: ModelRuntime;
-  modelConfig: ModelConfig;
-};
+function createModelRuntime(options: {
+  readonly providers: readonly RuntimeProviderConfig[];
+}): ModelRuntime;
+
+function createModelRuntimeFromEnvironment(
+  env: Readonly<Record<string, string | undefined>>,
+): ModelRuntime;
 ```
 
 `Adapter` 出现在扩展函数签名中，但没有从 `ai/index.ts` 导出；自定义实现按结构满足
@@ -265,11 +250,12 @@ type StreamChunk =
 
 ## 使用范围与包边界
 
-全部 18 个公开导出的使用范围如下：
+全部 20 个公开导出的使用范围如下：
 
 | 导出 | 建议范围 |
 |---|---|
-| `createModelRuntime`, `ProviderConfig` | 应用组合根配置 ai 能力 |
+| `createModelRuntime`, `RuntimeProviderConfig`, `ProviderId` | 应用组合根用显式 provider 列表配置 ai 能力 |
+| `createModelRuntimeFromEnvironment` | 开发与测试入口；生产启动不读环境变量凭据 |
 | `ModelRuntime` | provider 路由和请求能力；由 Harness 或应用组合层持有 |
 | `ModelConfig` | 一次请求的模型选择；agent 和模型选择界面可直接使用 |
 | `Context`, `StreamChunk` | ai 调用边界；agent 内部消费，不继续向上透传 |

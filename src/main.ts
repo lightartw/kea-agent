@@ -1,53 +1,103 @@
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
-import { config as loadDotenv } from "dotenv";
-
-import { CliFrontend } from "./ui/cli-frontend.js";
+import { parseArguments } from "./application/arguments.js";
+import { Config } from "./application/config.js";
+import { initializeUserConfiguration } from "./application/init.js";
+import { resolveProjectDirectory } from "./application/project-directory.js";
 import { openOrCreateProject } from "./coding-agent/factory.js";
-import { createModelRuntimeFromEnvironment } from "./core/ai/factory.js";
-import type { ModelConfig } from "./core/ai/types.js";
+import type { Project } from "./coding-agent/index.js";
+import { createModelRuntime } from "./core/ai/factory.js";
+import type { AgentHarness } from "./core/harness/index.js";
+import { ReadlineUi } from "./ui/readline-ui.js";
 
-export async function asyncMain(): Promise<void> {
-  loadDotenv({ override: true });
-  const cli = new CliFrontend();
-  try {
-    // Temporary compatibility until Task 9
-    const runtime = createModelRuntimeFromEnvironment(process.env);
-    const configured = ["ANTHROPIC", "OPENAI", "GEMINI"].filter(
-      (name) => process.env[`${name}_API_KEY`],
-    );
-    const defaultProvider = process.env.DEFAULT_PROVIDER ??
-      (configured.length === 1 ? configured[0]!.toLowerCase() : undefined);
-    if (defaultProvider === undefined) {
-      throw new Error(configured.length === 0
-        ? "No LLM provider configured; set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY"
-        : "Multiple LLM providers configured; set DEFAULT_PROVIDER");
-    }
-    if (!configured.some((name) => name.toLowerCase() === defaultProvider)) {
-      throw new Error(`DEFAULT_PROVIDER '${defaultProvider}' is not configured`);
-    }
-    const modelId = process.env.MODEL_ID;
-    if (!modelId) throw new Error("Missing model; set MODEL_ID");
-    const modelConfig: ModelConfig = { provider: defaultProvider, model: modelId };
-    const keaHome = process.env.KEA_HOME ?? resolve(homedir(), ".kea");
-    const project = await openOrCreateProject({
-      keaHome,
-      runtime,
-      modelConfig,
-      interactions: cli.interactions,
-      // Temporary compatibility until Task 9: flat runtime policy defaults.
-      maxTurns: 20,
-      toolTimeoutSeconds: 120,
-    });
+/** Redacted diagnostic path; identity until a Config exists to redact with. */
+let writeDiagnostic = (message: string): void => {
+  console.error(message);
+};
+
+/**
+ * Initial Harness for the prompt loop: `kea -c` resumes the newest Session,
+ * plain `kea` always starts a fresh one. A failed Session restore surfaces to
+ * the caller; the UI never runs without an initial Harness.
+ */
+export async function selectInitialHarness(
+  project: Project,
+  continueFlag: boolean,
+): Promise<AgentHarness> {
+  if (continueFlag) {
     const sessions = await project.listSessions();
-    const harness = sessions[0] !== undefined
-      ? await project.createHarnessFromSession(sessions[0].id)
-      : await project.createHarness();
-    await cli.run(project, harness);
+    const newest = sessions[0];
+    if (newest !== undefined) {
+      return project.createHarnessFromSession(newest.id);
+    }
+  }
+  return project.createHarness();
+}
+
+/** Production composition root; never runs on import. */
+export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
+  const args = parseArguments(argv);
+  const keaHome = resolve(homedir(), ".kea");
+  if (args.command === "init") {
+    const { config, auth } = await initializeUserConfiguration(keaHome);
+    console.log(`${join(keaHome, "config.json")}: ${config}`);
+    console.log(`${join(keaHome, "auth.json")}: ${auth}`);
+    return;
+  }
+
+  const projectDirectory = await resolveProjectDirectory(args.directory);
+  const config = await Config.load({
+    keaHome,
+    projectDirectory,
+    ...(args.config === undefined ? {} : { configOverride: args.config }),
+    verbose: args.verbose,
+  });
+  writeDiagnostic = (message: string): void => {
+    console.error(config.redact(message));
+  };
+  const reportError = (error: unknown): void => {
+    writeDiagnostic(error instanceof Error ? error.message : String(error));
+  };
+
+  if (config.verbose) {
+    writeDiagnostic(`project directory: ${projectDirectory}`);
+    for (const model of config.models) {
+      writeDiagnostic(`model: ${model.provider}/${model.model}`);
+    }
+    for (const provider of config.runtimeProviders()) {
+      writeDiagnostic(
+        `credentials: ${provider.id} ${provider.apiKey === "" ? "missing" : "configured"}`,
+      );
+    }
+  }
+
+  const runtime = createModelRuntime({ providers: config.runtimeProviders() });
+  const ui = new ReadlineUi({
+    models: config.models,
+    thinking: config.thinking,
+    toolDetails: config.toolDetails,
+    reportError,
+  });
+  const project = await openOrCreateProject({
+    keaHome,
+    projectDirectory,
+    runtime,
+    modelConfig: config.defaultModel,
+    interactions: ui.interactions,
+    maxTurns: config.maxTurns,
+    toolTimeoutSeconds: config.toolTimeoutSeconds,
+    onListenerError: (error) => {
+      reportError(error);
+    },
+  });
+  const initial = await selectInitialHarness(project, args.continue);
+
+  try {
+    await ui.run(project, initial);
   } finally {
-    cli.close();
+    ui.close();
   }
 }
 
@@ -56,8 +106,8 @@ const isMainModule =
   import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 
 if (isMainModule) {
-  void asyncMain().catch((error: unknown) => {
-    console.error(error);
+  main().catch((error: unknown) => {
+    writeDiagnostic(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   });
 }
