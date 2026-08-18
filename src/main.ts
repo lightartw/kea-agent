@@ -6,13 +6,31 @@ import { config as loadDotenv } from "dotenv";
 
 import { CliFrontend } from "./ui/cli-frontend.js";
 import { openOrCreateProject } from "./coding-agent/factory.js";
-import { createModelRuntime } from "./core/ai/factory.js";
+import { createModelRuntimeFromEnvironment } from "./core/ai/factory.js";
+import type { ModelConfig } from "./core/ai/types.js";
 
 export async function asyncMain(): Promise<void> {
   loadDotenv({ override: true });
   const cli = new CliFrontend();
   try {
-    const { runtime, modelConfig } = createModelRuntime();
+    // Temporary compatibility until Task 9
+    const runtime = createModelRuntimeFromEnvironment(process.env);
+    const configured = ["ANTHROPIC", "OPENAI", "GEMINI"].filter(
+      (name) => process.env[`${name}_API_KEY`],
+    );
+    const defaultProvider = process.env.DEFAULT_PROVIDER ??
+      (configured.length === 1 ? configured[0]!.toLowerCase() : undefined);
+    if (defaultProvider === undefined) {
+      throw new Error(configured.length === 0
+        ? "No LLM provider configured; set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY"
+        : "Multiple LLM providers configured; set DEFAULT_PROVIDER");
+    }
+    if (!configured.some((name) => name.toLowerCase() === defaultProvider)) {
+      throw new Error(`DEFAULT_PROVIDER '${defaultProvider}' is not configured`);
+    }
+    const modelId = process.env.MODEL_ID;
+    if (!modelId) throw new Error("Missing model; set MODEL_ID");
+    const modelConfig: ModelConfig = { provider: defaultProvider, model: modelId };
     const keaHome = process.env.KEA_HOME ?? resolve(homedir(), ".kea");
     const project = await openOrCreateProject({
       keaHome,

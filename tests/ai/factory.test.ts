@@ -1,123 +1,110 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createModelRuntime, lazyAdapter } from "../../src/core/ai/factory.js";
-import type { ProviderConfig } from "../../src/core/ai/factory.js";
+import {
+  createModelRuntime,
+  createModelRuntimeFromEnvironment,
+  createRoutedRuntime,
+  lazyAdapter,
+} from "../../src/core/ai/factory.js";
 import type { AssistantMessage } from "../../src/core/ai/types.js";
+import type { ProviderId } from "../../src/core/ai/factory.js";
 
-test("no provider configured rejects", () => {
+test("explicit provider configuration is required and unique", () => {
   assert.throws(
-    () => createModelRuntime({ env: {} }),
-    /No LLM provider configured/,
+    () => createModelRuntime({ providers: [] }),
+    /at least one provider/i,
   );
-});
-
-test("single API key registers the provider", () => {
-  const { runtime, modelConfig } = createModelRuntime({ env: { ANTHROPIC_API_KEY: "key", MODEL_ID: "m" } });
-  assert.equal(typeof runtime.stream, "function");
-  assert.equal(typeof runtime.complete, "function");
-  assert.deepEqual(modelConfig, { provider: "anthropic", model: "m" });
-});
-
-test("multiple providers require DEFAULT_PROVIDER", () => {
-  assert.throws(
-    () => createModelRuntime({ env: { ANTHROPIC_API_KEY: "a", OPENAI_API_KEY: "b", MODEL_ID: "m" } }),
-    /DEFAULT_PROVIDER/,
-  );
-});
-
-test("DEFAULT_PROVIDER selects the default from configured providers", () => {
-  const { modelConfig } = createModelRuntime({
-    env: {
-      ANTHROPIC_API_KEY: "a",
-      OPENAI_API_KEY: "b",
-      DEFAULT_PROVIDER: "openai",
-      MODEL_ID: "gpt-test",
-    },
-  });
-  assert.deepEqual(modelConfig, { provider: "openai", model: "gpt-test" });
-});
-
-test("DEFAULT_PROVIDER must name a configured provider", () => {
   assert.throws(
     () => createModelRuntime({
-      env: {
-        ANTHROPIC_API_KEY: "a",
-        DEFAULT_PROVIDER: "openai",
-        MODEL_ID: "m",
-      },
+      providers: [
+        { id: "openai", apiKey: "a" },
+        { id: "openai", apiKey: "b" },
+      ],
     }),
-    /DEFAULT_PROVIDER.*openai.*not configured/,
+    /duplicate provider.*openai/i,
   );
 });
 
-test("explicit provider config registers custom adapter", () => {
-  const { runtime } = createModelRuntime({
-    providers: [{
-      id: "test",
-      envApiKey: "TEST_KEY",
-      createAdapter: () => ({
-        async *stream() { yield { type: "done" as const, message: { role: "assistant" as const, content: [], model: "t", stopReason: "stop" as const, latencyMs: 0 } }; },
-      }),
-    }],
-    env: { TEST_KEY: "k", MODEL_ID: "m" },
-  });
-  assert.equal(typeof runtime.stream, "function");
+test("unknown provider ids are rejected", () => {
+  assert.throws(
+    () => createModelRuntime({
+      providers: [{ id: "custom" as ProviderId, apiKey: "a" }],
+    }),
+    /unknown provider.*custom/i,
+  );
 });
 
-test("unknown provider rejects at stream time", async () => {
-  const { runtime } = createModelRuntime({ env: { ANTHROPIC_API_KEY: "k", MODEL_ID: "m" } });
+test("explicit providers construct a runtime", () => {
+  const runtime = createModelRuntime({ providers: [{ id: "openai", apiKey: "key" }] });
+  assert.equal(typeof runtime.stream, "function");
+  assert.equal(typeof runtime.complete, "function");
+});
+
+test("routed runtime selects the adapter and forwards the model", async () => {
+  const calls: string[] = [];
+  const adapter = (id: string) => ({
+    async *stream(model: string) {
+      calls.push(`${id}/${model}`);
+      yield {
+        type: "done" as const,
+        message: {
+          role: "assistant" as const,
+          content: [],
+          model,
+          stopReason: "stop" as const,
+          latencyMs: 0,
+        },
+      };
+    },
+  });
+  const runtime = createRoutedRuntime(new Map([
+    ["openai", adapter("openai")],
+    ["anthropic", adapter("anthropic")],
+  ]));
+
+  for await (const event of runtime.stream(
+    { provider: "anthropic", model: "claude-test" },
+    { messages: [] },
+  )) void event;
+
+  assert.deepEqual(calls, ["anthropic/claude-test"]);
+});
+
+test("routed runtime rejects unknown providers at stream time", async () => {
+  const runtime = createRoutedRuntime(new Map());
   await assert.rejects(
-    (async () => { for await (const _ of runtime.stream({ provider: "nonexistent", model: "m" }, { messages: [] })) void _; })(),
+    (async () => {
+      for await (const event of runtime.stream(
+        { provider: "nonexistent", model: "m" },
+        { messages: [] },
+      )) void event;
+    })(),
     /Unknown provider/,
   );
 });
 
-test("one ModelRuntime routes each request by model.provider", async () => {
-  const calls: string[] = [];
-  const provider = (id: string, envApiKey: string): ProviderConfig => ({
-    id,
-    envApiKey,
-    createAdapter: () => ({
-      async *stream(model) {
-        calls.push(`${id}/${model}`);
-        yield {
-          type: "done",
-          message: {
-            role: "assistant",
-            content: [],
-            model,
-            stopReason: "stop",
-            latencyMs: 0,
-          },
-        };
-      },
-    }),
+test("environment helper does not select a model", () => {
+  const runtime = createModelRuntimeFromEnvironment({ OPENAI_API_KEY: "key" });
+  assert.equal(typeof runtime.stream, "function");
+  assert.equal(typeof runtime.complete, "function");
+});
+
+test("environment helper requires at least one provider key", () => {
+  assert.throws(
+    () => createModelRuntimeFromEnvironment({}),
+    /at least one provider/i,
+  );
+});
+
+test("environment helper ignores DEFAULT_PROVIDER and MODEL_ID", () => {
+  const runtime = createModelRuntimeFromEnvironment({
+    ANTHROPIC_API_KEY: "a",
+    OPENAI_API_KEY: "b",
+    DEFAULT_PROVIDER: "anthropic",
+    MODEL_ID: "m",
   });
-
-  const { runtime } = createModelRuntime({
-    providers: [
-      provider("first", "FIRST_KEY"),
-      provider("second", "SECOND_KEY"),
-    ],
-    env: {
-      FIRST_KEY: "a",
-      SECOND_KEY: "b",
-      DEFAULT_PROVIDER: "first",
-      MODEL_ID: "default",
-    },
-  });
-
-  for await (const event of runtime.stream(
-    { provider: "first", model: "one" },
-    { messages: [] },
-  )) void event;
-  for await (const event of runtime.stream(
-    { provider: "second", model: "two" },
-    { messages: [] },
-  )) void event;
-
-  assert.deepEqual(calls, ["first/one", "second/two"]);
+  assert.equal(typeof runtime.stream, "function");
 });
 
 test("complete returns the terminal assistant message", async () => {
@@ -128,22 +115,17 @@ test("complete returns the terminal assistant message", async () => {
     stopReason: "stop",
     latencyMs: 0,
   };
-  const { runtime, modelConfig } = createModelRuntime({
-    providers: [{
-      id: "test",
-      envApiKey: "TEST_KEY",
-      createAdapter: () => ({
-        async *stream() {
-          yield { type: "text_delta" as const, text: "done" };
-          yield { type: "done" as const, message: terminal };
-        },
-      }),
+  const runtime = createRoutedRuntime(new Map([
+    ["test", {
+      async *stream() {
+        yield { type: "text_delta" as const, text: "done" };
+        yield { type: "done" as const, message: terminal };
+      },
     }],
-    env: { TEST_KEY: "key", MODEL_ID: "test-model" },
-  });
+  ]));
 
   assert.equal(
-    await runtime.complete(modelConfig, { messages: [] }),
+    await runtime.complete({ provider: "test", model: "test-model" }, { messages: [] }),
     terminal,
   );
 });
@@ -157,41 +139,31 @@ test("complete returns an error terminal message", async () => {
     errorMessage: "provider failed",
     latencyMs: 0,
   };
-  const { runtime, modelConfig } = createModelRuntime({
-    providers: [{
-      id: "test",
-      envApiKey: "TEST_KEY",
-      createAdapter: () => ({
-        async *stream() {
-          yield { type: "error" as const, message: terminal };
-        },
-      }),
+  const runtime = createRoutedRuntime(new Map([
+    ["test", {
+      async *stream() {
+        yield { type: "error" as const, message: terminal };
+      },
     }],
-    env: { TEST_KEY: "key", MODEL_ID: "test-model" },
-  });
+  ]));
 
   assert.equal(
-    await runtime.complete(modelConfig, { messages: [] }),
+    await runtime.complete({ provider: "test", model: "test-model" }, { messages: [] }),
     terminal,
   );
 });
 
 test("complete rejects when the stream has no terminal chunk", async () => {
-  const { runtime, modelConfig } = createModelRuntime({
-    providers: [{
-      id: "test",
-      envApiKey: "TEST_KEY",
-      createAdapter: () => ({
-        async *stream() {
-          yield { type: "text_delta" as const, text: "partial" };
-        },
-      }),
+  const runtime = createRoutedRuntime(new Map([
+    ["test", {
+      async *stream() {
+        yield { type: "text_delta" as const, text: "partial" };
+      },
     }],
-    env: { TEST_KEY: "key", MODEL_ID: "test-model" },
-  });
+  ]));
 
   await assert.rejects(
-    runtime.complete(modelConfig, { messages: [] }),
+    runtime.complete({ provider: "test", model: "test-model" }, { messages: [] }),
     /without a done or error terminal chunk/,
   );
 });
@@ -201,14 +173,14 @@ test("lazy adapter reuses the loaded adapter across stream calls", async () => {
   const adapter = lazyAdapter(async () => {
     loads += 1;
     return {
-      async *stream(model) {
+      async *stream(model: string) {
         yield {
-          type: "done",
+          type: "done" as const,
           message: {
-            role: "assistant",
+            role: "assistant" as const,
             content: [],
             model,
-            stopReason: "stop",
+            stopReason: "stop" as const,
             latencyMs: 0,
           },
         };

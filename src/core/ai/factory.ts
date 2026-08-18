@@ -53,15 +53,21 @@ export function lazyAdapter(load: () => Promise<Adapter>): Adapter {
 
 // ── Provider registry ──
 
-export interface ProviderConfig {
-  readonly id: string;
+export type ProviderId = "anthropic" | "openai" | "gemini";
+
+export interface RuntimeProviderConfig {
+  readonly id: ProviderId;
+  readonly apiKey: string;
+  readonly baseUrl?: string;
+}
+
+const BUILTIN_PROVIDERS: readonly {
+  readonly id: ProviderId;
   readonly envApiKey: string;
   readonly envBaseUrl?: string;
   readonly defaultBaseUrl?: string;
   readonly createAdapter: (apiKey: string, baseUrl?: string | null) => Adapter;
-}
-
-const BUILTIN_PROVIDERS: readonly ProviderConfig[] = [
+}[] = [
   {
     id: "anthropic",
     envApiKey: "ANTHROPIC_API_KEY",
@@ -96,54 +102,28 @@ const BUILTIN_PROVIDERS: readonly ProviderConfig[] = [
   },
 ];
 
-// ── Model runtime factory ──
+// ── Routed runtime ──
 
-export type Environment = Readonly<Record<string, string | undefined>>;
-
-export function createModelRuntime(
-  options?: { providers?: ProviderConfig[]; env?: Environment },
-): { runtime: ModelRuntime; modelConfig: ModelConfig } {
-  const env = options?.env ?? process.env;
-  const allProviders = [...BUILTIN_PROVIDERS, ...(options?.providers ?? [])];
-
-  const configured = allProviders.filter((p) => env[p.envApiKey]);
-  if (configured.length === 0)
-    throw new Error("No LLM provider configured; set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY");
-
-  const requestedDefault = env["DEFAULT_PROVIDER"];
-  if (requestedDefault === undefined && configured.length > 1)
-    throw new Error("Multiple LLM providers configured; set DEFAULT_PROVIDER");
-  const defaultProvider = requestedDefault ?? configured[0]!.id;
-  if (!configured.some((provider) => provider.id === defaultProvider))
-    throw new Error(`DEFAULT_PROVIDER '${defaultProvider}' is not configured`);
-
-  const modelId = env["MODEL_ID"];
-  if (!modelId) throw new Error("Missing model; set MODEL_ID");
-
-  // Eagerly create lazy adapters (module import is deferred to first stream call)
-  const adapters = new Map<string, Adapter>();
-  for (const p of configured) {
-    const apiKey = env[p.envApiKey]!;
-    const baseUrl = env[p.envBaseUrl ?? ""] ?? p.defaultBaseUrl ?? null;
-    adapters.set(p.id, p.createAdapter(apiKey, baseUrl));
-  }
-
-  function getAdapter(provider: string): Adapter {
-    const adapter = adapters.get(provider);
-    if (!adapter) throw new Error(`Unknown provider: ${provider}`);
-    return adapter;
-  }
-
+/**
+ * Build a ModelRuntime from a pre-resolved adapter map. Exported as a package
+ * test seam; application code uses createModelRuntime() instead.
+ */
+export function createRoutedRuntime(
+  adapters: ReadonlyMap<string, Adapter>,
+): ModelRuntime {
   const stream = async function* (
     modelConfig: ModelConfig,
     context: Context,
     options?: Partial<StreamOptions>,
   ): AsyncIterable<StreamChunk> {
-    const adapter = getAdapter(modelConfig.provider);
+    const adapter = adapters.get(modelConfig.provider);
+    if (adapter === undefined) {
+      throw new Error(`Unknown provider: ${modelConfig.provider}`);
+    }
     yield* adapter.stream(modelConfig.model, context, resolveOptions(options));
   };
 
-  const runtime: ModelRuntime = {
+  return {
     stream,
     async complete(modelConfig, context, options) {
       for await (const event of stream(modelConfig, context, options)) {
@@ -156,9 +136,50 @@ export function createModelRuntime(
       );
     },
   };
+}
 
-  return {
-    runtime,
-    modelConfig: { provider: defaultProvider, model: modelId },
-  };
+// ── Model runtime factories ──
+
+export function createModelRuntime(options: {
+  readonly providers: readonly RuntimeProviderConfig[];
+}): ModelRuntime {
+  if (options.providers.length === 0) {
+    throw new Error("At least one provider must be configured");
+  }
+
+  const adapters = new Map<string, Adapter>();
+  for (const provider of options.providers) {
+    if (adapters.has(provider.id)) {
+      throw new Error(`Duplicate provider: ${provider.id}`);
+    }
+    const builtin = BUILTIN_PROVIDERS.find((p) => p.id === provider.id);
+    if (builtin === undefined) {
+      throw new Error(`Unknown provider: ${provider.id}`);
+    }
+    adapters.set(
+      provider.id,
+      builtin.createAdapter(provider.apiKey, provider.baseUrl ?? builtin.defaultBaseUrl ?? null),
+    );
+  }
+  return createRoutedRuntime(adapters);
+}
+
+export type Environment = Readonly<Record<string, string | undefined>>;
+
+/** Development/test helper: map provider keys and base URLs into explicit providers. */
+export function createModelRuntimeFromEnvironment(env: Environment): ModelRuntime {
+  const providers: RuntimeProviderConfig[] = [];
+  for (const builtin of BUILTIN_PROVIDERS) {
+    const apiKey = env[builtin.envApiKey];
+    if (apiKey === undefined || apiKey === "") continue;
+    const baseUrl = builtin.envBaseUrl === undefined
+      ? undefined
+      : env[builtin.envBaseUrl];
+    providers.push({
+      id: builtin.id,
+      apiKey,
+      ...(baseUrl === undefined || baseUrl === "" ? {} : { baseUrl }),
+    });
+  }
+  return createModelRuntime({ providers });
 }

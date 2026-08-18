@@ -16,5 +16,5 @@ export type {
   ToolResultMessage,
   UserMessage,
 } from "./types.js";
-export { createModelRuntime } from "./factory.js";
-export type { ProviderConfig } from "./factory.js";
+export { createModelRuntime, createModelRuntimeFromEnvironment } from "./factory.js";
+export type { ProviderId, RuntimeProviderConfig } from "./factory.js";
