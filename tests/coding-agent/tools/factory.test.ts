@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { Type } from "typebox";
+
 import { AgentTool } from "../../../src/core/agent/tools/types.js";
+import { Events } from "../../../src/core/events/events.js";
 import { createBuiltinToolRegistry } from "../../../src/coding-agent/tools/factory.js";
 
 test("createBuiltinToolRegistry registers the six built-ins in order", () => {
-  const first = createBuiltinToolRegistry(process.cwd());
-  const second = createBuiltinToolRegistry(process.cwd());
+  const first = createBuiltinToolRegistry(process.cwd(), 120);
+  const second = createBuiltinToolRegistry(process.cwd(), 120);
   assert.deepEqual(
     first.all().map((tool) => tool.name),
     ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write"],
@@ -21,4 +24,25 @@ test("createBuiltinToolRegistry registers the six built-ins in order", () => {
     undefined,
   );
   assert.ok(first.all().find((tool) => tool.name === "read_file")?.validate({ path: 1 }));
+});
+
+test("the registry timeout applies to tool execution", async () => {
+  const registry = createBuiltinToolRegistry(process.cwd(), 0.001);
+  registry.register(new (class extends AgentTool {
+    constructor() {
+      super("slow", "slow", Type.Object({}));
+    }
+    async execute() {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { content: "ok", isError: false };
+    }
+  })());
+
+  const result = await registry.execute(
+    { type: "toolCall", id: "c1", name: "slow", arguments: {} },
+    { sessionId: "s", runId: "r", cwd: process.cwd(), events: new Events() },
+  );
+
+  assert.equal(result.isError, true);
+  assert.match(result.content, /timed out/i);
 });

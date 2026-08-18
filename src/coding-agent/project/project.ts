@@ -68,6 +68,7 @@ export function validateProjectInfo(info: ProjectInfo): void {
  * update/save/delete operation.
  */
 export class Project {
+  /** Temporary UI compatibility until Task 9; new code must use harness.subscribe(). */
   readonly events: Events;
 
   private readonly infoState: ProjectInfo;
@@ -75,12 +76,16 @@ export class Project {
   private readonly sessions: SessionRepository;
   private readonly runtime: ModelRuntime;
   private readonly modelConfig: ModelConfig;
+  private readonly maxTurns: number;
+  private readonly toolTimeoutSeconds: number;
 
   constructor(options: {
     readonly info: ProjectInfo;
     readonly sessions: SessionRepository;
     readonly runtime: ModelRuntime;
     readonly modelConfig: ModelConfig;
+    readonly maxTurns: number;
+    readonly toolTimeoutSeconds: number;
     readonly events: Events;
   }) {
     validateProjectInfo(options.info);
@@ -95,6 +100,8 @@ export class Project {
     this.sessions = options.sessions;
     this.runtime = options.runtime;
     this.modelConfig = options.modelConfig;
+    this.maxTurns = options.maxTurns;
+    this.toolTimeoutSeconds = options.toolTimeoutSeconds;
     this.events = options.events;
   }
 
@@ -141,7 +148,8 @@ export class Project {
       session,
       runtime: this.runtime,
       modelConfig: this.modelConfig,
-      toolRegistry: createBuiltinToolRegistry(cwd),
+      maxTurns: this.maxTurns,
+      toolRegistry: createBuiltinToolRegistry(cwd, this.toolTimeoutSeconds),
       systemPrompt: createSystemPrompt(this.projectDirectory, cwd),
       events: this.events,
     });

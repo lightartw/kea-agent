@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, parse, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -8,6 +17,7 @@ import test from "node:test";
 
 import type { AssistantMessage, ModelConfig } from "../../../src/core/ai/types.js";
 import { openOrCreateProject } from "../../../src/coding-agent/factory.js";
+import type { Project } from "../../../src/coding-agent/project/project.js";
 import type { Interactions } from "../../../src/coding-agent/interaction/interactions.js";
 import { runtimeFromStream, type TestStream } from "../../fixtures/model-runtime.js";
 
@@ -66,35 +76,28 @@ async function persistDocument(
   );
 }
 
-test("omitted cwd uses process.cwd()", async () => {
-  const keaHome = await tempDir();
-  try {
-    const project = await openOrCreateProject({
-      keaHome,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-    });
-    const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
-      cwd: process.cwd(),
-    });
-    assert.equal(project.info.directory, resolve(stdout.trim()));
-  } finally {
-    await rm(keaHome, { recursive: true, force: true });
-  }
-});
+async function openProject(
+  keaHome: string,
+  projectDirectory: string,
+  overrides: Partial<Parameters<typeof openOrCreateProject>[0]> = {},
+): Promise<Project> {
+  return openOrCreateProject({
+    keaHome,
+    projectDirectory,
+    runtime: runtimeFromStream(simpleStream),
+    modelConfig,
+    interactions: testInteractions,
+    maxTurns: 20,
+    toolTimeoutSeconds: 120,
+    ...overrides,
+  });
+}
 
-test("a non-Git cwd becomes the canonical Project directory", async () => {
+test("an existing canonical directory becomes the Project directory", async () => {
   const keaHome = await tempDir();
   const dir = await tempDir();
   try {
-    const project = await openOrCreateProject({
-      keaHome,
-      cwd: dir,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-    });
+    const project = await openProject(keaHome, await realpath(dir));
     assert.equal(project.info.directory, resolve(dir));
     assert.equal(project.info.name, basename(dir));
   } finally {
@@ -107,13 +110,7 @@ test("a filesystem root gets a non-empty Project name", async () => {
   const keaHome = await tempDir();
   try {
     const root = parse(process.cwd()).root;
-    const project = await openOrCreateProject({
-      keaHome,
-      cwd: root,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-    });
+    const project = await openProject(keaHome, await realpath(root));
     assert.equal(project.info.directory, resolve(root));
     assert.notEqual(project.info.name, "");
   } finally {
@@ -121,93 +118,18 @@ test("a filesystem root gets a non-empty Project name", async () => {
   }
 });
 
-test("a cwd below a Git work-tree resolves to the work-tree root while the Session keeps the startup cwd", async () => {
-  const keaHome = await tempDir();
-  const repo = await tempDir();
-  try {
-    await gitInit(repo);
-    const sub = join(repo, "packages", "web");
-    await mkdir(sub, { recursive: true });
-
-    const prompts: string[] = [];
-    const project = await openOrCreateProject({
-      keaHome,
-      cwd: sub,
-      runtime: runtimeFromStream(recordingStream(prompts)),
-      modelConfig,
-      interactions: testInteractions,
-    });
-    assert.equal(project.info.directory, resolve(repo));
-
-    const harness = await project.createHarness({ cwd: sub });
-    await harness.prompt("hello");
-    assert.ok(prompts[0]?.includes(resolve(sub)));
-  } finally {
-    await rm(keaHome, { recursive: true, force: true });
-    await rm(repo, { recursive: true, force: true });
-  }
-});
-
-test("two startups in the same Git work-tree reuse one stable Project ID", async () => {
-  const keaHome = await tempDir();
-  const repo = await tempDir();
-  try {
-    await gitInit(repo);
-    const sub = join(repo, "src");
-    await mkdir(sub, { recursive: true });
-
-    const first = await openOrCreateProject({
-      keaHome,
-      cwd: repo,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-    });
-    const second = await openOrCreateProject({
-      keaHome,
-      cwd: sub,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-    });
-    assert.equal(second.info.id, first.info.id);
-    assert.equal(second.info.directory, resolve(repo));
-  } finally {
-    await rm(keaHome, { recursive: true, force: true });
-    await rm(repo, { recursive: true, force: true });
-  }
-});
-
-test("the same non-Git cwd reuses one Project ID while parent and child cwds stay distinct", async () => {
+test("the same directory reuses one Project ID while parent and child directories stay distinct", async () => {
   const keaHome = await tempDir();
   const parent = await tempDir();
   try {
     const child = join(parent, "child");
     await mkdir(child, { recursive: true });
 
-    const first = await openOrCreateProject({
-      keaHome,
-      cwd: parent,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-    });
-    const second = await openOrCreateProject({
-      keaHome,
-      cwd: parent,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-    });
+    const first = await openProject(keaHome, await realpath(parent));
+    const second = await openProject(keaHome, await realpath(parent));
     assert.equal(second.info.id, first.info.id);
 
-    const childProject = await openOrCreateProject({
-      keaHome,
-      cwd: child,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-    });
+    const childProject = await openProject(keaHome, await realpath(child));
     assert.notEqual(childProject.info.id, first.info.id);
     assert.equal(childProject.info.directory, resolve(child));
   } finally {
@@ -220,13 +142,7 @@ test("first open persists Project data and constructs the SessionRepository belo
   const keaHome = await tempDir();
   const dir = await tempDir();
   try {
-    const project = await openOrCreateProject({
-      keaHome,
-      cwd: dir,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-    });
+    const project = await openProject(keaHome, await realpath(dir));
     const projectId = project.info.id;
     const projectDirOnDisk = join(keaHome, "projects", projectId);
     const raw = JSON.parse(
@@ -252,22 +168,10 @@ test("every startup followed by createHarness creates a new Session ID even with
   const keaHome = await tempDir();
   const dir = await tempDir();
   try {
-    const first = await openOrCreateProject({
-      keaHome,
-      cwd: dir,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-    });
+    const first = await openProject(keaHome, await realpath(dir));
     const firstHarness = await first.createHarness({ cwd: dir });
 
-    const second = await openOrCreateProject({
-      keaHome,
-      cwd: dir,
-      runtime: runtimeFromStream(simpleStream),
-      modelConfig,
-      interactions: testInteractions,
-    });
+    const second = await openProject(keaHome, await realpath(dir));
     const secondHarness = await second.createHarness({ cwd: dir });
     assert.notEqual(secondHarness.sessionId, firstHarness.sessionId);
     assert.equal((await second.listSessions()).length, 2);
@@ -277,88 +181,40 @@ test("every startup followed by createHarness creates a new Session ID even with
   }
 });
 
-test("missing cwd and cwd that is a file reject", async () => {
+test("relative, missing, file, and non-canonical projectDirectory values reject", async () => {
   const keaHome = await tempDir();
   const dir = await tempDir();
   try {
     await assert.rejects(
-      openOrCreateProject({
-        keaHome,
-        cwd: join(dir, "missing"),
-        runtime: runtimeFromStream(simpleStream),
-        modelConfig,
-        interactions: testInteractions,
-      }),
+      openProject(keaHome, "relative/path"),
+      /must be absolute and normalized/i,
+    );
+
+    await assert.rejects(
+      openProject(keaHome, join(dir, "missing")),
       /does not exist/i,
     );
+
     const file = join(dir, "file.txt");
     await writeFile(file, "not a directory");
     await assert.rejects(
-      openOrCreateProject({
-        keaHome,
-        cwd: file,
-        runtime: runtimeFromStream(simpleStream),
-        modelConfig,
-        interactions: testInteractions,
-      }),
+      openProject(keaHome, file),
       /is not a directory/i,
     );
-  } finally {
-    await rm(keaHome, { recursive: true, force: true });
-    await rm(dir, { recursive: true, force: true });
-  }
-});
 
-test("a Git process launch failure rejects instead of treating cwd as non-Git", async () => {
-  const keaHome = await tempDir();
-  const dir = await tempDir();
-  const originalPath = process.env["PATH"];
-  try {
-    process.env["PATH"] = "";
+    const real = join(dir, "real");
+    const link = join(dir, "link");
+    await mkdir(real, { recursive: true });
+    try {
+      await symlink(real, link, "junction");
+    } catch {
+      return; // Platform forbids directory links; the canonical check is covered elsewhere.
+    }
     await assert.rejects(
-      openOrCreateProject({
-        keaHome,
-        cwd: dir,
-        runtime: runtimeFromStream(simpleStream),
-        modelConfig,
-        interactions: testInteractions,
-      }),
-      /Unable to determine the Git work-tree root/,
+      openProject(keaHome, link),
+      /must be canonical/i,
     );
   } finally {
-    if (originalPath === undefined) delete process.env["PATH"];
-    else process.env["PATH"] = originalPath;
-    await rm(keaHome, { recursive: true, force: true });
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("a Git error other than not-a-repository rejects with context", async () => {
-  const keaHome = await tempDir();
-  const dir = await tempDir();
-  const invalidConfig = join(dir, "invalid.gitconfig");
-  const originalGlobalConfig = process.env["GIT_CONFIG_GLOBAL"];
-  const originalNoSystem = process.env["GIT_CONFIG_NOSYSTEM"];
-  try {
-    await writeFile(invalidConfig, "[invalid\n");
-    process.env["GIT_CONFIG_GLOBAL"] = invalidConfig;
-    process.env["GIT_CONFIG_NOSYSTEM"] = "1";
-
-    await assert.rejects(
-      openOrCreateProject({
-        keaHome,
-        cwd: dir,
-        runtime: runtimeFromStream(simpleStream),
-        modelConfig,
-        interactions: testInteractions,
-      }),
-      /Unable to determine the Git work-tree root/,
-    );
-  } finally {
-    if (originalGlobalConfig === undefined) delete process.env["GIT_CONFIG_GLOBAL"];
-    else process.env["GIT_CONFIG_GLOBAL"] = originalGlobalConfig;
-    if (originalNoSystem === undefined) delete process.env["GIT_CONFIG_NOSYSTEM"];
-    else process.env["GIT_CONFIG_NOSYSTEM"] = originalNoSystem;
     await rm(keaHome, { recursive: true, force: true });
     await rm(dir, { recursive: true, force: true });
   }
@@ -375,13 +231,7 @@ test("corrupt, unsupported, unreadable, and duplicate records reject without cre
       await mkdir(join(corruptHome, "projects", uuid(1)), { recursive: true });
       await writeFile(join(corruptHome, "projects", uuid(1), "project.json"), "not json");
       await assert.rejects(
-        openOrCreateProject({
-          keaHome: corruptHome,
-          cwd: dir,
-          runtime: runtimeFromStream(simpleStream),
-          modelConfig,
-          interactions: testInteractions,
-        }),
+        openProject(corruptHome, directory),
         /invalid JSON/i,
       );
       assert.deepEqual(await readdir(join(corruptHome, "projects")), [uuid(1)]);
@@ -401,13 +251,7 @@ test("corrupt, unsupported, unreadable, and duplicate records reject without cre
         updatedAt: "2026-08-17T00:00:00.000Z",
       });
       await assert.rejects(
-        openOrCreateProject({
-          keaHome: versionHome,
-          cwd: dir,
-          runtime: runtimeFromStream(simpleStream),
-          modelConfig,
-          interactions: testInteractions,
-        }),
+        openProject(versionHome, directory),
         /version/i,
       );
       assert.deepEqual(await readdir(join(versionHome, "projects")), [uuid(1)]);
@@ -420,13 +264,7 @@ test("corrupt, unsupported, unreadable, and duplicate records reject without cre
     try {
       await mkdir(join(unreadableHome, "projects", uuid(1), "project.json"), { recursive: true });
       await assert.rejects(
-        openOrCreateProject({
-          keaHome: unreadableHome,
-          cwd: dir,
-          runtime: runtimeFromStream(simpleStream),
-          modelConfig,
-          interactions: testInteractions,
-        }),
+        openProject(unreadableHome, directory),
         /read/i,
       );
       assert.deepEqual(await readdir(join(unreadableHome, "projects")), [uuid(1)]);
@@ -448,13 +286,7 @@ test("corrupt, unsupported, unreadable, and duplicate records reject without cre
       await persistDocument(duplicateHome, uuid(1), document);
       await persistDocument(duplicateHome, uuid(2), { ...document, id: uuid(2) });
       await assert.rejects(
-        openOrCreateProject({
-          keaHome: duplicateHome,
-          cwd: dir,
-          runtime: runtimeFromStream(simpleStream),
-          modelConfig,
-          interactions: testInteractions,
-        }),
+        openProject(duplicateHome, directory),
         /more than one/i,
       );
       assert.deepEqual(
@@ -466,5 +298,29 @@ test("corrupt, unsupported, unreadable, and duplicate records reject without cre
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("compatibility: the old cwd call shape still discovers the Git work-tree root (removed in Task 9)", async () => {
+  const keaHome = await tempDir();
+  const repo = await tempDir();
+  try {
+    await gitInit(repo);
+    const sub = join(repo, "packages", "web");
+    await mkdir(sub, { recursive: true });
+
+    const project = await openOrCreateProject({
+      keaHome,
+      cwd: sub,
+      runtime: runtimeFromStream(simpleStream),
+      modelConfig,
+      interactions: testInteractions,
+      maxTurns: 20,
+      toolTimeoutSeconds: 120,
+    });
+    assert.equal(project.info.directory, resolve(repo));
+  } finally {
+    await rm(keaHome, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true });
   }
 });

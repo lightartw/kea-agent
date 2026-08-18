@@ -49,6 +49,9 @@ function validInfo(directory: string, overrides: Partial<ProjectInfo> = {}): Pro
 async function makeProject(options: {
   readonly info?: ProjectInfo;
   readonly sessions?: SessionRepository;
+  readonly maxTurns?: number;
+  readonly toolTimeoutSeconds?: number;
+  readonly stream?: TestStream;
 } = {}): Promise<{
   project: Project;
   projectDir: string;
@@ -58,16 +61,18 @@ async function makeProject(options: {
   const projectDir = await tempDir();
   const prompts: string[] = [];
   const toolsList: Array<readonly Tool[] | undefined> = [];
-  const stream: TestStream = async function* (_model, context) {
+  const stream: TestStream = options.stream ?? (async function* (_model, context) {
     prompts.push(context.systemPrompt ?? "");
     toolsList.push(context.tools);
     yield { type: "done", message: assistant };
-  };
+  });
   const project = new Project({
     info: options.info ?? validInfo(resolve(projectDir)),
     sessions: options.sessions ?? new SessionRepository(join(projectDir, ".test-sessions")),
     runtime: runtimeFromStream(stream),
     modelConfig,
+    maxTurns: options.maxTurns ?? 20,
+    toolTimeoutSeconds: options.toolTimeoutSeconds ?? 120,
     events: new Events(),
   });
   return { project, projectDir, prompts, toolsList };
@@ -92,6 +97,8 @@ test("info returns a defensive snapshot and invalid info is rejected at construc
         sessions: new SessionRepository(join(invalidSessionsDir, "sessions")),
         runtime: runtimeFromStream(simpleStream),
         modelConfig,
+        maxTurns: 20,
+        toolTimeoutSeconds: 120,
         events: new Events(),
       }),
       /invalid/i,
@@ -105,6 +112,8 @@ test("info returns a defensive snapshot and invalid info is rejected at construc
         sessions: new SessionRepository(join(invalidSessionsDir, "sessions")),
         runtime: runtimeFromStream(simpleStream),
         modelConfig,
+        maxTurns: 20,
+        toolTimeoutSeconds: 120,
         events: new Events(),
       }),
       /invalid/i,
@@ -194,6 +203,43 @@ test("the system prompt contains the Project directory and the Session cwd", asy
     const prompt = prompts[0] ?? "";
     assert.ok(prompt.includes(project.info.directory));
     assert.ok(prompt.includes(resolve(join(projectDir, "src"))));
+  } finally {
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("a Harness created by Project stops at the configured turn limit", async () => {
+  const tc = {
+    type: "toolCall" as const,
+    id: "c1",
+    name: "todo_write",
+    arguments: { todos: [{ content: "task", status: "pending" }] },
+  };
+  const toolTurn: AssistantMessage = {
+    role: "assistant",
+    content: [tc],
+    model: "model-a",
+    stopReason: "toolUse",
+    latencyMs: 0,
+  };
+  let calls = 0;
+  const { project, projectDir } = await makeProject({
+    maxTurns: 1,
+    stream: async function* () {
+      calls += 1;
+      if (calls === 1) {
+        yield { type: "toolcall_start", id: "c1", name: "todo_write" };
+        yield { type: "toolcall_end", toolCall: tc };
+        yield { type: "done", message: toolTurn };
+      } else {
+        yield { type: "done", message: assistant };
+      }
+    },
+  });
+  try {
+    const harness = await project.createHarness();
+    await harness.prompt("run");
+    assert.equal(calls, 1);
   } finally {
     await rm(projectDir, { recursive: true, force: true });
   }

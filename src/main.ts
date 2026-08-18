@@ -37,6 +37,9 @@ export async function asyncMain(): Promise<void> {
       runtime,
       modelConfig,
       interactions: cli.interactions,
+      // Temporary compatibility until Task 9: flat runtime policy defaults.
+      maxTurns: 20,
+      toolTimeoutSeconds: 120,
     });
     const sessions = await project.listSessions();
     const harness = sessions[0] !== undefined

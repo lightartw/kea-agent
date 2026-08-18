@@ -8,10 +8,14 @@ import { createWriteFileTool } from "./builtin/write-file.js";
 
 /**
  * The standard tool set for a coding agent session, all resolving paths
- * relative to the given cwd. Each call builds fresh, independent tools.
+ * relative to the given cwd, with the given execution timeout. Each call
+ * builds fresh, independent tools.
  */
-export function createBuiltinToolRegistry(cwd: string): AgentToolRegistry {
-  const registry = new AgentToolRegistry();
+export function createBuiltinToolRegistry(
+  cwd: string,
+  timeoutSeconds: number,
+): AgentToolRegistry {
+  const registry = new AgentToolRegistry(timeoutSeconds);
   registry.register(createBashTool(cwd));
   registry.register(createReadFileTool(cwd));
   registry.register(createWriteFileTool(cwd));
