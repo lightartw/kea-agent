@@ -117,14 +117,14 @@ Allow once [o/N] (a = always)?
 
 ```text
 parseArguments → (init 分支直接返回) → resolveProjectDirectory → Config.load →
-createModelRuntime({ providers }) → new ReadlineUi(...) → openOrCreateProject →
+createModelRuntime({ providers }) → new CliUi(...) → openOrCreateProject →
 selectInitialHarness（-c 取最新 Session，否则新建）→ ui.run → finally ui.close()
 ```
 
 `main.ts` 是连接具体 UI、Coding Agent 和 AI provider 的唯一组合根：它解析 argv（`init`、
 `-c`、`--config <path>`、`--verbose`、可选目录），把启动目录解析为 Git worktree 根并规范化，
 `Config.load()` 按上文分层加载配置，用 `config.runtimeProviders()` 构造显式
-`ModelRuntime`，然后组装 `ReadlineUi` 和 `Project`，最后进入交互循环；`finally` 中幂等关闭
+`ModelRuntime`，然后组装 `CliUi` 和 `Project`，最后进入交互循环；`finally` 中幂等关闭
 UI。
 
 ## 包结构
@@ -139,7 +139,7 @@ Harness 核心代码统一位于 `src/core/`；产品适配与界面代码位于
 | `harness` | [harness/README.md](src/core/harness/README.md) | `AgentHarness`（`subscribe`）、Session/Repository、`HarnessEvent` |
 | `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | `Project`、`openOrCreateProject`、内置 Tools、Bash 策略、Interactions port |
 | `application` | — | `Config`（唯一设置实体）、argv/init、目录发现 |
-| `ui` | — | `ReadlineUi`、`ReadlineInteractions`、`Renderer`、`parseInput` |
+| `ui` | — | 命令语言（`parseInput`/`UiAction`）；`ui/cli` 提供命令行实现（`CliUi`、`CliInteractions`、`Renderer`） |
 
 源码依赖方向始终向下：`main -> ui -> coding-agent -> core/harness -> core/agent ->
 core/ai`；`core/events` 是 Agent 与 Harness 共享的核心运行时。
@@ -179,7 +179,7 @@ directory：
 
 ## CLI 与核心边界
 
-`main.ts` 只负责组合：Config → `createModelRuntime({ providers })` → `ReadlineUi` →
+`main.ts` 只负责组合：Config → `createModelRuntime({ providers })` → `CliUi` →
 `openOrCreateProject()` → 交互循环。`application` 层不依赖 UI 内部组件，main 从 Config
 取出 UI 需要的值传给 UI；`src/ui` 也不导入 `src/core/agent`。
 

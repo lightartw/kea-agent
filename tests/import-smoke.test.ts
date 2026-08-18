@@ -22,7 +22,7 @@ import {
   ProjectError,
 } from "../src/coding-agent/index.js";
 
-import { ReadlineUi } from "../src/ui/index.js";
+import { CliUi } from "../src/ui/cli/index.js";
 
 import type {
   AgentRunIdentity,
@@ -64,7 +64,7 @@ void [
   SessionRepository,
   openOrCreateProject,
   ProjectError,
-  ReadlineUi,
+  CliUi,
 ];
 
 // Type-only assertions — keep imports from being tree-shaken

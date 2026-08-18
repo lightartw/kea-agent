@@ -277,31 +277,33 @@ Bash permission 策略分为 allow、ask、deny；ask 通过 `Interactions.permi
 回答（once / always / deny），deny 由 Permission listener 在 `tools/pre-execute` 上直接拒绝。
 `Interactions` 必须由调用方显式提供，本包没有默认实现，避免在没有用户确认渠道时静默放行。
 
-## 6. UI：readline 线性界面
+## 6. UI：命令语言与命令行实现
 
-`src/ui/` 实现一个 readline 终端应用，core 与 coding-agent 不导入它。
+`src/ui/` 只提供无终端依赖的命令语言：`parseInput` 把一行输入解析为 `UiAction`
+（prompt / new-session / switch-session / switch-model / help / exit / command-error）。
+命令行实现位于 `src/ui/cli/`；core 与 coding-agent 不导入任何 UI 层。
 
 ```ts
-class ReadlineUi {
-  readonly interactions: ReadlineInteractions;
-  constructor(options: ReadlineUiOptions);   // models、display 设置、reportError、注入目标
+class CliUi {
+  readonly interactions: CliInteractions;
+  constructor(options: CliUiOptions);   // models、display 设置、reportError、注入目标
   run(project: Project, initialHarness: AgentHarness): Promise<void>;
   close(): void;
 }
 ```
 
-`ReadlineUi` 是线性 Session 循环：一次只读一个 Prompt，`await harness.prompt(text)` 期间不再
+`CliUi` 是线性 Session 循环：一次只读一个 Prompt，`await harness.prompt(text)` 期间不再
 读第二个普通 Prompt；Permission 提问发生在 `prompt()` 内部，通过同一 question 函数。命令只在
 字符 0 位置匹配精确 slash token（`/new`、`/session`、`/model`、`/help`、`/exit`）；其他输入
 原样作为 Prompt。`/session` 与 `/model` 使用一基编号选择器，空输入取消。
 
 `Renderer` 把 `HarnessEvent` 与用户输入投影到终端（thinking 默认隐藏、tool 事实默认 compact）；
-`ReadlineInteractions` 实现 `Interactions` 端口，把 `o`/`a`/其它回答映射为 once/always/deny。
+`CliInteractions` 实现 `Interactions` 端口，把 `o`/`a`/其它回答映射为 once/always/deny。
 Run 取消中止 Permission 提问并传播，普通取消返回 deny。SIGINT 在 `current.isRunning` 时调用
 `current.abort()`（包括 Permission 持有提问时）；没有 Run 时留给 readline 自身的输入取消。
 Session 或模型切换失败时保留旧 Harness、订阅和模型。
 
-`ReadlineUi` 通过注入的 `reportError` 回调报告捕获的错误，不接触 Config 或凭据。
+`CliUi` 通过注入的 `reportError` 回调报告捕获的错误，不接触 Config 或凭据。
 
 ## 7. application 与 main.ts：组合根
 
@@ -329,7 +331,7 @@ model 非空 → defaultProvider 解析（单 provider 推断 / 多 provider 必
 2. `resolveProjectDirectory()` 得到规范 Project 目录；
 3. `Config.load()` 按上述顺序加载并验证；
 4. `createModelRuntime({ providers: config.runtimeProviders() })`；
-5. 构造 `ReadlineUi`（models、display 设置、经 `redact()` 的 `reportError`）；
+5. 构造 `CliUi`（models、display 设置、经 `redact()` 的 `reportError`）；
 6. `openOrCreateProject()` 打开或创建 Project；
 7. `kea -c` 选择最新 Session，否则创建新 Session；
 8. `ui.run(project, initial)`；`finally` 中 `ui.close()`（幂等）。
@@ -345,7 +347,8 @@ model 非空 → defaultProvider 解析（单 provider 推断 / 多 provider 必
   Session 元数据和错误；
 - `src/coding-agent/index.ts`：`openOrCreateProject`、`Project`、`ProjectInfo`、`Interactions`
   端口和权限类型；
-- `src/ui/index.ts`：`ReadlineUi`、`ReadlineInteractions`、`Renderer`、`parseInput`；
+- `src/ui/index.ts`：`parseInput`、`UiAction`（无终端依赖的命令语言）；
+- `src/ui/cli/index.ts`：`CliUi`、`CliInteractions`、`Renderer`（命令行实现）；
 - `src/index.ts`：汇总以上入口和通用 workspace helpers。
 
 `src/application/` 保持应用内部：Config、argv/init 和目录发现只由 `main.ts` 与测试导入。

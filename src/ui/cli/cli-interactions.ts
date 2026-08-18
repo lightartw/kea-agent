@@ -2,9 +2,9 @@ import type {
   Interactions,
   PermissionReply,
   PermissionRequest,
-} from "../coding-agent/index.js";
+} from "../../coding-agent/index.js";
 
-export interface ReadlineInteractionsOptions {
+export interface CliInteractionsOptions {
   readonly question: (
     prompt: string,
     options?: { readonly signal?: AbortSignal },
@@ -13,15 +13,15 @@ export interface ReadlineInteractionsOptions {
 }
 
 /**
- * Readline adapter for the Coding Agent Permission port. One question owns
+ * CLI adapter for the Coding Agent Permission port. One question owns
  * the terminal until answered; Run cancellation aborts the question and
  * propagates, ordinary cancellation returns deny.
  */
-export class ReadlineInteractions implements Interactions {
-  private readonly questionFn: ReadlineInteractionsOptions["question"];
+export class CliInteractions implements Interactions {
+  private readonly questionFn: CliInteractionsOptions["question"];
   private readonly logFn: (text: string) => void;
 
-  constructor(options: ReadlineInteractionsOptions) {
+  constructor(options: CliInteractionsOptions) {
     this.questionFn = options.question;
     this.logFn = options.log ?? ((text) => console.error(text));
   }

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { PermissionRequest } from "../../src/coding-agent/index.js";
+import type { PermissionRequest } from "../../../src/coding-agent/index.js";
 
-import { ReadlineInteractions } from "../../src/ui/interactions.js";
+import { CliInteractions } from "../../../src/ui/cli/cli-interactions.js";
 
 function dangerousRequest(): PermissionRequest {
   return {
@@ -41,10 +41,10 @@ function externalRequest(): PermissionRequest {
 
 function interactionsWithAnswers(
   answers: readonly string[],
-): { readonly interactions: ReadlineInteractions; readonly prompts: string[] } {
+): { readonly interactions: CliInteractions; readonly prompts: string[] } {
   const prompts: string[] = [];
   const queue = [...answers];
-  const interactions = new ReadlineInteractions({
+  const interactions = new CliInteractions({
     question: async (prompt) => {
       prompts.push(prompt);
       return queue.shift() ?? "";
@@ -95,7 +95,7 @@ test("an aborted Run signal rejects with its exact abort reason", async () => {
   const reason = new Error("run cancelled");
   controller.abort(reason);
 
-  const interactions = new ReadlineInteractions({
+  const interactions = new CliInteractions({
     question: async (_prompt, options) => {
       options?.signal?.throwIfAborted();
       return "o";
@@ -110,7 +110,7 @@ test("an aborted Run signal rejects with its exact abort reason", async () => {
 
 test("a cancelled question without an aborted Run returns deny", async () => {
   const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });
-  const interactions = new ReadlineInteractions({
+  const interactions = new CliInteractions({
     question: async () => {
       throw abortError;
     },
@@ -122,7 +122,7 @@ test("a cancelled question without an aborted Run returns deny", async () => {
 });
 
 test("unexpected question failures propagate", async () => {
-  const interactions = new ReadlineInteractions({
+  const interactions = new CliInteractions({
     question: async () => {
       throw new Error("broken pipe");
     },

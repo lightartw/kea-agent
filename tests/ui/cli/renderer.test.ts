@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { AgentToolCall, AgentToolResult } from "../../src/core/agent/index.js";
-import type { HarnessEvent } from "../../src/core/harness/index.js";
+import type { AgentToolCall, AgentToolResult } from "../../../src/core/agent/index.js";
+import type { HarnessEvent } from "../../../src/core/harness/index.js";
 
-import { Renderer } from "../../src/ui/renderer.js";
+import { Renderer } from "../../../src/ui/cli/renderer.js";
 
 function rendererWith(options: {
   readonly thinking?: "hidden" | "visible";

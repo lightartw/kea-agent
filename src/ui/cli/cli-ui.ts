@@ -1,13 +1,13 @@
 import { createInterface, type Interface } from "node:readline/promises";
 
-import type { ModelConfig } from "../core/ai/index.js";
-import type { AgentHarness } from "../core/harness/index.js";
-import type { Project } from "../coding-agent/index.js";
-import { parseInput } from "./commands.js";
-import { ReadlineInteractions } from "./interactions.js";
+import type { ModelConfig } from "../../core/ai/index.js";
+import type { AgentHarness } from "../../core/harness/index.js";
+import type { Project } from "../../coding-agent/index.js";
+import { parseInput } from "../commands.js";
+import { CliInteractions } from "./cli-interactions.js";
 import { Renderer } from "./renderer.js";
 
-export interface ReadlineUiOptions {
+export interface CliUiOptions {
   readonly models: readonly ModelConfig[];
   readonly thinking: "hidden" | "visible";
   readonly toolDetails: "compact" | "full";
@@ -22,13 +22,13 @@ const PROMPT = "kea> ";
 
 /**
  * Linear terminal application: one prompt, one Run at a time, no concurrent
- * reads of the readline. Owns exactly one ReadlineInteractions (the question
+ * reads of the readline. Owns exactly one CliInteractions (the question
  * function is shared with the loop) and one Renderer; errors in caught
  * actions are reported through the injected callback so the caller can
  * redact before terminal output.
  */
-export class ReadlineUi {
-  readonly interactions: ReadlineInteractions;
+export class CliUi {
+  readonly interactions: CliInteractions;
 
   private readonly models: readonly ModelConfig[];
   private readonly readline: Interface;
@@ -44,7 +44,7 @@ export class ReadlineUi {
     }
   };
 
-  constructor(options: ReadlineUiOptions) {
+  constructor(options: CliUiOptions) {
     this.models = options.models;
     this.readline = options.readline ?? createInterface({
       input: options.input ?? process.stdin,
@@ -57,7 +57,7 @@ export class ReadlineUi {
       log: options.log ?? ((text: string) => console.log(text)),
     });
     this.reportErrorFn = options.reportError;
-    this.interactions = new ReadlineInteractions({
+    this.interactions = new CliInteractions({
       question: (prompt, questionOptions) =>
         questionOptions === undefined
           ? this.readline.question(prompt)

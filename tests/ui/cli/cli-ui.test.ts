@@ -3,13 +3,13 @@ import test from "node:test";
 
 import type { Interface } from "node:readline/promises";
 
-import type { AgentMessage } from "../../src/core/agent/index.js";
-import type { ModelConfig } from "../../src/core/ai/index.js";
-import type { AgentHarness, SessionMetadata } from "../../src/core/harness/index.js";
-import type { HarnessEvent } from "../../src/core/harness/index.js";
-import type { Project, PermissionRequest } from "../../src/coding-agent/index.js";
+import type { AgentMessage } from "../../../src/core/agent/index.js";
+import type { ModelConfig } from "../../../src/core/ai/index.js";
+import type { AgentHarness, SessionMetadata } from "../../../src/core/harness/index.js";
+import type { HarnessEvent } from "../../../src/core/harness/index.js";
+import type { Project, PermissionRequest } from "../../../src/coding-agent/index.js";
 
-import { ReadlineUi } from "../../src/ui/readline-ui.js";
+import { CliUi } from "../../../src/ui/cli/cli-ui.js";
 
 const MODEL: ModelConfig = { provider: "openai", model: "gpt-5" };
 
@@ -116,8 +116,8 @@ function makeUi(options: {
   readonly readline: Interface;
   readonly calls: string[];
   readonly write?: (text: string) => void;
-}): ReadlineUi {
-  return new ReadlineUi({
+}): CliUi {
+  return new CliUi({
     models: options.models ?? [MODEL],
     thinking: "hidden",
     toolDetails: "compact",

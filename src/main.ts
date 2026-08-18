@@ -10,7 +10,7 @@ import { openOrCreateProject } from "./coding-agent/factory.js";
 import type { Project } from "./coding-agent/index.js";
 import { createModelRuntime } from "./core/ai/factory.js";
 import type { AgentHarness } from "./core/harness/index.js";
-import { ReadlineUi } from "./ui/readline-ui.js";
+import { CliUi } from "./ui/cli/index.js";
 
 /** Redacted diagnostic path; identity until a Config exists to redact with. */
 let writeDiagnostic = (message: string): void => {
@@ -74,7 +74,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
 
   const runtime = createModelRuntime({ providers: config.runtimeProviders() });
-  const ui = new ReadlineUi({
+  const ui = new CliUi({
     models: config.models,
     thinking: config.thinking,
     toolDetails: config.toolDetails,
