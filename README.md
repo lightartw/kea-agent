@@ -1,96 +1,131 @@
 # Kea Agent
 
-一个最小化的 TypeScript 命令行编程代理。它在当前工作目录中执行 shell 命令，支持 Anthropic、OpenAI 或 Gemini 作为模型后端。
-
-当前版本专注于核心 Agent loop；TUI 尚未加入。
+一个最小化的 TypeScript 命令行编程代理。它以 readline 交互循环在项目目录（Git worktree
+根）中执行 shell 命令，支持 Anthropic、OpenAI 或 Gemini 作为模型后端。
 
 架构文档：[docs/architecture.md](docs/architecture.md)
 
 ## 环境要求
 
-- Node.js 24 LTS
+- Node.js 24 LTS（小于 25）
 - npm 11 或 Node.js 24 自带的兼容 npm 版本
 - Anthropic、OpenAI 或 Gemini 中任意一家可用的 API 凭据
 
-## 初始化（Linux / macOS）
+## 初始化
 
 ```bash
 npm ci
-cp .env.example .env
-$EDITOR .env
 npm run build
+npm start -- init        # 等价于 node dist/src/main.js init
+$EDITOR ~/.kea/auth.json # 填入 API key
 npm start
 ```
 
-如果本地已经存在 `.env`，请跳过复制命令，避免覆盖凭据。
+Windows PowerShell 使用相同命令；编辑 `~/.kea/auth.json` 时用 `notepad` 代替 `$EDITOR`。
 
-## Windows PowerShell
+`kea init`（`npm start -- init`）在 `~/.kea/` 下创建两个文件，都已存在时跳过并打印
+`skipped`，**绝不覆盖**已有文件：
 
-```powershell
-npm ci
-Copy-Item .env.example .env  # 仅首次使用且 .env 不存在时执行
-notepad .env
-npm run build
-npm start
+- `config.json` — 用户配置模板（provider/model、agent、tools、ui 设置）；
+- `auth.json` — 凭据文件（权限 0600），只保存 provider 的 API key。
+
+## 配置
+
+配置按优先级分层加载：**内建默认值 < `~/.kea/config.json` < `<project>/.kea/config.json`
+< `--config <path>` 文件 < CLI 直接覆盖（`--verbose`）**。每个普通配置源独立验证后才合并。
+
+`kea init` 生成的 `config.json` 模板：
+
+```json
+{
+  "defaultProvider": "openai",
+  "providers": {
+    "openai": {
+      "model": "gpt-5",
+      "baseUrl": "https://api.openai.com/v1"
+    }
+  },
+  "agent": { "maxTurns": 20 },
+  "tools": { "timeoutSeconds": 120 },
+  "ui": { "thinking": "hidden", "toolDetails": "compact" }
+}
 ```
 
-## Provider 配置
+`auth.json` 模板：
 
-`.env` 中至少启用一家 provider。只启用一家时自动作为默认；同时启用多家时必须设置 `DEFAULT_PROVIDER`。以下是三组内置 provider 配置：
-
-```dotenv
-ANTHROPIC_API_KEY=你的_API_密钥
-MODEL_ID=claude-模型标识
-ANTHROPIC_BASE_URL=可选的兼容接口地址
+```json
+{
+  "providers": {
+    "openai": { "apiKey": "" }
+  }
+}
 ```
 
-```dotenv
-OPENAI_API_KEY=你的_API_密钥
-MODEL_ID=gpt-模型标识
-OPENAI_BASE_URL=可选的兼容接口地址
-```
+规则：
 
-```dotenv
-GEMINI_API_KEY=你的_API_密钥
-MODEL_ID=gemini-模型标识
-GEMINI_BASE_URL=可选的兼容接口地址
-```
+- **凭据只来自 `~/.kea/auth.json`**，在所有普通配置源之后加载。普通配置源（包括
+  `--config`）拒绝 credential 字段（`apiKey`/`token`/`secret`/`password`）。
+- 内建 provider 顺序为 anthropic → openai → gemini。只配置一家时自动作为默认；多家时必须
+  显式设置 `defaultProvider` 且引用已配置项；被启用 provider 的 auth key 必须非空。
+- 内建默认值：`maxTurns` 20、`toolTimeoutSeconds` 120、`thinking` `"hidden"`、
+  `toolDetails` `"compact"`。`ui.thinking: "visible"` 显示思考过程，`ui.toolDetails: "full"`
+  展开工具事实。
+- `kea --config <path>` 指定的文件必须存在，否则启动失败。
 
-Client 自动检测时只检查 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 和 `GEMINI_API_KEY`。没有发现 provider 会抛出配置错误；同时发现多家但没有设置 `DEFAULT_PROVIDER` 也会抛错。它不会根据模型名、URL、key 内容、已安装 SDK 或网络请求猜测 provider。
-
-CLI 启动时使用 `dotenv.config({ override: true })` 加载 `.env`。公共库入口本身不会加载 `.env`，也不会在导入时创建 provider client。
+生产启动绝不调用 dotenv，也绝不从 `process.env` 读取 provider 凭据。所有诊断输出
+（顶层错误、verbose 日志、listener 错误）都会把已加载的 API key 替换为 `[REDACTED]`。
 
 ## 使用方法
 
-程序启动后，在 `>>` 提示符后输入任务并回车。模型产生的工具调用会显示为 `[tool]`，执行状态使用 `[exec]`、`[done]`、`[error]` 或 `[rejected:*]`。只有被 Bash 安全策略归为 `ask` 的命令会请求确认，直接回车默认拒绝；硬拒绝命令不会询问。输入 `q`、`exit` 或直接按空回车退出。
+```text
+kea> 帮我修一下测试失败
+```
 
-请只在可信目录中运行本程序，并检查模型生成的命令。BashTool 具有最小危险片段拦截，但它不是完整沙箱，也不能替代系统权限隔离。
+在 `kea> ` 提示符后输入任务并回车。只有字符 0 位置的精确 slash token 才是命令，其余输入
+原样作为任务 prompt：
 
-在 Windows 上，BashTool 优先使用 Git Bash；未安装时使用 `bash.exe`（例如 WSL）。因此模型生成的命令统一采用 Bash 语法，例如 Windows 目录在 WSL 中写为 `/mnt/d/project`，不要使用 `cd D:\\project`。
+| 命令 | 作用 |
+|------|------|
+| `/new` | 新建一个 Session |
+| `/session` | 列出全部 Session（最新在前），按编号切换 |
+| `/model` | 在已配置的 provider/model 之间切换 |
+| `/help` | 显示命令帮助 |
+| `/exit` | 退出；EOF（Ctrl+D）同样退出 |
+
+`kea -c` 启动时直接恢复最新 Session；没有历史时回退为新 Session。一次只读一个 Prompt，
+`prompt()` 运行期间不再读第二个普通 Prompt；SIGINT（Ctrl+C）在运行中时中止当前 Run，
+空闲时取消当前输入。切换 Session 或模型失败会保留旧状态。
+
+模型产生的工具调用显示为 `[tool]`，执行状态使用 `[exec]`、`[done]`、`[error]` 或
+`[rejected]`。被 Bash 安全策略归为 `ask` 的操作会请求确认：
+
+```text
+Allow once [o/N] (a = always)?
+```
+
+`o` 或 `once` 允许一次；`a` 或 `always` 允许并记住（仅当前进程）；其他输入（含空回车）
+拒绝。硬拒绝命令不会询问。
+
+请只在可信目录中运行本程序，并检查模型生成的命令。权限确认只是防误操作机制，不是完整
+沙箱，也不能替代系统权限隔离。
+
+在 Windows 上，BashTool 优先使用 Git Bash；未安装时使用 `bash.exe`（例如 WSL）。因此模型
+生成的命令统一采用 Bash 语法，例如 Windows 目录在 WSL 中写为 `/mnt/d/project`，不要使用
+`cd D:\project`。
 
 ## 启动路径
 
 ```text
-createModelRuntime → createProject → continueRecent → cli.run(project, harness)
+parseArguments → (init 分支直接返回) → resolveProjectDirectory → Config.load →
+createModelRuntime({ providers }) → new ReadlineUi(...) → openOrCreateProject →
+selectInitialHarness（-c 取最新 Session，否则新建）→ ui.run → finally ui.close()
 ```
 
-`main.ts` 加载环境变量并创建 `CliFrontend`（其 `interactions` 实现
-`CodingAgentInteractions`）。`createProject({ keaHome })` 打开或创建持久化 Project，
-`continueRecent()` 打开最近修改的 Session（没有历史时创建），最后 `cli.run(project, harness)`
-进入交互循环。
-
-```ts
-const cli = new CliFrontend();
-const { runtime, modelConfig } = createModelRuntime();
-const project = await createProject({
-  keaHome: process.env.KEA_HOME ?? resolve(homedir(), ".kea"),
-  runtime,
-  modelConfig,
-  interactions: cli.interactions,
-});
-const harness = await project.continueRecent();
-await cli.run(project, harness);
-```
+`main.ts` 是连接具体 UI、Coding Agent 和 AI provider 的唯一组合根：它解析 argv（`init`、
+`-c`、`--config <path>`、`--verbose`、可选目录），把启动目录解析为 Git worktree 根并规范化，
+`Config.load()` 按上文分层加载配置，用 `config.runtimeProviders()` 构造显式
+`ModelRuntime`，然后组装 `ReadlineUi` 和 `Project`，最后进入交互循环；`finally` 中幂等关闭
+UI。
 
 ## 包结构
 
@@ -98,69 +133,74 @@ Harness 核心代码统一位于 `src/core/`；产品适配与界面代码位于
 
 | 包 | README | 职责 |
 |----|--------|------|
-| `ai` | [ai/README.md](src/core/ai/README.md) | ModelRuntime、provider 路由、消息与流协议 |
-| `agent` | [agent/README.md](src/core/agent/README.md) | Agent loop、Hook Call、工具注册、AgentEvent |
+| `ai` | [ai/README.md](src/core/ai/README.md) | 显式 Provider 的 `ModelRuntime`、消息与流协议 |
+| `agent` | [agent/README.md](src/core/agent/README.md) | `runAgentLoop`、`AgentTool` 注册与三阶段拦截、事件契约 |
 | `events` | [events/README.md](src/core/events/README.md) | 核心事件契约与统一分发器 |
-| `harness` | [harness/README.md](src/core/harness/README.md) | 运行时、版本化 Session、平坦 HarnessEvent、Hook 透传 |
-| `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | 持久化 Project、默认工具定义、Bash 策略、permission Hook、交互 port |
-| `ui` | — | 具体 CLI UI：交互适配、Harness event 渲染、Coding Tool presentation 消费 |
+| `harness` | [harness/README.md](src/core/harness/README.md) | `AgentHarness`（`subscribe`）、Session/Repository、`HarnessEvent` |
+| `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | `Project`、`openOrCreateProject`、内置 Tools、Bash 策略、Interactions port |
+| `application` | — | `Config`（唯一设置实体）、argv/init、目录发现 |
+| `ui` | — | `ReadlineUi`、`ReadlineInteractions`、`Renderer`、`parseInput` |
 
-源码依赖方向始终向下：`ui -> coding-agent -> core/harness -> core/agent -> core/ai`；
-`core/events` 是 Agent 与 Harness 共享的核心运行时。
+源码依赖方向始终向下：`main -> ui -> coding-agent -> core/harness -> core/agent ->
+core/ai`；`core/events` 是 Agent 与 Harness 共享的核心运行时。
 
 ## 工具系统
 
-`createProject()` 在内部组装 `ToolDefinition`（可带 presentation），并为每个 Harness
-创建独立的 `AgentToolRegistry` 与工具实例。默认内置工具为：
+`openOrCreateProject()` 为每份 Session 创建独立的 Tool Registry。默认内置工具为：
 
-- `bash` — shell 命令执行（从 Session cwd 启动）
-- `read_file`、`write_file`、`edit_file` — 文件操作（受 Project 目录边界约束）
-- `glob` — 文件通配符匹配
-- `todo_write` — 任务列表管理（presentation 渲染 details）
+| Tool | 行为 |
+|---|---|
+| `bash` | 在 Session cwd 中运行 shell command；非零退出码产生错误结果 |
+| `read_file` | 读取文本文件，或按稳定顺序列出目录；支持一基 `offset` 和 `limit` |
+| `write_file` | 写入完整 UTF-8 内容，必要时创建父目录 |
+| `edit_file` | 精确替换唯一出现的一段文本；缺失或出现多次时拒绝修改 |
+| `glob` | 从 Session cwd 匹配、去重并稳定排序路径 |
+| `todo_write` | 返回调用方提交的完整任务列表；Tool 本身不跨调用保存状态 |
 
-## Hooks 与权限
+输出有界：通用文本输出最多保留 2,000 行和 50 KiB，`glob` 最多 1,000 个结果，`bash`
+保留输出尾部。结构化指标放在 Tool Result 的 `details` 中，模型可见的说明放在 `content` 中。
 
-Hook 系统位于 `agent/hooks/`，提供类型化的控制通道（`Hook Call` = 控制请求，返回结果；
-`AgentEvent` = 观察事实，无返回）。默认只注册一个真正改变控制流的 Hook：
+## 权限
 
-- **Permission** — Bash 命令的 allow/ask/deny 策略，通过 `CodingAgentInteractions.confirm()` 询问
+Permission listener 注册在 `tools/pre-execute` 上，使用 Project 目录作为初始 trusted
+directory：
 
-被动的展示（工具调用日志、大输出提醒、工具计数 summary）不是 Hook，而是 UI 层针对
-Harness `subscribe` 事件的 renderer 行为。
+1. **文件类 Tool**：目标位于 trusted directory 内直接允许；在 Project 外时发送
+   `external-directory` 请求，选择 `always` 后该目录在本进程内视为已批准。
+2. **Bash**：先确认执行 cwd 受信任，再对命令分类——
+   - **硬拒绝**（`sudo`、关机、格式化文件系统、原始 `dd` 输入、`/dev` 重定向、强制递归
+     删除根目录等）：直接拒绝，不询问 UI，也不被已记住的授权覆盖；
+   - **询问**（文件删除、写入 `/etc`、`chmod 777` 等）：通过 Interactions port 确认；
+   - **允许**：直接放行。
 
-Bash 安全策略分为三层：
-1. **硬拒绝**（`sudo`、`mkfs`、`> /dev/`、`rm -rf /` 等）：Hook 和 bash 工具定义均阻止，不询问 UI
-2. **询问**（`rm`、`> /etc/`、`chmod 777`）：通过交互 port 确认；无交互时 fail-closed
-3. **允许**：直接放行
-
-文件工具始终拒绝逃出全部 Project 目录的路径。权限确认只是防误操作机制，不是完整沙箱。
+`always` 对 Bash 记录的是完整 command 与 cwd 的组合；同一命令换到另一个 cwd 后需要重新
+判断。文件工具始终拒绝逃出已批准目录的路径。`Interactions` 端口由调用方显式提供，本包
+没有默认实现，避免在没有用户确认渠道时静默放行。
 
 ## CLI 与核心边界
 
-`main.ts` 负责加载环境变量并组装 stream、Project、AgentHarness 和 CLI。`CliFrontend`
-（位于 `src/ui/cli-frontend.ts`）把自己的 `interactions` 注入 `createProject()`，并通过
-`run(project, harness)` 订阅 Harness 事件；工具事件由
-`project.renderToolEvent(event)` 使用对应 presentation 渲染。未来 TUI 可以消费相同的
-`HarnessEvent`、Session 和 details，而不改动 Agent loop。
+`main.ts` 只负责组合：Config → `createModelRuntime({ providers })` → `ReadlineUi` →
+`openOrCreateProject()` → 交互循环。`application` 层不依赖 UI 内部组件，main 从 Config
+取出 UI 需要的值传给 UI；`src/ui` 也不导入 `src/core/agent`。
 
-## 三种 UI 的边界
-
-三种相近但不同的能力对应三条通道，不要混淆：
-
-- **Hook UI（交互 port）**：Hook 需要用户决策时的交互端口（`CodingAgentInteractions.confirm`/`notify`），属于控制通道。
-- **Harness UI**：订阅 `HarnessEvent` 后渲染已确定的运行事实（含 `run_start`/`run_end`），属于观察通道。
-- **Tool UI（presentation）**：Harness UI 内部针对工具事件按工具名分派的专用 presentation（如 `todo_write`），不是第四套运行机制。
-
-具体实现集中在 `src/ui`（`cli-frontend.ts`、`cli-harness-renderer.ts`、`cli-interactions.ts`），
-`agent`、`harness` 与 `coding-agent` 不 import `src/ui`；`src/ui` 也不 import `src/core/agent`。
+UI 观察运行事实的唯一入口是 `harness.subscribe()`：Project 的原始 `Events` 是私有的，
+`AgentHarness` 把属于本 Session 的 emit 事实投影成 `HarnessEvent` 转发给 listener。
+控制事件（`user-prompt`、`context`、工具三阶段拦截）在状态提交前执行；被动的展示不是
+控制事件，而是 UI 层针对订阅事件的 renderer 行为。
 
 ## AI 层
 
-`createModelRuntime()` 默认根据唯一存在的 API key 环境变量选择 provider，也支持显式配置。该工厂函数返回
-`{ runtime, modelConfig }`。Harness 持有 `ModelRuntime`，并把绑定后的 `runtime.stream` 作为 agent
-定义的 `StreamFn` 传给 Agent Loop；`complete()` 不进入 Loop。
+`createModelRuntime({ providers })` 只接收显式 Provider 列表：
 
-详见 AI 层源码（`src/core/ai/`）。
+```ts
+createModelRuntime({
+  providers: [{ id: "anthropic", apiKey: "sk-...", baseUrl: "https://..." }],
+});
+```
+
+`ModelRuntime` 拥有 provider 路由和 lazy adapter；`ModelConfig` 是“这次请求选择哪个模型”
+的值。请求未配置的 provider 会抛出 `Unknown provider`。应用组合根负责从 `auth.json`
+读取凭据并构造 `runtimeProviders()`；`ai` 本身不读环境变量、不保存 Session 或模型选择。
 
 ## 开发与验证
 
@@ -185,9 +225,14 @@ npm install --save-dev --save-exact typescript@7.0.2
 
 ## 常见问题
 
-- 启动时提示缺少 `MODEL_ID`：确认 `.env` 存在且该变量非空。
-- 提示没有配置 provider：填写三家 API key 中的一项。
-- 提示配置了多家 provider：设置 `DEFAULT_PROVIDER`，值为 `anthropic`、`openai` 或 `gemini` 中已配置的一项；也可以移除暂时不用的 API key。
-- SDK 提示缺少 API key：确认所选 provider 的 key 非空且 CLI 已加载正确的 `.env`。
-- 自定义接口无法连接：检查对应的 `*_BASE_URL`、网络以及服务端支持的模型标识。
+- 启动报 `auth file not found` 或 `must be non-empty`：运行 `npm start -- init` 生成
+  `~/.kea/auth.json`，或手动创建并填入所选 provider 的 API key。
+- 提示没有配置 provider：在 `~/.kea/config.json` 的 `providers` 中至少配置一家 provider
+  的 `model`。
+- 提示配置了多家 provider 但未指定默认：设置 `defaultProvider`，值为 `anthropic`、
+  `openai` 或 `gemini` 中已配置的一项。
+- 在普通配置源里写 `apiKey` 报错：凭据只能放在 `~/.kea/auth.json`。
+- 提示 `Directory does not exist`：确认启动目录存在；`--config` 指定的文件必须存在。
+- `kea -c` 没有历史：会自动创建新 Session。
+- 自定义接口无法连接：检查对应 provider 的 `baseUrl`、网络以及服务端支持的模型标识。
 - 安装成功但调用失败：本地依赖安装成功不代表凭据、网络或 provider 服务可用。
