@@ -12,7 +12,8 @@ import { createModelRuntime, type Context } from "./core/ai/index.js";
 const runtime = createModelRuntime({
   providers: [
     {
-      id: "openai",
+      name: "openai",
+      protocol: "openai",
       apiKey: "sk-...",
       baseUrl: "https://api.openai.com/v1",
     },
@@ -45,19 +46,19 @@ assistant message。流没有终止块时它会拒绝。它不承担标题生成
 
 ## Provider 与模型切换
 
-`createModelRuntime()` 只接收显式的 `RuntimeProviderConfig` 列表；每个条目给出 provider 标识、
-API key 和可选 base URL。生产启动由 application Config 提供这些值，不读取环境变量。
+`createModelRuntime()` 只接收显式的 `RuntimeProviderConfig` 列表；每个条目给出 provider 名、
+协议、API key 和可选 base URL。生产启动由 application Config 提供这些值，不读取环境变量。
 `createModelRuntimeFromEnvironment()` 是从 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、
 `GEMINI_API_KEY` 及对应 `*_BASE_URL` 构造同一形状的便捷入口，仅供开发和测试。
 
-内置 provider 标识为 `anthropic`、`openai`、`gemini`。adapter 第一次使用时懒加载，之后复用；
-请求未配置的 provider 会抛出 `Unknown provider`。
+内置协议标识为 `anthropic`、`openai`、`gemini`。provider 名与协议分离，多个 provider 可共用
+同一协议；adapter 第一次使用时懒加载，之后复用；请求未配置的 provider 会抛出 `Unknown provider`。
 
 ```ts
 const runtime = createModelRuntime({
   providers: [
-    { id: "anthropic", apiKey: "sk-ant-...", baseUrl: "https://api.anthropic.com" },
-    { id: "openai", apiKey: "sk-...", baseUrl: "https://api.openai.com/v1" },
+    { name: "anthropic", protocol: "anthropic", apiKey: "sk-ant-...", baseUrl: "https://api.anthropic.com" },
+    { name: "openai", protocol: "openai", apiKey: "sk-...", baseUrl: "https://api.openai.com/v1" },
   ],
 });
 
@@ -77,10 +78,11 @@ for await (const event of runtime.stream(
 ### Factory
 
 ```ts
-type ProviderId = "anthropic" | "openai" | "gemini";
+type ProtocolId = "anthropic" | "openai" | "gemini";
 
 interface RuntimeProviderConfig {
-  readonly id: ProviderId;
+  readonly name: string;
+  readonly protocol: ProtocolId;
   readonly apiKey: string;
   readonly baseUrl?: string;
 }
@@ -254,7 +256,7 @@ type StreamChunk =
 
 | 导出 | 建议范围 |
 |---|---|
-| `createModelRuntime`, `RuntimeProviderConfig`, `ProviderId` | 应用组合根用显式 provider 列表配置 ai 能力 |
+| `createModelRuntime`, `RuntimeProviderConfig`, `ProtocolId` | 应用组合根用显式 provider 列表配置 ai 能力 |
 | `createModelRuntimeFromEnvironment` | 开发与测试入口；生产启动不读环境变量凭据 |
 | `ModelRuntime` | provider 路由和请求能力；由 Harness 或应用组合层持有 |
 | `ModelConfig` | 一次请求的模型选择；agent 和模型选择界面可直接使用 |

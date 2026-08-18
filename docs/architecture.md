@@ -18,8 +18,11 @@ interface ModelConfig {
   readonly model: string;
 }
 
+type ProtocolId = "anthropic" | "openai" | "gemini";
+
 interface RuntimeProviderConfig {
-  readonly id: ProviderId;          // "anthropic" | "openai" | "gemini"
+  readonly name: string;            // 配置的 provider 名，例如 "deepseek"
+  readonly protocol: ProtocolId;
   readonly apiKey: string;
   readonly baseUrl?: string;
 }
@@ -33,7 +36,8 @@ function createModelRuntime(options: {
 adapter，`ModelConfig` 是“这次请求选择哪个模型”的值，两者分离。Runtime 不保存默认模型；
 同一个 Runtime 可服务多个 provider、Session 和模型切换。`ModelRuntime.stream(modelConfig,
 context)` 的请求路由到 `modelConfig.provider` 对应的 adapter，请求未配置的 provider 会抛出
-`Unknown provider`。
+`Unknown provider`。provider 是用户配置的连接实例（name/baseUrl/apiKey/protocol/models），
+协议决定 adapter；多个 provider 可共用同一协议。默认模型由 `Config.defaultModel` 显式指定。
 
 `ToolResultMessage.content` 是模型可见文本；`details` 是 Session、Agent 和 UI 使用的结构化数据，
 不会被 provider adapter 发到模型服务。
@@ -317,8 +321,8 @@ Session 或模型切换失败时保留旧 Harness、订阅和模型。
 `<project>/.kea/config.json` < `--config` 文件 < CLI 直接覆盖（`--verbose`）。每个普通配置源
 独立验证后才合并；普通源拒绝 credential 字段（`apiKey`/`token`/`secret`/`password`）。
 凭据只来自 `~/.kea/auth.json`，在所有普通源之后加载。跨字段验证顺序：至少一个 provider →
-model 非空 → defaultProvider 解析（单 provider 推断 / 多 provider 必须显式 / 必须引用已配置）→
-启用 provider 的 auth key 非空。
+每个 provider 的 `protocol` 为三者之一、`models` 非空 → `defaultModel` 必填且必须引用已配置
+provider 并列出其 `models` 中的模型 → 启用 provider 的 auth key 非空。
 
 `Config` 保持 Provider 凭据私有（`#providers`），公开 `models`、`defaultModel`、
 `runtimeProviders()`、`maxTurns`、`toolTimeoutSeconds`、`thinking`、`toolDetails`、`verbose`

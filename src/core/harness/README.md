@@ -20,7 +20,7 @@ import { AgentHarness, Session } from "./index.js";
 
 const runtime = createModelRuntime({
   providers: [
-    { id: "openai", apiKey: "sk-...", baseUrl: "https://api.openai.com/v1" },
+    { name: "openai", protocol: "openai", apiKey: "sk-...", baseUrl: "https://api.openai.com/v1" },
   ],
 });
 const session = Session.inMemory({ cwd: process.cwd() });

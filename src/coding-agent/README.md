@@ -31,7 +31,7 @@ import {
 
 const runtime = createModelRuntime({
   providers: [
-    { id: "openai", model: "gpt-5", baseUrl: "https://api.openai.com/v1", apiKey: "sk-..." },
+    { name: "openai", protocol: "openai", baseUrl: "https://api.openai.com/v1", apiKey: "sk-..." },
   ],
 });
 

@@ -38,11 +38,12 @@ Windows PowerShell 使用相同命令。
 
 ```json
 {
-  "defaultProvider": "openai",
+  "defaultModel": { "provider": "openai", "model": "gpt-5" },
   "providers": {
     "openai": {
-      "model": "gpt-5",
-      "baseUrl": "https://api.openai.com/v1"
+      "protocol": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "models": ["gpt-5"]
     }
   },
   "agent": { "maxTurns": 20 },
@@ -65,8 +66,10 @@ Windows PowerShell 使用相同命令。
 
 - **凭据只来自 `~/.kea/auth.json`**，在所有普通配置源之后加载。普通配置源（包括
   `--config`）拒绝 credential 字段（`apiKey`/`token`/`secret`/`password`）。
-- 内建 provider 顺序为 anthropic → openai → gemini。只配置一家时自动作为默认；多家时必须
-  显式设置 `defaultProvider` 且引用已配置项；被启用 provider 的 auth key 必须非空。
+- `defaultModel` 必填：必须引用已配置 provider，且 model 在该 provider 的 `models` 列表中。
+- `providers` 以 provider 名为键，每项含 `protocol`（`anthropic`/`openai`/`gemini` 之一）、
+  非空 `models` 数组和可选 `baseUrl`；provider 按配置顺序生效。被启用 provider 的 auth key
+  必须非空。
 - 内建默认值：`maxTurns` 20、`toolTimeoutSeconds` 120、`thinking` `"hidden"`、
   `toolDetails` `"compact"`。`ui.thinking: "visible"` 显示思考过程，`ui.toolDetails: "full"`
   展开工具事实。
@@ -194,7 +197,7 @@ UI 观察运行事实的唯一入口是 `harness.subscribe()`：Project 的原�
 
 ```ts
 createModelRuntime({
-  providers: [{ id: "anthropic", apiKey: "sk-...", baseUrl: "https://..." }],
+  providers: [{ name: "openai", protocol: "openai", apiKey: "sk-..." }],
 });
 ```
 
@@ -227,10 +230,10 @@ npm install --save-dev --save-exact typescript@7.0.2
 
 - 启动报 `must be non-empty`：`~/.kea/auth.json` 中的 API key 还是空的。首次运行会自动
   补建缺失的 `config.json`/`auth.json`；填入所选 provider 的 key 后重新运行即可。
-- 提示没有配置 provider：在 `~/.kea/config.json` 的 `providers` 中至少配置一家 provider
-  的 `model`。
-- 提示配置了多家 provider 但未指定默认：设置 `defaultProvider`，值为 `anthropic`、
-  `openai` 或 `gemini` 中已配置的一项。
+- 提示没有配置 provider：在 `~/.kea/config.json` 的 `providers` 中至少配置一家 provider。
+- 提示 `defaultModel` 必填或引用错误：在 `~/.kea/config.json` 设置 `defaultModel`，
+  `{ "provider": "...", "model": "..." }` 必须引用已配置 provider，且 model 在其
+  `models` 列表中。
 - 在普通配置源里写 `apiKey` 报错：凭据只能放在 `~/.kea/auth.json`。
 - 提示 `Directory does not exist`：确认启动目录存在；`--config` 指定的文件必须存在。
 - `kea -c` 没有历史：会自动创建新 Session。
