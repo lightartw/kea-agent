@@ -143,9 +143,7 @@ test("the outer loop waits for a Run before reading the next Prompt", async () =
   const ui = makeUi({
     readline,
     calls,
-    write: (text) => {
-      if (text.startsWith("\n> ")) calls.push(`render-user:${text.slice(3)}`);
-    },
+    write: () => {},
   });
 
   const harness = makeHarness("1");
@@ -161,7 +159,6 @@ test("the outer loop waits for a Run before reading the next Prompt", async () =
 
   assert.deepEqual(calls, [
     "question:kea> ",
-    "render-user:hello",
     "prompt:start",
     "question:permission",
     "prompt:end",
@@ -275,6 +272,17 @@ test("a restored unavailable model asks for a configured model before activation
   assert.equal(restored.subscribeCalls, 1);
   const text = calls.filter((call) => call.startsWith("render:")).join("");
   assert.ok(text.includes("model openai/gone is not configured"), text);
+});
+
+test("blank input at the prompt is skipped without prompting the Harness", async () => {
+  const { readline, calls } = makeReadline(["", "hi", "/exit"]);
+  const ui = makeUi({ readline, calls, write: () => {} });
+  const harness = makeHarness("1");
+  const project = makeProject({ createHarness: async () => asHarness(harness) });
+
+  await ui.run(project, asHarness(harness));
+
+  assert.deepEqual(harness.promptCalls, ["hi"]);
 });
 
 test("cancelling the initial model repair exits without the prompt loop", async () => {

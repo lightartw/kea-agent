@@ -81,7 +81,7 @@ export class AnthropicAdapter implements Adapter {
     type PendingBlock =
       | { kind: "text"; text: string }
       | { kind: "thinking"; thinking: string; signature?: string }
-      | { kind: "toolCall"; id: string; name: string; arguments: string };
+      | { kind: "toolCall"; id: string; name: string; arguments: string; ended: boolean };
 
     const started = performance.now();
     let usedModel = model;
@@ -121,6 +121,7 @@ export class AnthropicAdapter implements Adapter {
                 id: block.id,
                 name: block.name,
                 arguments: Object.keys(block.input ?? {}).length ? JSON.stringify(block.input) : "",
+                ended: false,
               });
               yield { type: "toolcall_start", id: block.id, name: block.name };
             } else if (block.type === "thinking") {
@@ -153,6 +154,7 @@ export class AnthropicAdapter implements Adapter {
               const args = JSON.parse(block.arguments || "{}");
               const toolCall: ToolCall = { type: "toolCall", id: block.id, name: block.name, arguments: args };
               yield { type: "toolcall_end", toolCall };
+              block.ended = true;
             }
             if (block && block.kind === "thinking" && (event as any).content_block?.signature) {
               block.signature = (event as any).content_block.signature;
@@ -164,6 +166,20 @@ export class AnthropicAdapter implements Adapter {
             stopReason = mapStopReason(event.delta?.stop_reason ?? event.usage?.stop_reason);
             outputTokens = Number(event.usage?.output_tokens ?? outputTokens);
             break;
+        }
+      }
+
+      // Some endpoints (e.g. DeepSeek) never send content_block_stop; close
+      // every tool_use block that is still open so the agent loop can run it.
+      for (const block of pending.values()) {
+        if (block.kind === "toolCall" && !block.ended) {
+          const toolCall: ToolCall = {
+            type: "toolCall",
+            id: block.id,
+            name: block.name,
+            arguments: JSON.parse(block.arguments || "{}"),
+          };
+          yield { type: "toolcall_end", toolCall };
         }
       }
 

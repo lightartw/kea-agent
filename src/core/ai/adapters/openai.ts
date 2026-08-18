@@ -151,6 +151,21 @@ export class OpenAIAdapter implements Adapter {
         }
       }
 
+      // Some endpoints (e.g. DeepSeek) never send a terminal tool-call chunk;
+      // close every started call so the agent loop can collect and run it.
+      for (const tc of toolCalls.values()) {
+        if (!tc.started) continue;
+        yield {
+          type: "toolcall_end",
+          toolCall: {
+            type: "toolCall",
+            id: tc.id,
+            name: tc.name,
+            arguments: JSON.parse(tc.arguments || "{}"),
+          },
+        };
+      }
+
       const contentBlocks: ContentBlock[] = [];
       if (reasoning.length > 0) {
         contentBlocks.push({ type: "thinking", thinking: reasoning } as ThinkingBlock);

@@ -443,7 +443,7 @@ test("failing agent/user-prompt or agent/context interceptors reject the Run", a
 
 // ── Stream edge cases ──
 
-test("AI error terminal chunk appends its message and finishes", async () => {
+test("AI error terminal chunk appends its message and rejects", async () => {
   const events = new Events();
   const failed = {
     ...assistantMsg(""),
@@ -466,11 +466,14 @@ test("AI error terminal chunk appends its message and finishes", async () => {
     if (input.sessionId === "session-1") turnEnds.push(input);
   });
 
-  await runAgentLoop(
-    "start",
-    context,
-    makeConfig(),
-    streamWithEvents([[{ type: "error", message: failed }]]),
+  await assert.rejects(
+    runAgentLoop(
+      "start",
+      context,
+      makeConfig(),
+      streamWithEvents([[{ type: "error", message: failed }]]),
+    ),
+    /provider failed/,
   );
 
   assert.equal(turnEnds.length, 1);

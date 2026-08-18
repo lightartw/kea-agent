@@ -122,7 +122,10 @@ export async function runAgentLoop(
             message: event.message,
             toolResults: [],
           });
-          return;
+          if (signal?.aborted) return;
+          // Surface the failure to the Harness so the Run ends in error
+          // instead of silently looking completed.
+          throw new Error(event.message.errorMessage ?? "Model stream failed");
       }
     }
 

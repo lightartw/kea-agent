@@ -162,12 +162,93 @@ test("selections render numbered options and help lists commands", () => {
 
 test("user input echo and error messages render plainly", () => {
   const { renderer, output } = rendererWith({});
-  renderer.renderUser("hello");
   renderer.renderError("something failed");
 
   const text = output();
-  assert.ok(text.includes("hello"));
   assert.ok(text.includes("something failed"));
+});
+
+test("tool call lines open at start and stream the arguments in place", () => {
+  const { renderer, output } = rendererWith({});
+  renderer.handle({
+    type: "tool-call-start",
+    runId: "run-1",
+    id: "call-1",
+    name: "todo_write",
+  });
+  renderer.handle({
+    type: "tool-call-delta",
+    runId: "run-1",
+    id: "call-1",
+    argumentsDelta: '{"todos":[{"content":"a","status":"pending"}]}',
+  });
+  renderer.handle({
+    type: "tool-call",
+    runId: "run-1",
+    cwd: "/repo",
+    call: toolCall("todo_write", { todos: [{ content: "a", status: "pending" }] }),
+  });
+
+  const text = output();
+  assert.equal(text.match(/\n⚙/gu)?.length, 1);
+  assert.ok(text.includes('⚙ todo_write {"todos"'), text);
+});
+
+test("compact mode bounds streamed arguments and stops after truncation", () => {
+  const { renderer, output } = rendererWith({ toolDetails: "compact" });
+  renderer.handle({
+    type: "tool-call-start",
+    runId: "run-1",
+    id: "c1",
+    name: "bash",
+  });
+  renderer.handle({
+    type: "tool-call-delta",
+    runId: "run-1",
+    id: "c1",
+    argumentsDelta: "x".repeat(250),
+  });
+  renderer.handle({
+    type: "tool-call-delta",
+    runId: "run-1",
+    id: "c1",
+    argumentsDelta: "y".repeat(100),
+  });
+
+  const text = output();
+  assert.ok(text.includes("x".repeat(200)), "compact line must be bounded");
+  assert.ok(text.endsWith("…"), text);
+  assert.ok(!text.includes("y"), "deltas after truncation are dropped");
+});
+
+test("full mode streams unbounded arguments", () => {
+  const { renderer, output } = rendererWith({ toolDetails: "full" });
+  renderer.handle({
+    type: "tool-call-start",
+    runId: "run-1",
+    id: "c1",
+    name: "bash",
+  });
+  renderer.handle({
+    type: "tool-call-delta",
+    runId: "run-1",
+    id: "c1",
+    argumentsDelta: "x".repeat(500),
+  });
+
+  assert.ok(output().includes("x".repeat(500)));
+});
+
+test("an untracked tool-call still renders the full line", () => {
+  const { renderer, output } = rendererWith({ toolDetails: "compact" });
+  renderer.handle({
+    type: "tool-call",
+    runId: "run-1",
+    cwd: "/repo",
+    call: toolCall("bash", { command: "ls" }),
+  });
+
+  assert.ok(output().includes('⚙ bash {"command":"ls"}'));
 });
 
 test("session activation renders a banner and replays history", () => {

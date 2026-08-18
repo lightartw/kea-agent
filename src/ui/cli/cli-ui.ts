@@ -78,7 +78,7 @@ export class CliUi {
         const action = parseInput(input);
         switch (action.kind) {
           case "prompt":
-            this.renderer.renderUser(action.text);
+            if (action.text.trim() === "") break;
             try {
               await this.current!.prompt(action.text);
             } catch (error) {
