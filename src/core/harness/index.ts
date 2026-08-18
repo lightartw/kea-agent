@@ -3,7 +3,7 @@ export { Session } from "./session/session.js";
 export { SessionError } from "./session/types.js";
 export { SessionRepository } from "./session/repository.js";
 
-export type { HarnessRunEnd } from "./events.js";
+export type { HarnessEvent, HarnessRunEnd } from "./events.js";
 export type { HarnessConfig } from "./types.js";
 export type {
   SessionErrorCode,

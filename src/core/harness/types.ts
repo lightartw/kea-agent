@@ -7,6 +7,7 @@ export interface HarnessConfig {
   readonly session: Session;
   readonly runtime: ModelRuntime;
   readonly modelConfig: ModelConfig;
+  readonly maxTurns?: number;
   readonly toolRegistry: AgentToolRegistry;
   readonly systemPrompt: string;
   readonly events: Events;

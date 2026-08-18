@@ -11,6 +11,12 @@ import type {
   ModelConfig,
   ModelRuntime,
 } from "../../src/core/ai/types.js";
+import type {
+  AgentMessage,
+  AgentToolCall,
+  AgentToolResult,
+} from "../../src/core/agent/index.js";
+import type { HarnessEvent } from "../../src/core/harness/index.js";
 import { runtimeFromStream, type TestStream } from "../fixtures/model-runtime.js";
 import { Type } from "typebox";
 
@@ -640,4 +646,209 @@ test("tool-result subscriber sees the persisted synthetic message for an unknown
 
   await harness.prompt("run");
   assert.deepEqual(observed, [{ type: "tool-result", matches: true }]);
+});
+
+// ── Task 2: Session-scoped Harness subscription ──
+
+test("subscribe projects only this Session's facts and unsubscribe is idempotent", async () => {
+  const events = new Events();
+  const { harness } = makeHarness({ events });
+  const facts: HarnessEvent[] = [];
+  const unsubscribe = harness.subscribe((event) => facts.push(event));
+
+  await events.emit("agent/text-delta", {
+    sessionId: "another-session",
+    runId: "ignored",
+    text: "ignored",
+  });
+  await events.emit("agent/text-delta", {
+    sessionId: harness.sessionId,
+    runId: "run-1",
+    text: "hello",
+  });
+  unsubscribe();
+  unsubscribe();
+  await events.emit("agent/text-delta", {
+    sessionId: harness.sessionId,
+    runId: "run-1",
+    text: "late",
+  });
+
+  assert.deepEqual(facts, [{ type: "text-delta", runId: "run-1", text: "hello" }]);
+});
+
+test("subscribe projects all ten fact shapes without Session identity", async () => {
+  const events = new Events();
+  const { harness } = makeHarness({ events });
+  const sessionId = harness.sessionId;
+  const runId = "run-1";
+  const message: AgentMessage = {
+    role: "assistant",
+    content: [{ type: "text", text: "done" }],
+    model: "model-a",
+    stopReason: "stop",
+    latencyMs: 0,
+  };
+  const call: AgentToolCall = {
+    type: "toolCall",
+    id: "c1",
+    name: "echo",
+    arguments: { value: 1 },
+  };
+  const result: AgentToolResult = {
+    content: "ok",
+    details: { count: 1 },
+    isError: false,
+  };
+
+  const cases: Array<{
+    name: string;
+    input: unknown;
+    expected: HarnessEvent;
+  }> = [
+    {
+      name: "harness/run-start",
+      input: { sessionId, runId },
+      expected: { type: "run-start", runId },
+    },
+    {
+      name: "harness/run-end",
+      input: { sessionId, runId, reason: "completed" },
+      expected: { type: "run-end", runId, reason: "completed" },
+    },
+    {
+      name: "harness/run-end",
+      input: { sessionId, runId, reason: "error", errorMessage: "boom" },
+      expected: { type: "run-end", runId, reason: "error", errorMessage: "boom" },
+    },
+    {
+      name: "agent/turn-start",
+      input: { sessionId, runId },
+      expected: { type: "turn-start", runId },
+    },
+    {
+      name: "agent/turn-end",
+      input: { sessionId, runId, message, toolResults: [] },
+      expected: { type: "turn-end", runId, message, toolResults: [] },
+    },
+    {
+      name: "agent/text-delta",
+      input: { sessionId, runId, text: "hi" },
+      expected: { type: "text-delta", runId, text: "hi" },
+    },
+    {
+      name: "agent/thinking-delta",
+      input: { sessionId, runId, thinking: "think" },
+      expected: { type: "thinking-delta", runId, thinking: "think" },
+    },
+    {
+      name: "agent/tool-call-start",
+      input: { sessionId, runId, id: "c1", name: "echo" },
+      expected: { type: "tool-call-start", runId, id: "c1", name: "echo" },
+    },
+    {
+      name: "agent/tool-call-delta",
+      input: { sessionId, runId, id: "c1", argumentsDelta: "{}" },
+      expected: { type: "tool-call-delta", runId, id: "c1", argumentsDelta: "{}" },
+    },
+    {
+      name: "agent/tool-call",
+      input: { sessionId, runId, cwd: "/work", call },
+      expected: { type: "tool-call", runId, cwd: "/work", call },
+    },
+    {
+      name: "agent/tool-result",
+      input: { sessionId, runId, cwd: "/work", call, result },
+      expected: { type: "tool-result", runId, cwd: "/work", call, result },
+    },
+  ];
+
+  const facts: HarnessEvent[] = [];
+  const unsubscribe = harness.subscribe((event) => facts.push(event));
+  for (const entry of cases) {
+    await (events.emit as (name: string, input: unknown) => Promise<void>)(
+      entry.name,
+      entry.input,
+    );
+  }
+  unsubscribe();
+
+  assert.deepEqual(facts, cases.map((entry) => entry.expected));
+  for (const fact of facts) {
+    assert.equal(Object.hasOwn(fact, "sessionId"), false);
+  }
+});
+
+test("subscribe listener failure is isolated and does not reject prompt", async () => {
+  const reported: Array<{ error: unknown; name: string }> = [];
+  const events = new Events((error, name) => {
+    reported.push({ error, name });
+  });
+  const { harness } = makeHarness({ events });
+  harness.subscribe(() => {
+    throw new Error("subscriber failed");
+  });
+
+  await harness.prompt("hello");
+
+  assert.equal(harness.isRunning, false);
+  assert.deepEqual(
+    reported.map((entry) => entry.name),
+    [
+      "harness/run-start",
+      "agent/turn-start",
+      "agent/text-delta",
+      "agent/turn-end",
+      "harness/run-end",
+    ],
+  );
+});
+
+test("maxTurns limits the Agent loop to one turn", async () => {
+  const registry = new AgentToolRegistry();
+  registry.register(new (class extends AgentTool {
+    constructor() {
+      super("echo", "Echo", Type.Object({}));
+    }
+    async execute() {
+      return { content: "ok", isError: false };
+    }
+  })());
+  const tc = { type: "toolCall" as const, id: "c1", name: "echo", arguments: {} };
+  const toolTurn: AssistantMessage = {
+    role: "assistant",
+    content: [tc],
+    model: "model-a",
+    stopReason: "toolUse",
+    latencyMs: 0,
+  };
+  let streamCalls = 0;
+  const events = new Events();
+  const harness = new AgentHarness({
+    session: memorySession(),
+    runtime: runtimeFromStream(async function* () {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        yield { type: "toolcall_start", id: "c1", name: "echo" };
+        yield { type: "toolcall_end", toolCall: tc };
+        yield { type: "done", message: toolTurn };
+      } else {
+        yield { type: "done", message: assistant };
+      }
+    }),
+    modelConfig: modelA,
+    toolRegistry: registry,
+    systemPrompt: "system",
+    events,
+    maxTurns: 1,
+  });
+  let turnEnds = 0;
+  events.on("agent/turn-end", (input) => {
+    if (input.sessionId === harness.sessionId) turnEnds += 1;
+  });
+
+  await harness.prompt("run");
+
+  assert.equal(streamCalls, 1);
+  assert.equal(turnEnds, 1);
 });

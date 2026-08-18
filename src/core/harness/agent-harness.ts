@@ -12,7 +12,7 @@ import type { AgentToolRegistry } from "../agent/tools/registry.js";
 import type { Events } from "../events/events.js";
 import type { ModelConfig, ModelRuntime } from "../ai/types.js";
 import { errorMessage } from "../util/index.js";
-import type { HarnessRunEnd } from "./events.js";
+import type { HarnessEvent, HarnessRunEnd } from "./events.js";
 import { Session } from "./session/session.js";
 import { ensureSessionTitle } from "./session-title.js";
 import type { HarnessConfig } from "./types.js";
@@ -37,6 +37,7 @@ export class AgentHarness {
 
   private activeRun: ActiveRun | undefined;
   private readonly runtime: ModelRuntime;
+  private readonly maxTurns: number | undefined;
 
   // Model
   private currentModel: ModelConfig;
@@ -50,6 +51,7 @@ export class AgentHarness {
     this.toolRegistry = config.toolRegistry;
     this.systemPrompt = config.systemPrompt;
     this.runtime = config.runtime;
+    this.maxTurns = config.maxTurns;
     this.currentModel = config.session.modelSelection() ?? config.modelConfig;
     this.events = config.events;
   }
@@ -64,6 +66,7 @@ export class AgentHarness {
     return {
       model: this.currentModel,
       convertToLlm: (messages) => messages,
+      ...(this.maxTurns === undefined ? {} : { maxTurns: this.maxTurns }),
     };
   }
 
@@ -168,6 +171,113 @@ export class AgentHarness {
   unregisterTool(name: string): void {
     this.assertIdle();
     this.toolRegistry.unregister(name);
+  }
+
+  // ── Subscription ──
+
+  /**
+   * Observe the emit facts belonging to this Session through a typed facade.
+   * The listener never sees Session identity or intercept control points;
+   * listener errors are isolated by the shared Events error handler.
+   * The returned unsubscribe function is idempotent.
+   */
+  subscribe(listener: (event: HarnessEvent) => void): () => void {
+    const belongsToSession = (sessionId: string): boolean =>
+      sessionId === this.session.id;
+    const off = [
+      this.events.on("harness/run-start", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({ type: "run-start", runId: input.runId });
+        }
+      }),
+      this.events.on("harness/run-end", (input) => {
+        if (!belongsToSession(input.sessionId)) return;
+        listener(input.reason === "error"
+          ? {
+              type: "run-end",
+              runId: input.runId,
+              reason: "error",
+              errorMessage: input.errorMessage,
+            }
+          : { type: "run-end", runId: input.runId, reason: input.reason });
+      }),
+      this.events.on("agent/turn-start", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({ type: "turn-start", runId: input.runId });
+        }
+      }),
+      this.events.on("agent/turn-end", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({
+            type: "turn-end",
+            runId: input.runId,
+            message: input.message,
+            toolResults: input.toolResults,
+          });
+        }
+      }),
+      this.events.on("agent/text-delta", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({ type: "text-delta", runId: input.runId, text: input.text });
+        }
+      }),
+      this.events.on("agent/thinking-delta", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({
+            type: "thinking-delta",
+            runId: input.runId,
+            thinking: input.thinking,
+          });
+        }
+      }),
+      this.events.on("agent/tool-call-start", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({
+            type: "tool-call-start",
+            runId: input.runId,
+            id: input.id,
+            name: input.name,
+          });
+        }
+      }),
+      this.events.on("agent/tool-call-delta", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({
+            type: "tool-call-delta",
+            runId: input.runId,
+            id: input.id,
+            argumentsDelta: input.argumentsDelta,
+          });
+        }
+      }),
+      this.events.on("agent/tool-call", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({
+            type: "tool-call",
+            runId: input.runId,
+            cwd: input.cwd,
+            call: input.call,
+          });
+        }
+      }),
+      this.events.on("agent/tool-result", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({
+            type: "tool-result",
+            runId: input.runId,
+            cwd: input.cwd,
+            call: input.call,
+            result: input.result,
+          });
+        }
+      }),
+    ];
+    let closed = false;
+    return () => {
+      if (closed) return;
+      closed = true;
+      for (const unsubscribe of off) unsubscribe();
+    };
   }
 
   // ── State ──
