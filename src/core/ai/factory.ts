@@ -32,6 +32,7 @@ export interface Adapter {
 
 // ── Lazy loading ──
 
+/** Return an Adapter immediately (sync) whose stream() lazily loads the real adapter in the background and forwards events. Matches Pi's lazyApi pattern. */
 export function lazyAdapter(load: () => Promise<Adapter>): Adapter {
   let loaded: Promise<Adapter> | undefined;
   const getAdapter = (): Promise<Adapter> => {
@@ -102,6 +103,7 @@ const BUILTIN_PROTOCOLS: readonly {
 
 // ── Routed runtime ──
 
+/** Build a ModelRuntime from a pre-resolved adapter map. Exported as a package test seam; application code uses createModelRuntime() instead. */
 export function createRoutedRuntime(
   adapters: ReadonlyMap<string, Adapter>,
 ): ModelRuntime {
@@ -143,6 +145,9 @@ export function createModelRuntime(options: {
 
   const adapters = new Map<string, Adapter>();
   for (const provider of options.providers) {
+    if (provider.name === "") {
+      throw new Error("Provider name must be non-empty");
+    }
     if (adapters.has(provider.name)) {
       throw new Error(`Duplicate provider: ${provider.name}`);
     }

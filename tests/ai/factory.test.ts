@@ -24,6 +24,12 @@ test("explicit provider configuration is required and unique", () => {
     }),
     /duplicate provider.*openai/i,
   );
+  assert.throws(
+    () => createModelRuntime({
+      providers: [{ name: "", protocol: "openai", apiKey: "a" }],
+    }),
+    /non-empty|empty/i,
+  );
 });
 
 test("unknown protocols are rejected", () => {

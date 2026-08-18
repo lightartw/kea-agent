@@ -70,7 +70,7 @@ Windows PowerShell 使用相同命令。
 - `providers` 以 provider 名为键，每项含 `protocol`（`anthropic`/`openai`/`gemini` 之一）、
   非空 `models` 数组和可选 `baseUrl`；provider 按配置顺序生效。被启用 provider 的 auth key
   必须非空。
-- 内建默认值：`maxTurns` 20、`toolTimeoutSeconds` 120、`thinking` `"hidden"`、
+- 内建默认值：`maxTurns` 20、`tools.timeoutSeconds` 120、`thinking` `"hidden"`、
   `toolDetails` `"compact"`。`ui.thinking: "visible"` 显示思考过程，`ui.toolDetails: "full"`
   展开工具事实。
 - `kea --config <path>` 指定的文件必须存在，否则启动失败。
