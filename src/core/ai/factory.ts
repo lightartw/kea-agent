@@ -32,10 +32,6 @@ export interface Adapter {
 
 // ── Lazy loading ──
 
-/**
- * Return an Adapter immediately (sync) whose stream() lazily loads the real
- * adapter in the background and forwards events. Matches Pi's lazyApi pattern.
- */
 export function lazyAdapter(load: () => Promise<Adapter>): Adapter {
   let loaded: Promise<Adapter> | undefined;
   const getAdapter = (): Promise<Adapter> => {
@@ -51,18 +47,20 @@ export function lazyAdapter(load: () => Promise<Adapter>): Adapter {
   };
 }
 
-// ── Provider registry ──
+// ── Protocol registry ──
 
-export type ProviderId = "anthropic" | "openai" | "gemini";
+/** Wire-protocol identifier, independent of the configured provider name. */
+export type ProtocolId = "anthropic" | "openai" | "gemini";
 
 export interface RuntimeProviderConfig {
-  readonly id: ProviderId;
+  readonly name: string;
+  readonly protocol: ProtocolId;
   readonly apiKey: string;
   readonly baseUrl?: string;
 }
 
-const BUILTIN_PROVIDERS: readonly {
-  readonly id: ProviderId;
+const BUILTIN_PROTOCOLS: readonly {
+  readonly id: ProtocolId;
   readonly envApiKey: string;
   readonly envBaseUrl?: string;
   readonly defaultBaseUrl?: string;
@@ -104,10 +102,6 @@ const BUILTIN_PROVIDERS: readonly {
 
 // ── Routed runtime ──
 
-/**
- * Build a ModelRuntime from a pre-resolved adapter map. Exported as a package
- * test seam; application code uses createModelRuntime() instead.
- */
 export function createRoutedRuntime(
   adapters: ReadonlyMap<string, Adapter>,
 ): ModelRuntime {
@@ -149,15 +143,15 @@ export function createModelRuntime(options: {
 
   const adapters = new Map<string, Adapter>();
   for (const provider of options.providers) {
-    if (adapters.has(provider.id)) {
-      throw new Error(`Duplicate provider: ${provider.id}`);
+    if (adapters.has(provider.name)) {
+      throw new Error(`Duplicate provider: ${provider.name}`);
     }
-    const builtin = BUILTIN_PROVIDERS.find((p) => p.id === provider.id);
+    const builtin = BUILTIN_PROTOCOLS.find((p) => p.id === provider.protocol);
     if (builtin === undefined) {
-      throw new Error(`Unknown provider: ${provider.id}`);
+      throw new Error(`Unknown protocol: ${provider.protocol}`);
     }
     adapters.set(
-      provider.id,
+      provider.name,
       builtin.createAdapter(provider.apiKey, provider.baseUrl ?? builtin.defaultBaseUrl ?? null),
     );
   }
@@ -169,14 +163,15 @@ export type Environment = Readonly<Record<string, string | undefined>>;
 /** Development/test helper: map provider keys and base URLs into explicit providers. */
 export function createModelRuntimeFromEnvironment(env: Environment): ModelRuntime {
   const providers: RuntimeProviderConfig[] = [];
-  for (const builtin of BUILTIN_PROVIDERS) {
+  for (const builtin of BUILTIN_PROTOCOLS) {
     const apiKey = env[builtin.envApiKey];
     if (apiKey === undefined || apiKey === "") continue;
     const baseUrl = builtin.envBaseUrl === undefined
       ? undefined
       : env[builtin.envBaseUrl];
     providers.push({
-      id: builtin.id,
+      name: builtin.id,
+      protocol: builtin.id,
       apiKey,
       ...(baseUrl === undefined || baseUrl === "" ? {} : { baseUrl }),
     });

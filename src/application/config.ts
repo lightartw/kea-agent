@@ -2,16 +2,22 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ModelConfig } from "../core/ai/types.js";
-import type { ProviderId, RuntimeProviderConfig } from "../core/ai/index.js";
+import type { ProtocolId, RuntimeProviderConfig } from "../core/ai/index.js";
 
-const BUILTIN_ORDER: readonly ProviderId[] = ["anthropic", "openai", "gemini"];
-const KNOWN_PROVIDERS: ReadonlySet<string> = new Set(BUILTIN_ORDER);
+const PROTOCOLS: readonly ProtocolId[] = ["anthropic", "openai", "gemini"];
 const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   "apiKey",
   "token",
   "secret",
   "password",
 ]);
+
+/** "anthropic", "openai" or "gemini" — the last item is separated by "or". */
+function formatProtocols(): string {
+  const quoted = PROTOCOLS.map((protocol) => `"${protocol}"`);
+  if (quoted.length <= 1) return quoted[0] ?? "";
+  return `${quoted.slice(0, -1).join(", ")} or ${quoted[quoted.length - 1] ?? ""}`;
+}
 
 /** An error from one named configuration source, with its field path. */
 export class ConfigurationError extends Error {
@@ -33,23 +39,24 @@ export class ConfigurationError extends Error {
 
 /** One ordinary config.json source: all fields optional, already validated. */
 interface ParsedOrdinary {
-  defaultProvider?: ProviderId;
-  providers?: Readonly<Partial<Record<ProviderId, ProviderFields>>>;
+  defaultModel?: { readonly provider: string; readonly model: string };
+  providers?: Readonly<Record<string, ProviderFields>>;
   agent?: { maxTurns?: number };
   tools?: { timeoutSeconds?: number };
   ui?: { thinking?: "hidden" | "visible"; toolDetails?: "compact" | "full" };
 }
 
 interface ProviderFields {
-  readonly model?: string;
+  readonly protocol?: ProtocolId;
   readonly baseUrl?: string;
+  readonly models?: readonly string[];
 }
 
 function parseOrdinarySource(path: string, value: unknown): ParsedOrdinary {
   assertObject(path, undefined, value);
   rejectCredentials(path, undefined, value);
   assertOnlyKeys(path, undefined, value, [
-    "defaultProvider",
+    "defaultModel",
     "providers",
     "agent",
     "tools",
@@ -58,46 +65,74 @@ function parseOrdinarySource(path: string, value: unknown): ParsedOrdinary {
 
   const parsed: ParsedOrdinary = {};
 
-  const defaultProvider = value["defaultProvider"];
-  if (defaultProvider !== undefined) {
-    if (typeof defaultProvider !== "string" || !KNOWN_PROVIDERS.has(defaultProvider)) {
+  const defaultModel = value["defaultModel"];
+  if (defaultModel !== undefined) {
+    const dmPath = "defaultModel";
+    assertObject(path, dmPath, defaultModel);
+    rejectCredentials(path, dmPath, defaultModel);
+    rejectUnknownFields(path, dmPath, defaultModel, ["provider", "model"]);
+    const provider = defaultModel["provider"];
+    if (typeof provider !== "string" || provider.trim() === "") {
       throw new ConfigurationError(
         path,
-        "defaultProvider",
-        `unknown provider: ${String(defaultProvider)}`,
+        `${dmPath}.provider`,
+        "must be a non-empty string",
       );
     }
-    parsed.defaultProvider = defaultProvider as ProviderId;
+    const model = defaultModel["model"];
+    if (typeof model !== "string" || model.trim() === "") {
+      throw new ConfigurationError(
+        path,
+        `${dmPath}.model`,
+        "must be a non-empty string",
+      );
+    }
+    parsed.defaultModel = { provider, model };
   }
 
   const providers = value["providers"];
   if (providers !== undefined) {
     assertObject(path, "providers", providers);
     rejectCredentials(path, "providers", providers);
-    for (const key of Object.keys(providers)) {
-      if (!KNOWN_PROVIDERS.has(key)) {
-        throw new ConfigurationError(path, `providers.${key}`, `unknown provider: ${key}`);
+    const fields: Record<string, ProviderFields> = {};
+    for (const name of Object.keys(providers)) {
+      if (name.trim() === "") {
+        throw new ConfigurationError(
+          path,
+          `providers.${name}`,
+          "provider name must be non-empty",
+        );
       }
-    }
-    const fields: Partial<Record<ProviderId, ProviderFields>> = {};
-    for (const id of BUILTIN_ORDER) {
-      const entry = providers[id];
-      if (entry === undefined) continue;
-      const providerPath = `providers.${id}`;
+      const entry = providers[name];
+      const providerPath = `providers.${name}`;
       assertObject(path, providerPath, entry);
       rejectCredentials(path, providerPath, entry);
-      assertOnlyKeys(path, providerPath, entry, ["model", "baseUrl"]);
-      const model = entry["model"];
-      if (model !== undefined && typeof model !== "string") {
-        throw new ConfigurationError(path, `${providerPath}.model`, "model must be a string");
+      rejectUnknownFields(path, providerPath, entry, ["protocol", "baseUrl", "models"]);
+      const protocol = entry["protocol"];
+      if (protocol !== undefined) {
+        if (
+          typeof protocol !== "string"
+          || !PROTOCOLS.includes(protocol as ProtocolId)
+        ) {
+          throw new ConfigurationError(
+            path,
+            `${providerPath}.protocol`,
+            `expected ${formatProtocols()}`,
+          );
+        }
       }
       const baseUrl = entry["baseUrl"];
       if (baseUrl !== undefined) {
         assertAbsoluteHttpUrl(path, `${providerPath}.baseUrl`, baseUrl);
       }
-      fields[id] = {
-        ...(model === undefined ? {} : { model }),
+      const models = entry["models"];
+      if (models !== undefined) {
+        assertModels(path, `${providerPath}.models`, models);
+      }
+      fields[name] = {
+        ...(protocol === undefined ? {} : { protocol: protocol as ProtocolId }),
         ...(baseUrl === undefined ? {} : { baseUrl }),
+        ...(models === undefined ? {} : { models }),
       };
     }
     parsed.providers = fields;
@@ -174,33 +209,27 @@ function parseOrdinarySource(path: string, value: unknown): ParsedOrdinary {
   return parsed;
 }
 
-/** The auth file: only provider API Keys, possibly empty until filled in. */
+/** The auth file: provider names to API keys, possibly empty until filled in. */
 function parseAuth(
   path: string,
   value: unknown,
-): Readonly<Partial<Record<ProviderId, string>>> {
+): Readonly<Record<string, string>> {
   assertObject(path, undefined, value);
   assertOnlyKeys(path, undefined, value, ["providers"]);
   const providers = value["providers"];
   if (providers === undefined) return {};
   assertObject(path, "providers", providers);
-  for (const key of Object.keys(providers)) {
-    if (!KNOWN_PROVIDERS.has(key)) {
-      throw new ConfigurationError(path, `providers.${key}`, `unknown provider: ${key}`);
-    }
-  }
-  const result: Partial<Record<ProviderId, string>> = {};
-  for (const id of BUILTIN_ORDER) {
-    const entry = providers[id];
-    if (entry === undefined) continue;
-    const keyPath = `providers.${id}.apiKey`;
-    assertObject(path, `providers.${id}`, entry);
-    assertOnlyKeys(path, `providers.${id}`, entry, ["apiKey"]);
+  const result: Record<string, string> = {};
+  for (const name of Object.keys(providers)) {
+    const entry = providers[name];
+    const keyPath = `providers.${name}.apiKey`;
+    assertObject(path, `providers.${name}`, entry);
+    assertOnlyKeys(path, `providers.${name}`, entry, ["apiKey"]);
     const apiKey = entry["apiKey"];
     if (typeof apiKey !== "string") {
       throw new ConfigurationError(path, keyPath, "expected a string");
     }
-    result[id] = apiKey;
+    result[name] = apiKey;
   }
   return result;
 }
@@ -248,6 +277,20 @@ function assertOnlyKeys(
   }
 }
 
+/** Like assertOnlyKeys but reports the container path, not the offending key. */
+function rejectUnknownFields(
+  path: string,
+  fieldPath: string,
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw new ConfigurationError(path, fieldPath, `unknown field: ${key}`);
+    }
+  }
+}
+
 function assertEnum(
   path: string,
   fieldPath: string,
@@ -279,6 +322,34 @@ function assertAbsoluteHttpUrl(
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new ConfigurationError(path, fieldPath, "expected an absolute http(s) URL");
+  }
+}
+
+function assertModels(
+  path: string,
+  fieldPath: string,
+  value: unknown,
+): asserts value is readonly string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ConfigurationError(
+      path,
+      fieldPath,
+      "must be a non-empty array of strings",
+    );
+  }
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "string" || item.trim() === "") {
+      throw new ConfigurationError(
+        path,
+        fieldPath,
+        "must be a non-empty array of strings",
+      );
+    }
+    if (seen.has(item)) {
+      throw new ConfigurationError(path, fieldPath, `duplicate model: ${item}`);
+    }
+    seen.add(item);
   }
 }
 
@@ -319,8 +390,8 @@ function parseJson(path: string, raw: string): unknown {
 
 /** The merged ordinary value: defaults are always present. */
 interface ResolvedOrdinary {
-  readonly defaultProvider?: ProviderId;
-  readonly providers: Readonly<Partial<Record<ProviderId, ProviderFields>>>;
+  readonly defaultModel?: { readonly provider: string; readonly model: string };
+  readonly providers: Readonly<Record<string, ProviderFields>>;
   readonly agent: { readonly maxTurns: number };
   readonly tools: { readonly timeoutSeconds: number };
   readonly ui: {
@@ -330,18 +401,18 @@ interface ResolvedOrdinary {
 }
 
 function mergeOrdinary(base: ResolvedOrdinary, next: ParsedOrdinary): ResolvedOrdinary {
-  const providers: Partial<Record<ProviderId, ProviderFields>> = {};
-  for (const id of BUILTIN_ORDER) {
-    const baseEntry = base.providers[id];
-    const nextEntry = next.providers?.[id];
-    if (baseEntry === undefined && nextEntry === undefined) continue;
-    providers[id] = { ...(baseEntry ?? {}), ...(nextEntry ?? {}) };
+  const providers: Record<string, ProviderFields> = {};
+  for (const name of Object.keys(base.providers)) {
+    providers[name] = { ...base.providers[name], ...(next.providers?.[name] ?? {}) };
+  }
+  for (const name of Object.keys(next.providers ?? {})) {
+    if (!(name in providers)) providers[name] = next.providers![name]!;
   }
   return {
-    ...(next.defaultProvider !== undefined
-      ? { defaultProvider: next.defaultProvider }
-      : base.defaultProvider !== undefined
-        ? { defaultProvider: base.defaultProvider }
+    ...(next.defaultModel !== undefined
+      ? { defaultModel: next.defaultModel }
+      : base.defaultModel !== undefined
+        ? { defaultModel: base.defaultModel }
         : {}),
     providers,
     agent: { maxTurns: next.agent?.maxTurns ?? base.agent.maxTurns },
@@ -356,50 +427,62 @@ function mergeOrdinary(base: ResolvedOrdinary, next: ParsedOrdinary): ResolvedOr
 // ── Cross-field validation and Config construction ──
 
 interface ResolvedProvider {
-  readonly model: string;
+  readonly protocol: ProtocolId;
   readonly baseUrl?: string;
   readonly apiKey: string;
+  readonly models: readonly string[];
 }
 
 function resolveProviders(
   merged: ResolvedOrdinary,
   mergedSourcePath: string,
-  auth: Readonly<Partial<Record<ProviderId, string>>> | undefined,
+  auth: Readonly<Record<string, string>> | undefined,
   authPath: string,
-): { readonly defaultProvider: ProviderId; readonly providers: ReadonlyMap<ProviderId, ResolvedProvider> } {
-  const configured = BUILTIN_ORDER.filter((id) => merged.providers[id] !== undefined);
+): {
+  readonly defaultModel: { readonly provider: string; readonly model: string };
+  readonly providers: ReadonlyMap<string, ResolvedProvider>;
+} {
+  const configured = Object.keys(merged.providers);
   if (configured.length === 0) {
     throw new ConfigurationError(mergedSourcePath, "providers", "at least one provider must be configured");
   }
 
-  for (const id of configured) {
-    const model = merged.providers[id]?.model;
-    if (model === undefined || model === "") {
+  for (const name of configured) {
+    const entry = merged.providers[name]!;
+    const protocol = entry.protocol;
+    if (protocol === undefined || !PROTOCOLS.includes(protocol)) {
       throw new ConfigurationError(
         mergedSourcePath,
-        `providers.${id}.model`,
-        "model must be a non-empty string",
+        `providers.${name}.protocol`,
+        `expected ${formatProtocols()}`,
+      );
+    }
+    if (entry.models === undefined || entry.models.length === 0) {
+      throw new ConfigurationError(
+        mergedSourcePath,
+        `providers.${name}.models`,
+        "must be a non-empty array of strings",
       );
     }
   }
 
-  let defaultProvider: ProviderId;
-  if (merged.defaultProvider !== undefined) {
-    if (!configured.includes(merged.defaultProvider)) {
-      throw new ConfigurationError(
-        mergedSourcePath,
-        "defaultProvider",
-        "defaultProvider must reference a configured provider",
-      );
-    }
-    defaultProvider = merged.defaultProvider;
-  } else if (configured.length === 1) {
-    defaultProvider = configured[0]!;
-  } else {
+  const defaultModel = merged.defaultModel;
+  if (defaultModel === undefined) {
+    throw new ConfigurationError(mergedSourcePath, "defaultModel", "must be specified");
+  }
+  if (!Object.prototype.hasOwnProperty.call(merged.providers, defaultModel.provider)) {
     throw new ConfigurationError(
       mergedSourcePath,
-      "defaultProvider",
-      "defaultProvider must be specified when multiple providers are configured",
+      "defaultModel",
+      `defaultModel must reference a configured provider: ${defaultModel.provider}`,
+    );
+  }
+  const providerModels = merged.providers[defaultModel.provider]!.models ?? [];
+  if (!providerModels.includes(defaultModel.model)) {
+    throw new ConfigurationError(
+      mergedSourcePath,
+      "defaultModel.model",
+      `model must be listed in provider "${defaultModel.provider}" models`,
     );
   }
 
@@ -407,21 +490,22 @@ function resolveProviders(
     throw new ConfigurationError(authPath, "providers", "auth file not found");
   }
 
-  const providers = new Map<ProviderId, ResolvedProvider>();
-  for (const id of configured) {
-    const apiKey = auth[id];
+  const providers = new Map<string, ResolvedProvider>();
+  for (const name of configured) {
+    const apiKey = auth[name];
     if (apiKey === undefined || apiKey === "") {
-      throw new ConfigurationError(authPath, `providers.${id}.apiKey`, "must be non-empty");
+      throw new ConfigurationError(authPath, `providers.${name}.apiKey`, "must be non-empty");
     }
-    const fields = merged.providers[id]!;
-    providers.set(id, {
-      model: fields.model!,
-      ...(fields.baseUrl === undefined ? {} : { baseUrl: fields.baseUrl }),
+    const entry = merged.providers[name]!;
+    providers.set(name, {
+      protocol: entry.protocol!,
+      ...(entry.baseUrl === undefined ? {} : { baseUrl: entry.baseUrl }),
       apiKey,
+      models: entry.models!,
     });
   }
 
-  return { defaultProvider, providers };
+  return { defaultModel, providers };
 }
 
 /**
@@ -430,30 +514,30 @@ function resolveProviders(
  * non-empty API Key from the auth file.
  */
 export class Config {
-  readonly defaultProvider: ProviderId;
   readonly maxTurns: number;
   readonly toolTimeoutSeconds: number;
   readonly thinking: "hidden" | "visible";
   readonly toolDetails: "compact" | "full";
   readonly verbose: boolean;
 
-  readonly #providers: ReadonlyMap<ProviderId, ResolvedProvider>;
+  readonly #providers: ReadonlyMap<string, ResolvedProvider>;
+  readonly #defaultModel: { readonly provider: string; readonly model: string };
 
   private constructor(options: {
-    readonly defaultProvider: ProviderId;
     readonly maxTurns: number;
     readonly toolTimeoutSeconds: number;
     readonly thinking: "hidden" | "visible";
     readonly toolDetails: "compact" | "full";
     readonly verbose: boolean;
-    readonly providers: ReadonlyMap<ProviderId, ResolvedProvider>;
+    readonly defaultModel: { readonly provider: string; readonly model: string };
+    readonly providers: ReadonlyMap<string, ResolvedProvider>;
   }) {
-    this.defaultProvider = options.defaultProvider;
     this.maxTurns = options.maxTurns;
     this.toolTimeoutSeconds = options.toolTimeoutSeconds;
     this.thinking = options.thinking;
     this.toolDetails = options.toolDetails;
     this.verbose = options.verbose;
+    this.#defaultModel = options.defaultModel;
     this.#providers = options.providers;
   }
 
@@ -499,36 +583,36 @@ export class Config {
     const resolved = resolveProviders(merged, mergedSourcePath, auth, authPath);
 
     return new Config({
-      defaultProvider: resolved.defaultProvider,
       maxTurns: merged.agent.maxTurns,
       toolTimeoutSeconds: merged.tools.timeoutSeconds,
       thinking: merged.ui.thinking,
       toolDetails: merged.ui.toolDetails,
       verbose: options.verbose,
+      defaultModel: resolved.defaultModel,
       providers: resolved.providers,
     });
   }
 
-  /** All enabled model choices in built-in Provider registration order. */
+  /** All enabled model choices in config insertion order. */
   get models(): readonly ModelConfig[] {
-    return [...this.#providers].map(([provider, entry]) => ({
-      provider,
-      model: entry.model,
-    }));
+    const models: ModelConfig[] = [];
+    for (const [provider, entry] of this.#providers) {
+      for (const model of entry.models) {
+        models.push({ provider, model });
+      }
+    }
+    return models;
   }
 
   get defaultModel(): ModelConfig {
-    const entry = this.#providers.get(this.defaultProvider);
-    if (entry === undefined) {
-      throw new Error(`Default provider is not configured: ${this.defaultProvider}`);
-    }
-    return { provider: this.defaultProvider, model: entry.model };
+    return { provider: this.#defaultModel.provider, model: this.#defaultModel.model };
   }
 
   /** Short-lived Provider connections for ModelRuntime construction. */
   runtimeProviders(): readonly RuntimeProviderConfig[] {
-    return [...this.#providers].map(([id, entry]) => ({
-      id,
+    return [...this.#providers].map(([name, entry]) => ({
+      name,
+      protocol: entry.protocol,
       apiKey: entry.apiKey,
       ...(entry.baseUrl === undefined ? {} : { baseUrl: entry.baseUrl }),
     }));

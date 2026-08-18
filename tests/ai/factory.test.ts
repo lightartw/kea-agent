@@ -8,7 +8,7 @@ import {
   lazyAdapter,
 } from "../../src/core/ai/factory.js";
 import type { AssistantMessage } from "../../src/core/ai/types.js";
-import type { ProviderId } from "../../src/core/ai/factory.js";
+import type { ProtocolId } from "../../src/core/ai/factory.js";
 
 test("explicit provider configuration is required and unique", () => {
   assert.throws(
@@ -18,27 +18,37 @@ test("explicit provider configuration is required and unique", () => {
   assert.throws(
     () => createModelRuntime({
       providers: [
-        { id: "openai", apiKey: "a" },
-        { id: "openai", apiKey: "b" },
+        { name: "openai", protocol: "openai", apiKey: "a" },
+        { name: "openai", protocol: "openai", apiKey: "b" },
       ],
     }),
     /duplicate provider.*openai/i,
   );
 });
 
-test("unknown provider ids are rejected", () => {
+test("unknown protocols are rejected", () => {
   assert.throws(
     () => createModelRuntime({
-      providers: [{ id: "custom" as ProviderId, apiKey: "a" }],
+      providers: [{ name: "custom", protocol: "watson" as ProtocolId, apiKey: "a" }],
     }),
-    /unknown provider.*custom/i,
+    /unknown protocol.*watson/i,
   );
 });
 
 test("explicit providers construct a runtime", () => {
-  const runtime = createModelRuntime({ providers: [{ id: "openai", apiKey: "key" }] });
+  const runtime = createModelRuntime({ providers: [{ name: "openai", protocol: "openai", apiKey: "key" }] });
   assert.equal(typeof runtime.stream, "function");
   assert.equal(typeof runtime.complete, "function");
+});
+
+test("two providers may share one protocol", () => {
+  const runtime = createModelRuntime({
+    providers: [
+      { name: "deepseek", protocol: "openai", apiKey: "a" },
+      { name: "ollama", protocol: "openai", apiKey: "b" },
+    ],
+  });
+  assert.equal(typeof runtime.stream, "function");
 });
 
 test("routed runtime selects the adapter and forwards the model", async () => {

@@ -70,7 +70,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     }
     for (const provider of config.runtimeProviders()) {
       writeDiagnostic(
-        `credentials: ${provider.id} ${provider.apiKey === "" ? "missing" : "configured"}`,
+        `credentials: ${provider.name} ${provider.apiKey === "" ? "missing" : "configured"}`,
       );
     }
   }

@@ -22,7 +22,12 @@ const fullAuth = {
   },
 };
 
-/** Test-only fixture: writes the four file layers a Config.load may consume. */
+const openaiProvider = {
+  protocol: "openai",
+  baseUrl: "https://api.openai.com/v1",
+  models: ["gpt-5", "gpt-5-mini"],
+};
+
 async function configFixture(options: {
   readonly user?: Readonly<Record<string, unknown>>;
   readonly project?: Readonly<Record<string, unknown>>;
@@ -87,16 +92,17 @@ async function cleanUp(fixture: {
 test("load applies defaults, user, project, override, and CLI in order", async () => {
   const fixture = await configFixture({
     user: {
-      defaultProvider: "openai",
-      providers: { openai: { model: "user-model" } },
+      defaultModel: { provider: "openai", model: "user-model" },
+      providers: { openai: openaiProvider },
       agent: { maxTurns: 10 },
     },
     project: {
-      providers: { openai: { model: "project-model" } },
+      providers: { openai: { models: ["project-model"] } },
       tools: { timeoutSeconds: 30 },
     },
     override: {
-      providers: { openai: { model: "override-model" } },
+      defaultModel: { provider: "openai", model: "override-model" },
+      providers: { openai: { protocol: "openai", models: ["override-model"] } },
       ui: { thinking: "visible" },
     },
     auth: { providers: { openai: { apiKey: "secret-key" } } },
@@ -120,7 +126,12 @@ test("load applies defaults, user, project, override, and CLI in order", async (
       { provider: "openai", model: "override-model" },
     ]);
     assert.deepEqual(config.runtimeProviders(), [
-      { id: "openai", apiKey: "secret-key" },
+      {
+        name: "openai",
+        protocol: "openai",
+        apiKey: "secret-key",
+        baseUrl: "https://api.openai.com/v1",
+      },
     ]);
   } finally {
     await cleanUp(fixture);
@@ -129,18 +140,21 @@ test("load applies defaults, user, project, override, and CLI in order", async (
 
 test("defaults apply when only a Provider is configured", async () => {
   const fixture = await configFixture({
-    user: { providers: { openai: { model: "gpt-test" } } },
+    user: {
+      defaultModel: { provider: "openai", model: "gpt-test" },
+      providers: { openai: { protocol: "openai", models: ["gpt-test"] } },
+    },
     auth: fullAuth,
   });
   try {
     const config = await loadWith(fixture);
 
-    assert.equal(config.defaultProvider, "openai");
     assert.equal(config.maxTurns, 20);
     assert.equal(config.toolTimeoutSeconds, 120);
     assert.equal(config.thinking, "hidden");
     assert.equal(config.toolDetails, "compact");
     assert.equal(config.verbose, false);
+    assert.deepEqual(config.defaultModel, { provider: "openai", model: "gpt-test" });
   } finally {
     await cleanUp(fixture);
   }
@@ -148,7 +162,10 @@ test("defaults apply when only a Provider is configured", async () => {
 
 test("missing user and Project config files are skipped", async () => {
   const fixture = await configFixture({
-    override: { providers: { openai: { model: "m" } } },
+    override: {
+      defaultModel: { provider: "openai", model: "m" },
+      providers: { openai: { protocol: "openai", models: ["m"] } },
+    },
     auth: fullAuth,
   });
   try {
@@ -157,7 +174,7 @@ test("missing user and Project config files are skipped", async () => {
     });
 
     assert.deepEqual(config.models, [{ provider: "openai", model: "m" }]);
-    assert.equal(config.defaultProvider, "openai");
+    assert.deepEqual(config.defaultModel, { provider: "openai", model: "m" });
   } finally {
     await cleanUp(fixture);
   }
@@ -165,7 +182,10 @@ test("missing user and Project config files are skipped", async () => {
 
 test("a missing explicit --config file fails", async () => {
   const fixture = await configFixture({
-    user: { providers: { openai: { model: "m" } } },
+    user: {
+      defaultModel: { provider: "openai", model: "m" },
+      providers: { openai: { protocol: "openai", models: ["m"] } },
+    },
     auth: fullAuth,
   });
   try {
@@ -219,16 +239,20 @@ test("strict source validation reports the exact field path", async () => {
     [{ ui: { toolDetails: "detailed" } }, "ui.toolDetails"],
     [{ ui: { thinking: null } }, "ui.thinking"],
     [{ agent: null }, "agent"],
-    [
-      { providers: { openai: { baseUrl: "relative" } } },
-      "providers.openai.baseUrl",
-    ],
-    [
-      { providers: { openai: { baseUrl: "ftp://files" } } },
-      "providers.openai.baseUrl",
-    ],
-    [{ providers: { watson: { model: "m" } } }, "providers.watson"],
-    [{ defaultProvider: "watson" }, "defaultProvider"],
+    [{ defaultModel: null }, "defaultModel"],
+    [{ defaultModel: { provider: "" } }, "defaultModel.provider"],
+    [{ defaultModel: { provider: "openai", model: "" } }, "defaultModel.model"],
+    [{ defaultModel: { provider: "openai", model: "m", extra: true } }, "defaultModel"],
+    [{ defaultModel: { provider: "openai" } }, "defaultModel.model"],
+    [{ providers: { openai: { protocol: "watson" } } }, "providers.openai.protocol"],
+    [{ providers: { openai: { protocol: "openai", baseUrl: "relative" } } }, "providers.openai.baseUrl"],
+    [{ providers: { openai: { protocol: "openai", baseUrl: "ftp://files" } } }, "providers.openai.baseUrl"],
+    [{ providers: { openai: { protocol: "openai", models: [] } } }, "providers.openai.models"],
+    [{ providers: { openai: { protocol: "openai", models: [""] } } }, "providers.openai.models"],
+    [{ providers: { openai: { protocol: "openai", models: ["a", "a"] } } }, "providers.openai.models"],
+    [{ providers: { openai: { protocol: "openai", models: null } } }, "providers.openai.models"],
+    [{ providers: { openai: { protocol: "openai", extra: 1 } } }, "providers.openai"],
+    [{ providers: { "": { protocol: "openai", models: ["m"] } } }, "providers."],
     [{ memory: { maxResults: 5 } }, "memory"],
     [{ verification: { enabled: true } }, "verification"],
     [{ agent: { maxToolCalls: 5 } }, "agent.maxToolCalls"],
@@ -261,7 +285,10 @@ test("strict source validation reports the exact field path", async () => {
 test("credential fields are rejected in every ordinary source", async () => {
   for (const name of ["apiKey", "token", "secret", "password"] as const) {
     const fixture = await configFixture({
-      user: { providers: { openai: { model: "m", [name]: "hunter2" } } },
+      user: {
+        defaultModel: { provider: "openai", model: "m" },
+        providers: { openai: { protocol: "openai", models: ["m"], [name]: "hunter2" } },
+      },
       auth: fullAuth,
     });
     try {
@@ -285,12 +312,15 @@ test("credential fields are rejected in every ordinary source", async () => {
 
   for (const layer of ["project", "override"] as const) {
     const fixture = await configFixture({
-      user: { providers: { openai: { model: "m" } } },
+      user: {
+        defaultModel: { provider: "openai", model: "m" },
+        providers: { openai: { protocol: "openai", models: ["m"] } },
+      },
       ...(layer === "project"
-        ? { project: { providers: { openai: { model: "m", apiKey: "hunter2" } } } }
+        ? { project: { providers: { openai: { protocol: "openai", models: ["m"], apiKey: "hunter2" } } } }
         : {}),
       ...(layer === "override"
-        ? { override: { providers: { openai: { model: "m", apiKey: "hunter2" } } } }
+        ? { override: { providers: { openai: { protocol: "openai", models: ["m"], apiKey: "hunter2" } } } }
         : {}),
       auth: fullAuth,
     });
@@ -320,7 +350,8 @@ test("an invalid lower-priority source fails before merging", async () => {
     user: { agent: { maxTurns: 0 } },
     project: {
       agent: { maxTurns: 5 },
-      providers: { openai: { model: "m" } },
+      defaultModel: { provider: "openai", model: "m" },
+      providers: { openai: { protocol: "openai", models: ["m"] } },
     },
     auth: fullAuth,
   });
@@ -341,7 +372,10 @@ test("an invalid lower-priority source fails before merging", async () => {
 
 test("missing auth or empty keys for enabled Providers fail", async () => {
   const withoutAuth = await configFixture({
-    user: { providers: { openai: { model: "m" } } },
+    user: {
+      defaultModel: { provider: "openai", model: "m" },
+      providers: { openai: { protocol: "openai", models: ["m"] } },
+    },
   });
   try {
     await assert.rejects(
@@ -358,7 +392,10 @@ test("missing auth or empty keys for enabled Providers fail", async () => {
   }
 
   const emptyKey = await configFixture({
-    user: { providers: { openai: { model: "m" } } },
+    user: {
+      defaultModel: { provider: "openai", model: "m" },
+      providers: { openai: { protocol: "openai", models: ["m"] } },
+    },
     auth: { providers: { openai: { apiKey: "" } } },
   });
   try {
@@ -366,10 +403,7 @@ test("missing auth or empty keys for enabled Providers fail", async () => {
       loadWith(emptyKey),
       (error: unknown) => {
         assert.ok(error instanceof ConfigurationError);
-        assert.equal(
-          error.sourcePath,
-          join(emptyKey.keaHome, "auth.json"),
-        );
+        assert.equal(error.sourcePath, join(emptyKey.keaHome, "auth.json"));
         assert.equal(error.fieldPath, "providers.openai.apiKey");
         assert.match(error.message, /must be non-empty/i);
         return true;
@@ -380,7 +414,10 @@ test("missing auth or empty keys for enabled Providers fail", async () => {
   }
 
   const missingEntry = await configFixture({
-    user: { providers: { openai: { model: "m" } } },
+    user: {
+      defaultModel: { provider: "openai", model: "m" },
+      providers: { openai: { protocol: "openai", models: ["m"] } },
+    },
     auth: { providers: { anthropic: { apiKey: "spare-key" } } },
   });
   try {
@@ -398,20 +435,23 @@ test("missing auth or empty keys for enabled Providers fail", async () => {
   }
 });
 
-test("extra credentials for a known disabled Provider are ignored", async () => {
+test("extra credentials for a disabled provider are ignored", async () => {
   const fixture = await configFixture({
-    user: { providers: { openai: { model: "m" } } },
+    user: {
+      defaultModel: { provider: "openai", model: "m" },
+      providers: { openai: { protocol: "openai", models: ["m"] } },
+    },
     auth: {
       providers: {
         openai: { apiKey: "secret-key" },
-        anthropic: { apiKey: "spare-key" },
+        deepseek: { apiKey: "spare-key" },
       },
     },
   });
   try {
     const config = await loadWith(fixture);
     assert.deepEqual(config.runtimeProviders(), [
-      { id: "openai", apiKey: "secret-key" },
+      { name: "openai", protocol: "openai", apiKey: "secret-key" },
     ]);
     assert.deepEqual(config.models, [{ provider: "openai", model: "m" }]);
   } finally {
@@ -419,28 +459,30 @@ test("extra credentials for a known disabled Provider are ignored", async () => 
   }
 });
 
-test("an unknown Provider in auth fails", async () => {
+test("unknown provider names in auth are tolerated and ignored", async () => {
   const fixture = await configFixture({
-    user: { providers: { openai: { model: "m" } } },
-    auth: { providers: { watson: { apiKey: "k" } } },
+    user: {
+      defaultModel: { provider: "openai", model: "m" },
+      providers: { openai: { protocol: "openai", models: ["m"] } },
+    },
+    auth: {
+      providers: {
+        openai: { apiKey: "secret-key" },
+        watson: { apiKey: "k" },
+      },
+    },
   });
   try {
-    await assert.rejects(
-      loadWith(fixture),
-      (error: unknown) => {
-        assert.ok(error instanceof ConfigurationError);
-        assert.equal(error.sourcePath, join(fixture.keaHome, "auth.json"));
-        assert.equal(error.fieldPath, "providers.watson");
-        assert.match(error.message, /unknown provider/i);
-        return true;
-      },
-    );
+    const config = await loadWith(fixture);
+    assert.deepEqual(config.runtimeProviders(), [
+      { name: "openai", protocol: "openai", apiKey: "secret-key" },
+    ]);
   } finally {
     await cleanUp(fixture);
   }
 });
 
-test("no Provider and empty model fail cross-field", async () => {
+test("no Provider, missing protocol, and empty models fail cross-field", async () => {
   const noProvider = await configFixture({ user: {}, auth: fullAuth });
   try {
     await assert.rejects(
@@ -456,64 +498,66 @@ test("no Provider and empty model fail cross-field", async () => {
     await cleanUp(noProvider);
   }
 
-  for (const document of [
-    { providers: { openai: {} } },
-    { providers: { openai: { model: "" } } },
-  ]) {
-    const fixture = await configFixture({ user: document, auth: fullAuth });
-    try {
-      await assert.rejects(
-        loadWith(fixture),
-        (error: unknown) => {
-          assert.ok(error instanceof ConfigurationError);
-          assert.equal(error.fieldPath, "providers.openai.model");
-          assert.match(error.message, /non-empty/i);
-          return true;
-        },
-      );
-    } finally {
-      await cleanUp(fixture);
-    }
-  }
-});
-
-test("defaultProvider is inferred, required with several Providers, and must be configured", async () => {
-  const single = await configFixture({
-    user: { providers: { openai: { model: "m" } } },
-    auth: fullAuth,
-  });
-  try {
-    const config = await loadWith(single);
-    assert.equal(config.defaultProvider, "openai");
-    assert.deepEqual(config.defaultModel, { provider: "openai", model: "m" });
-  } finally {
-    await cleanUp(single);
-  }
-
-  const several = await configFixture({
-    user: {
-      providers: { openai: { model: "m" }, anthropic: { model: "n" } },
-    },
+  const missingProtocol = await configFixture({
+    user: { providers: { openai: { models: ["m"] } } },
     auth: fullAuth,
   });
   try {
     await assert.rejects(
-      loadWith(several),
+      loadWith(missingProtocol),
       (error: unknown) => {
         assert.ok(error instanceof ConfigurationError);
-        assert.equal(error.fieldPath, "defaultProvider");
-        assert.match(error.message, /specified when multiple providers/i);
+        assert.equal(error.fieldPath, "providers.openai.protocol");
+        assert.match(error.message, /expected "anthropic", "openai" or "gemini"/i);
         return true;
       },
     );
   } finally {
-    await cleanUp(several);
+    await cleanUp(missingProtocol);
+  }
+
+  const missingModels = await configFixture({
+    user: { providers: { openai: { protocol: "openai" } } },
+    auth: fullAuth,
+  });
+  try {
+    await assert.rejects(
+      loadWith(missingModels),
+      (error: unknown) => {
+        assert.ok(error instanceof ConfigurationError);
+        assert.equal(error.fieldPath, "providers.openai.models");
+        assert.match(error.message, /non-empty/i);
+        return true;
+      },
+    );
+  } finally {
+    await cleanUp(missingModels);
+  }
+});
+
+test("defaultModel is required and must reference a configured provider model", async () => {
+  const missing = await configFixture({
+    user: { providers: { openai: { protocol: "openai", models: ["m"] } } },
+    auth: fullAuth,
+  });
+  try {
+    await assert.rejects(
+      loadWith(missing),
+      (error: unknown) => {
+        assert.ok(error instanceof ConfigurationError);
+        assert.equal(error.fieldPath, "defaultModel");
+        assert.match(error.message, /must be specified/i);
+        return true;
+      },
+    );
+  } finally {
+    await cleanUp(missing);
   }
 
   const dangling = await configFixture({
     user: {
-      defaultProvider: "openai",
-      providers: { anthropic: { model: "n" } },
+      defaultModel: { provider: "openai", model: "m" },
+      providers: { anthropic: { protocol: "anthropic", models: ["n"] } },
     },
     auth: fullAuth,
   });
@@ -522,44 +566,94 @@ test("defaultProvider is inferred, required with several Providers, and must be 
       loadWith(dangling),
       (error: unknown) => {
         assert.ok(error instanceof ConfigurationError);
-        assert.equal(error.fieldPath, "defaultProvider");
-        assert.match(error.message, /configured provider/i);
+        assert.equal(error.fieldPath, "defaultModel");
+        assert.match(error.message, /reference a configured provider/i);
         return true;
       },
     );
   } finally {
     await cleanUp(dangling);
   }
-});
 
-test("models follow the built-in Provider order", async () => {
-  const fixture = await configFixture({
+  const notListed = await configFixture({
     user: {
-      defaultProvider: "anthropic",
-      providers: {
-        gemini: { model: "gemini-x" },
-        openai: { model: "gpt-x" },
-        anthropic: { model: "claude-x" },
-      },
+      defaultModel: { provider: "openai", model: "nope" },
+      providers: { openai: { protocol: "openai", models: ["m"] } },
     },
     auth: fullAuth,
+  });
+  try {
+    await assert.rejects(
+      loadWith(notListed),
+      (error: unknown) => {
+        assert.ok(error instanceof ConfigurationError);
+        assert.equal(error.fieldPath, "defaultModel.model");
+        assert.match(error.message, /listed in provider "openai" models/i);
+        return true;
+      },
+    );
+  } finally {
+    await cleanUp(notListed);
+  }
+});
+
+test("models follow the config insertion order across providers", async () => {
+  const fixture = await configFixture({
+    user: {
+      defaultModel: { provider: "anthropic", model: "claude-x" },
+      providers: {
+        deepseek: { protocol: "openai", models: ["ds-chat", "ds-reason"] },
+        anthropic: { protocol: "anthropic", models: ["claude-x"] },
+      },
+    },
+    auth: {
+      providers: {
+        deepseek: { apiKey: "ak-ds" },
+        anthropic: { apiKey: "ak-anthropic" },
+      },
+    },
   });
   try {
     const config = await loadWith(fixture);
 
     assert.deepEqual(config.models, [
+      { provider: "deepseek", model: "ds-chat" },
+      { provider: "deepseek", model: "ds-reason" },
       { provider: "anthropic", model: "claude-x" },
-      { provider: "openai", model: "gpt-x" },
-      { provider: "gemini", model: "gemini-x" },
     ]);
     assert.deepEqual(config.defaultModel, {
       provider: "anthropic",
       model: "claude-x",
     });
     assert.deepEqual(config.runtimeProviders(), [
-      { id: "anthropic", apiKey: "ak-anthropic" },
-      { id: "openai", apiKey: "ak-openai" },
-      { id: "gemini", apiKey: "ak-gemini" },
+      { name: "deepseek", protocol: "openai", apiKey: "ak-ds" },
+      { name: "anthropic", protocol: "anthropic", apiKey: "ak-anthropic" },
+    ]);
+  } finally {
+    await cleanUp(fixture);
+  }
+});
+
+test("two providers may share one protocol in runtimeProviders", async () => {
+  const fixture = await configFixture({
+    user: {
+      defaultModel: { provider: "deepseek", model: "ds" },
+      providers: {
+        deepseek: { protocol: "openai", models: ["ds"] },
+        ollama: { protocol: "openai", models: ["llama"] },
+      },
+    },
+    auth: { providers: { deepseek: { apiKey: "a" }, ollama: { apiKey: "b" } } },
+  });
+  try {
+    const config = await loadWith(fixture);
+    assert.deepEqual(config.models, [
+      { provider: "deepseek", model: "ds" },
+      { provider: "ollama", model: "llama" },
+    ]);
+    assert.deepEqual(config.runtimeProviders(), [
+      { name: "deepseek", protocol: "openai", apiKey: "a" },
+      { name: "ollama", protocol: "openai", apiKey: "b" },
     ]);
   } finally {
     await cleanUp(fixture);
@@ -569,11 +663,16 @@ test("models follow the built-in Provider order", async () => {
 test("runtimeProviders carries base URLs and per-Provider deep merge", async () => {
   const fixture = await configFixture({
     user: {
+      defaultModel: { provider: "openai", model: "project-model" },
       providers: {
-        openai: { model: "user-model", baseUrl: "https://custom.example/v1" },
+        openai: {
+          protocol: "openai",
+          baseUrl: "https://custom.example/v1",
+          models: ["user-model", "user-model-2"],
+        },
       },
     },
-    project: { providers: { openai: { model: "project-model" } } },
+    project: { providers: { openai: { models: ["project-model"] } } },
     auth: { providers: { openai: { apiKey: "secret-key" } } },
   });
   try {
@@ -583,7 +682,12 @@ test("runtimeProviders carries base URLs and per-Provider deep merge", async () 
       { provider: "openai", model: "project-model" },
     ]);
     assert.deepEqual(config.runtimeProviders(), [
-      { id: "openai", apiKey: "secret-key", baseUrl: "https://custom.example/v1" },
+      {
+        name: "openai",
+        protocol: "openai",
+        apiKey: "secret-key",
+        baseUrl: "https://custom.example/v1",
+      },
     ]);
   } finally {
     await cleanUp(fixture);
@@ -593,10 +697,10 @@ test("runtimeProviders carries base URLs and per-Provider deep merge", async () 
 test("redact replaces every loaded non-empty key without lengths or prefixes", async () => {
   const fixture = await configFixture({
     user: {
-      defaultProvider: "openai",
+      defaultModel: { provider: "openai", model: "m" },
       providers: {
-        openai: { model: "m" },
-        anthropic: { model: "n" },
+        openai: { protocol: "openai", models: ["m"] },
+        anthropic: { protocol: "anthropic", models: ["n"] },
       },
     },
     auth: {
@@ -613,7 +717,6 @@ test("redact replaces every loaded non-empty key without lengths or prefixes", a
       config.redact("failed with secret-key and sensitive-anthropic"),
       "failed with [REDACTED] and [REDACTED]",
     );
-    // Key prefixes and unrelated text survive; the key itself never does.
     assert.equal(config.redact("secret is sensitive"), "secret is sensitive");
     assert.ok(!config.redact("use secret-key now").includes("secret-key"));
   } finally {

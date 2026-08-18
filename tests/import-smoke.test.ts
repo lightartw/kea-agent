@@ -47,7 +47,7 @@ import type {
 
 import type {
   ModelRuntime,
-  ProviderId,
+  ProtocolId,
   RuntimeProviderConfig,
   StreamChunk,
 } from "../src/core/ai/index.js";
@@ -90,7 +90,7 @@ type PublicCodingAgentTypes = [
 ];
 
 type PublicEventTypes = [EventMap];
-type PublicAiTypes = [ModelRuntime, ProviderId, RuntimeProviderConfig, StreamChunk];
+type PublicAiTypes = [ModelRuntime, ProtocolId, RuntimeProviderConfig, StreamChunk];
 
 void (null as PublicAgentTypes | null);
 void (null as PublicHarnessTypes | null);

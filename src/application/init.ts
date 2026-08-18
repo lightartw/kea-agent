@@ -2,11 +2,17 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const USER_CONFIG_TEMPLATE = `{
-  "defaultProvider": "openai",
+  "defaultModel": {
+    "provider": "openai",
+    "model": "gpt-5"
+  },
   "providers": {
     "openai": {
-      "model": "gpt-5",
-      "baseUrl": "https://api.openai.com/v1"
+      "protocol": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "models": [
+        "gpt-5"
+      ]
     }
   },
   "agent": {
