@@ -161,13 +161,19 @@ export class CliUi {
   }
 
   private async chooseAndSwitchModel(): Promise<void> {
+    const providerNames = [...new Set(this.models.map((model) => model.provider))];
+    this.renderer.renderSelection("Providers:", providerNames);
+    const providerIndex = await this.chooseIndex("Provider number? ", providerNames.length);
+    if (providerIndex === undefined) return;
+    const provider = providerNames[providerIndex - 1]!;
+    const providerModels = this.models.filter((model) => model.provider === provider);
     this.renderer.renderSelection(
-      "Models:",
-      this.models.map((model) => `${model.provider}/${model.model}`),
+      `Models for ${provider}:`,
+      providerModels.map((model) => model.model),
     );
-    const index = await this.chooseIndex("Model number? ", this.models.length);
-    if (index === undefined) return;
-    const selected = this.models[index - 1]!;
+    const modelIndex = await this.chooseIndex("Model number? ", providerModels.length);
+    if (modelIndex === undefined) return;
+    const selected = providerModels[modelIndex - 1]!;
     if (this.isSameModel(selected, this.current!.model)) return;
     await this.current!.switchModel(selected);
   }

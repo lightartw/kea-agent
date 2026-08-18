@@ -237,12 +237,13 @@ test("a failed Session activation keeps the old Harness active", async () => {
   ui.close();
 });
 
-test("/model selects only configured models and same model is a no-op", async () => {
+test("/model groups by provider and switches to the chosen model", async () => {
   const models: readonly ModelConfig[] = [
     { provider: "openai", model: "gpt-5" },
+    { provider: "openai", model: "gpt-5-mini" },
     { provider: "anthropic", model: "claude-4" },
   ];
-  const { readline, calls } = makeReadline(["/model", "1", "/model", "2", "/exit"]);
+  const { readline, calls } = makeReadline(["/model", "2", "1", "/exit"]);
   const ui = makeUi({ models, readline, calls });
 
   const harness = makeHarness("1");
@@ -253,6 +254,43 @@ test("/model selects only configured models and same model is a no-op", async ()
 
   assert.deepEqual(harness.switchModelCalls, [{ provider: "anthropic", model: "claude-4" }]);
   assert.equal(harness.model.provider, "anthropic");
+  const text = calls.filter((call) => call.startsWith("render:")).join("");
+  assert.ok(text.includes("Providers:"), text);
+  assert.ok(text.includes("Models for anthropic:"), text);
+});
+
+test("/model selecting the current model is a no-op", async () => {
+  const models: readonly ModelConfig[] = [
+    { provider: "openai", model: "gpt-5" },
+    { provider: "openai", model: "gpt-5-mini" },
+  ];
+  const { readline, calls } = makeReadline(["/model", "1", "1", "/exit"]);
+  const ui = makeUi({ models, readline, calls });
+
+  const harness = makeHarness("1");
+  const project = makeProject({ createHarness: async () => asHarness(harness) });
+
+  await ui.run(project, asHarness(harness));
+  ui.close();
+
+  assert.deepEqual(harness.switchModelCalls, []);
+});
+
+test("/model cancels at either step without changing the model", async () => {
+  const models: readonly ModelConfig[] = [
+    { provider: "openai", model: "gpt-5" },
+    { provider: "anthropic", model: "claude-4" },
+  ];
+  const { readline, calls } = makeReadline(["/model", "", "/model", "1", "", "/exit"]);
+  const ui = makeUi({ models, readline, calls });
+
+  const harness = makeHarness("1");
+  const project = makeProject({ createHarness: async () => asHarness(harness) });
+
+  await ui.run(project, asHarness(harness));
+  ui.close();
+
+  assert.deepEqual(harness.switchModelCalls, []);
 });
 
 test("a restored unavailable model asks for a configured model before activation", async () => {
