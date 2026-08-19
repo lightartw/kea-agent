@@ -43,6 +43,7 @@ export class Renderer {
   private readonly logFn: (text: string) => void;
   private readonly toolCounts = new Map<string, number>();
   private readonly toolCallStreams = new Map<string, ToolCallStream>();
+  private readonly thinkingRuns = new Set<string>();
 
   constructor(options: RendererOptions) {
     this.thinking = options.thinking;
@@ -60,13 +61,22 @@ export class Renderer {
   handle(event: HarnessEvent): void {
     try {
       switch (event.type) {
+        case "turn-start":
+          this.renderThinkingIndicator(event.runId);
+          break;
+        case "turn-end":
+          this.clearThinkingIndicator(event.runId);
+          break;
         case "text-delta":
+          this.clearThinkingIndicator(event.runId);
           this.writeFn(event.text);
           break;
         case "thinking-delta":
+          this.clearThinkingIndicator(event.runId);
           if (this.thinking === "visible") this.writeFn(this.style(2, event.thinking));
           break;
         case "tool-call-start":
+          this.clearThinkingIndicator(event.runId);
           this.renderToolCallStart(event.runId, event.id, event.name);
           break;
         case "tool-call-delta":
@@ -83,6 +93,7 @@ export class Renderer {
           this.renderToolResult(event.call, event.result);
           break;
         case "run-end":
+          this.clearThinkingIndicator(event.runId);
           this.renderRunEnd(event);
           break;
         default:
@@ -231,8 +242,23 @@ export class Renderer {
     if (isError) {
       this.writeFn(`\n${this.style(code, `${marker} ${name}: ${bounded(content)}`)}\n`);
     } else {
-      this.writeFn(`\n${this.style(code, `${marker} ${name}`)}\n`);
+      const preview = bounded(content);
+      this.writeFn(`\n${this.style(code, preview === "" ? `${marker} ${name}` : `${marker} ${name}: ${preview}`)}\n`);
     }
+  }
+
+  /** Show a dim "thinking…" indicator while the model works without output. */
+  private renderThinkingIndicator(runId: string): void {
+    if (this.thinkingRuns.has(runId)) return;
+    this.thinkingRuns.add(runId);
+    this.writeFn(`\n${this.style(2, "💭 thinking…")}`);
+  }
+
+  /** End the thinking indicator line once real output arrives. */
+  private clearThinkingIndicator(runId: string): void {
+    if (!this.thinkingRuns.has(runId)) return;
+    this.thinkingRuns.delete(runId);
+    this.writeFn("\n");
   }
 
   private renderRunEnd(event: HarnessRunEnd): void {
