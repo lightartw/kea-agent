@@ -5,7 +5,8 @@
 无状态的运行机制：它们不持有 Session，不选择或调用模型，也不负责持久化。
 
 session-bound 的组合根 `AgentHarness` 如何把这三者绑成一份 Session 的运行器，见
-[harness.md](./harness.md)。本包对外的基本使用方式见 [README.md](../README.md)。
+[harness.md](./harness.md)；Session 的模型、Repository 与持久化见 [session.md](./session.md)。
+本包对外的基本使用方式见 [README.md](../README.md)。
 
 ## Events
 

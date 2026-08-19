@@ -9,7 +9,8 @@
 - **AgentHarness**：session-bound 的组合根，把三者在共享 `Events` 上绑成一份 Session 的运行器。
 
 深入文档：通用 agent 的 loop/tool/事件契约见 [docs/agent.md](./docs/agent.md)；
-session-bound 运行器与 Session/持久化见 [docs/harness.md](./docs/harness.md)。
+session-bound 运行器见 [docs/harness.md](./docs/harness.md)；Session 模型与持久化见
+[docs/session.md](./docs/session.md)。
 
 ## 最小用法
 
