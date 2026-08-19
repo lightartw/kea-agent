@@ -72,7 +72,7 @@ test("empty successful Git output fails instead of falling back to the startup d
 
       await assert.rejects(
         resolveProjectDirectory(directory),
-        /no work-tree root/i,
+        /Unable to determine the Git work-tree root/i,
       );
     } finally {
       if (originalPath === undefined) delete process.env["PATH"];
