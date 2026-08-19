@@ -18,16 +18,22 @@ import test from "node:test";
 import type { AssistantMessage, ModelConfig } from "../../../src/core/ai/types.js";
 import { openOrCreateProject } from "../../../src/coding-agent/factory.js";
 import type { Project } from "../../../src/coding-agent/project/project.js";
-import type { Interactions } from "../../../src/coding-agent/interaction/interactions.js";
+import type { UserInteraction } from "../../../src/coding-agent/interaction/interactions.js";
 import { runtimeFromStream, type TestStream } from "../../fixtures/model-runtime.js";
 
 const execFileAsync = promisify(execFile);
 
 const modelConfig: ModelConfig = { provider: "test", model: "model-a" };
 
-const testInteractions: Interactions = {
-  async permission() {
-    return { kind: "deny" };
+const testInteractions: UserInteraction = {
+  async select() {
+    return undefined;
+  },
+  async confirm() {
+    return false;
+  },
+  async input() {
+    return undefined;
   },
 };
 
@@ -86,7 +92,7 @@ async function openProject(
     projectDirectory,
     runtime: runtimeFromStream(simpleStream),
     modelConfig,
-    interactions: testInteractions,
+    interaction: testInteractions,
     maxTurns: 20,
     toolTimeoutSeconds: 120,
     ...overrides,

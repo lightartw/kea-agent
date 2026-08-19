@@ -10,21 +10,11 @@ import type {
   SessionMetadata,
 } from "../../../src/core/harness/index.js";
 import type { ModelConfig } from "../../../src/core/ai/index.js";
-import type { Project, PermissionRequest } from "../../../src/coding-agent/index.js";
+import type { Project } from "../../../src/coding-agent/index.js";
 
 import { CliUi } from "../../../src/ui/cli/cli-ui.js";
 
 const MODEL: ModelConfig = { provider: "openai", model: "gpt-5" };
-
-const PERMISSION_REQUEST: PermissionRequest = {
-  kind: "dangerous-command",
-  sessionId: "session-1",
-  runId: "run-1",
-  call: { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "rm -rf /tmp/x" } },
-  command: "rm -rf /tmp/x",
-  cwd: "/repo",
-  reason: "needs approval",
-};
 
 function asHarness(harness: FakeHarnessState): AgentHarness {
   return harness as unknown as AgentHarness;
@@ -153,7 +143,10 @@ test("the outer loop waits for a Run before reading the next Prompt", async () =
   const harness = makeHarness("1");
   harness.prompt = async () => {
     calls.push("prompt:start");
-    await ui.interactions.permission(PERMISSION_REQUEST);
+    await ui.interactions.select(
+      "⚠ needs approval\n   rm -rf /tmp/x",
+      ["Allow once", "Always allow", "Deny"],
+    );
     calls.push("prompt:end");
   };
   const project = makeProject({ createHarness: async () => asHarness(harness) });

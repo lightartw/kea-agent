@@ -32,11 +32,10 @@ import type {
 } from "../src/core/harness/index.js";
 
 import type {
-  Interactions,
-  PermissionReply,
-  PermissionRequest,
+  InteractionOptions,
   Project,
   ProjectInfo,
+  UserInteraction,
 } from "../src/coding-agent/index.js";
 
 import type {
@@ -78,9 +77,8 @@ type PublicHarnessTypes = [
 type PublicCodingAgentTypes = [
   Project,
   ProjectInfo,
-  Interactions,
-  PermissionRequest,
-  PermissionReply,
+  UserInteraction,
+  InteractionOptions,
 ];
 
 type PublicEventTypes = [EventMap];

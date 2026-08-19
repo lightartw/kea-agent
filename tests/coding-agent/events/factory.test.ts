@@ -13,9 +13,8 @@ import { AgentToolRegistry } from "../../../src/core/harness/tools/registry.js";
 import { createBuiltinEvents } from "../../../src/coding-agent/events/factory.js";
 import type { PermissionRule } from "../../../src/coding-agent/events/permission/permission.js";
 import {
-  type Interactions,
-  type PermissionReply,
-  type PermissionRequest,
+  type InteractionOptions,
+  type UserInteraction,
 } from "../../../src/coding-agent/interaction/interactions.js";
 
 const PROJECT = resolve(join("work", "project"));
@@ -72,19 +71,31 @@ function readCall(path: string): AgentToolCall {
   };
 }
 
-class RecordingInteractions implements Interactions {
-  readonly requests: PermissionRequest[] = [];
+class RecordingInteractions implements UserInteraction {
+  readonly selects: Array<{ title: string; options: readonly string[] }> = [];
 
-  constructor(private readonly replies: PermissionReply[]) {}
+  constructor(private readonly indexes: (number | undefined)[]) {}
 
-  async permission(request: PermissionRequest): Promise<PermissionReply> {
-    this.requests.push(request);
-    const reply = this.replies.shift();
-    return reply ?? { kind: "once" };
+  async select(
+    title: string,
+    options: readonly string[],
+    _opts?: InteractionOptions,
+  ): Promise<number | undefined> {
+    this.selects.push({ title, options });
+    if (this.indexes.length === 0) return 0;
+    return this.indexes.shift();
+  }
+
+  async confirm(): Promise<boolean> {
+    throw new Error("confirm not used");
+  }
+
+  async input(): Promise<string | undefined> {
+    throw new Error("input not used");
   }
 }
 
-function harness(interactions: Interactions) {
+function harness(interaction: UserInteraction) {
   const registry = new AgentToolRegistry();
   const bashTool = new BashTool();
   const readFileTool = new ReadFileTool();
@@ -92,7 +103,7 @@ function harness(interactions: Interactions) {
   registry.register(readFileTool);
   const approved: PermissionRule[] = [];
   const events = createBuiltinEvents({
-    interactions,
+    interaction,
     approved,
     trustedDirectories: [PROJECT],
   });
@@ -121,7 +132,7 @@ test("safe Bash commands reach the Tool without an interaction", async () => {
 
   assert.deepEqual(result, { content: "ok", isError: false });
   assert.deepEqual(h.bashTool.calls, ["echo hello"]);
-  assert.equal(interactions.requests.length, 0);
+  assert.equal(interactions.selects.length, 0);
 });
 
 test("hard deny stops later listeners and the Tool", async () => {
@@ -143,7 +154,7 @@ test("hard deny stops later listeners and the Tool", async () => {
 });
 
 test("an always approval in one session is reused by another", async () => {
-  const interactions = new RecordingInteractions([{ kind: "always" }]);
+  const interactions = new RecordingInteractions([1]);
   const h = harness(interactions);
 
   const first = await h.execute(bashCall("rm file.txt"), "session-a");
@@ -152,7 +163,7 @@ test("an always approval in one session is reused by another", async () => {
   const second = await h.execute(bashCall("rm file.txt"), "session-b");
   assert.deepEqual(second, { content: "ok", isError: false });
 
-  assert.equal(interactions.requests.length, 1);
+  assert.equal(interactions.selects.length, 1);
   assert.deepEqual(h.approved, [
     { kind: "command", command: "rm file.txt", cwd: PROJECT },
   ]);
@@ -160,20 +171,16 @@ test("an always approval in one session is reused by another", async () => {
 });
 
 test("paths outside the trusted directories ask and proceed once", async () => {
-  const interactions = new RecordingInteractions([{ kind: "once" }]);
+  const interactions = new RecordingInteractions([0]);
   const h = harness(interactions);
 
   const result = await h.execute(readCall(join(OUTSIDE, "data.txt")));
 
   assert.deepEqual(result, { content: "ok", isError: false });
   assert.deepEqual(h.readFileTool.calls, [join(OUTSIDE, "data.txt")]);
-  assert.equal(interactions.requests.length, 1);
-  const request = interactions.requests[0];
-  assert.ok(request);
-  assert.equal(request.kind, "external-directory");
-  if (request.kind !== "external-directory") return;
-  assert.equal(request.sessionId, "session-a");
-  assert.equal(request.targetPath, join(OUTSIDE, "data.txt"));
+  assert.equal(interactions.selects.length, 1);
+  assert.match(interactions.selects[0]!.title, /outside the project directory/);
+  assert.match(interactions.selects[0]!.title, /data\.txt/);
 });
 
 test("listener errors are surfaced through console.error", async () => {

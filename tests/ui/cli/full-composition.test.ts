@@ -9,11 +9,7 @@ import type { Interface } from "node:readline/promises";
 import type { ModelConfig } from "../../../src/core/ai/index.js";
 import type { AssistantMessage } from "../../../src/core/ai/types.js";
 import { openOrCreateProject } from "../../../src/coding-agent/index.js";
-import type {
-  Interactions,
-  PermissionReply,
-  PermissionRequest,
-} from "../../../src/coding-agent/index.js";
+import type { UserInteraction } from "../../../src/coding-agent/index.js";
 import type { TestStream } from "../../fixtures/model-runtime.js";
 import { runtimeFromStream } from "../../fixtures/model-runtime.js";
 import { CliUi } from "../../../src/ui/cli/index.js";
@@ -75,12 +71,15 @@ function toolCallingStream(): { stream: TestStream; streamCalls: () => number } 
 }
 
 /** todo_write is permission-free; a question here means the run is misbehaving. */
-const interactions: Interactions = {
-  async permission(
-    _request: PermissionRequest,
-    _signal?: AbortSignal,
-  ): Promise<PermissionReply> {
+const interactions: UserInteraction = {
+  async select(): Promise<number | undefined> {
     throw new Error("unexpected permission question for todo_write");
+  },
+  async confirm(): Promise<boolean> {
+    throw new Error("unexpected confirmation for todo_write");
+  },
+  async input(): Promise<string | undefined> {
+    throw new Error("unexpected input for todo_write");
   },
 };
 
@@ -94,7 +93,7 @@ test("the full composition renders tool calls and the run summary", async () => 
       projectDirectory: projectDir,
       runtime: runtimeFromStream(stream),
       modelConfig: MODEL,
-      interactions,
+      interaction: interactions,
       maxTurns: 5,
       toolTimeoutSeconds: 30,
     });
