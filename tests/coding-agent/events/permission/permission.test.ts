@@ -6,10 +6,9 @@ import type {
   AgentToolCall,
 } from "../../../../src/core/harness/tools/types.js";
 import type { ToolCallEvent } from "../../../../src/core/harness/tools/events.js";
-import {
-  type Interactions,
-  type PermissionReply,
-  type PermissionRequest,
+import type {
+  InteractionOptions,
+  UserInteraction,
 } from "../../../../src/coding-agent/interaction/interactions.js";
 import {
   decidePermission,
@@ -50,112 +49,150 @@ function fileEvent(
   };
 }
 
-class RecordingInteractions implements Interactions {
-  readonly requests: PermissionRequest[] = [];
+type SelectRecord = { readonly title: string; readonly options: readonly string[] };
 
-  constructor(private readonly replies: PermissionReply[]) {}
+/** Interaction stub recording select calls and returning preset indexes in order. */
+class RecordingInteractions implements UserInteraction {
+  readonly selects: SelectRecord[] = [];
 
-  async permission(request: PermissionRequest): Promise<PermissionReply> {
-    this.requests.push(request);
-    const reply = this.replies.shift();
-    return reply ?? { kind: "once" };
+  constructor(private readonly indexes: (number | undefined)[]) {}
+
+  async select(
+    title: string,
+    options: readonly string[],
+    _opts?: InteractionOptions,
+  ): Promise<number | undefined> {
+    this.selects.push({ title, options });
+    if (this.indexes.length === 0) return 0;
+    return this.indexes.shift();
+  }
+
+  async confirm(): Promise<boolean> {
+    throw new Error("confirm not used");
+  }
+
+  async input(): Promise<string | undefined> {
+    throw new Error("input not used");
   }
 }
 
 function decide(
   input: ToolCallEvent,
-  interactions: Interactions,
+  interaction: UserInteraction,
   approved: PermissionRule[] = [],
   cwd = CWD,
   signal?: AbortSignal,
 ) {
   return decidePermission(
     input,
-    { cwd, trustedDirectories: [PROJECT], approved, interactions },
+    { cwd, trustedDirectories: [PROJECT], approved, interaction },
     signal,
   );
 }
 
+type PermissionReply =
+  | { readonly kind: "once" }
+  | { readonly kind: "always" }
+  | { readonly kind: "deny"; readonly reason?: string };
+
+/** Maps a semantic reply to the index the generalized select expects. */
+function replyIndex(reply: PermissionReply): number | undefined {
+  switch (reply.kind) {
+    case "once":
+      return 0;
+    case "always":
+      return 1;
+    default:
+      return undefined;
+  }
+}
+
 function oneInteraction(reply: PermissionReply): RecordingInteractions {
-  return new RecordingInteractions([reply]);
+  return new RecordingInteractions([replyIndex(reply)]);
 }
 
 // ── Bash 策略与回答（spec §12）──
 
 test("ordinary Bash commands proceed without an interaction", async () => {
-  const interactions = new RecordingInteractions([]);
+  const interaction = new RecordingInteractions([]);
 
-  const decision = await decide(bashEvent("echo hello"), interactions);
+  const decision = await decide(bashEvent("echo hello"), interaction);
 
   assert.deepEqual(decision, { kind: "allow" });
-  assert.equal(interactions.requests.length, 0);
+  assert.equal(interaction.selects.length, 0);
 });
 
 test("hard deny uses the policy reason and never asks", async () => {
-  const interactions = new RecordingInteractions([]);
+  const interaction = new RecordingInteractions([]);
 
-  const decision = await decide(bashEvent("sudo true"), interactions);
+  const decision = await decide(bashEvent("sudo true"), interaction);
 
   assert.deepEqual(decision, { kind: "deny", reason: "sudo is not allowed" });
-  assert.equal(interactions.requests.length, 0);
+  assert.equal(interaction.selects.length, 0);
 });
 
 test("once allows the current call but records no rule", async () => {
-  const interactions = new RecordingInteractions([{ kind: "once" }]);
+  const interaction = new RecordingInteractions([0]);
   const approved: PermissionRule[] = [];
 
-  const first = await decide(bashEvent("rm file.txt"), interactions, approved);
+  const first = await decide(bashEvent("rm file.txt"), interaction, approved);
 
   assert.deepEqual(first, { kind: "allow" });
   assert.deepEqual(approved, []);
 
-  const second = await decide(bashEvent("rm file.txt"), interactions, approved);
-  assert.equal(interactions.requests.length, 2);
+  const second = await decide(bashEvent("rm file.txt"), interaction, approved);
+  assert.equal(interaction.selects.length, 2);
   assert.deepEqual(second, { kind: "allow" });
 });
 
 test("always appends a command rule to the supplied approved array", async () => {
   const approved: PermissionRule[] = [];
-  const interactions = new RecordingInteractions([{ kind: "always" }]);
+  const interaction = new RecordingInteractions([1]);
 
   assert.deepEqual(
-    await decide(bashEvent("rm file.txt"), interactions, approved),
+    await decide(bashEvent("rm file.txt"), interaction, approved),
     { kind: "allow" },
   );
   assert.deepEqual(approved, [
     { kind: "command", command: "rm file.txt", cwd: CWD },
   ]);
 
-  await decide(bashEvent("rm file.txt"), interactions, approved);
-  assert.equal(interactions.requests.length, 1);
+  await decide(bashEvent("rm file.txt"), interaction, approved);
+  assert.equal(interaction.selects.length, 1);
 });
 
 test("approved rules are reusable by another session in one project", async () => {
   const approved: PermissionRule[] = [];
-  const interactions = new RecordingInteractions([{ kind: "always" }]);
+  const interaction = new RecordingInteractions([1]);
 
-  await decide(bashEvent("rm file.txt", "session-a"), interactions, approved);
-  await decide(bashEvent("rm file.txt", "session-b"), interactions, approved);
+  await decide(bashEvent("rm file.txt", "session-a"), interaction, approved);
+  await decide(bashEvent("rm file.txt", "session-b"), interaction, approved);
 
-  assert.equal(interactions.requests.length, 1);
+  assert.equal(interaction.selects.length, 1);
 });
 
 test("hard deny overrides a remembered allow", async () => {
   const approved: PermissionRule[] = [
     { kind: "command", command: "sudo true", cwd: CWD },
   ];
-  const interactions = new RecordingInteractions([]);
+  const interaction = new RecordingInteractions([]);
 
-  const decision = await decide(bashEvent("sudo true"), interactions, approved);
+  const decision = await decide(bashEvent("sudo true"), interaction, approved);
 
   assert.deepEqual(decision, { kind: "deny", reason: "sudo is not allowed" });
-  assert.equal(interactions.requests.length, 0);
+  assert.equal(interaction.selects.length, 0);
 });
 
 test("interaction failures and invalid replies close the door", async () => {
-  const throwing: Interactions = {
-    async permission(): Promise<PermissionReply> {
+  const throwing: UserInteraction = {
+    async select(): Promise<number | undefined> {
       throw new Error("adapter disconnected");
+    },
+    async confirm() {
+      return false;
+    },
+    async input() {
+      return undefined;
     },
   };
   const failed = await decide(bashEvent("rm file.txt"), throwing);
@@ -164,15 +201,11 @@ test("interaction failures and invalid replies close the door", async () => {
     reason: "Permission request failed: adapter disconnected",
   });
 
-  const invalidReply: Interactions = {
-    async permission(): Promise<PermissionReply> {
-      return { kind: "maybe" } as unknown as PermissionReply;
-    },
-  };
+  const invalidReply = new RecordingInteractions([99]);
   const invalid = await decide(bashEvent("rm file.txt"), invalidReply);
   assert.deepEqual(invalid, {
     kind: "deny",
-    reason: "Permission request failed: invalid reply",
+    reason: "Permission denied by user",
   });
 });
 
@@ -180,9 +213,15 @@ test("a cancelled Run signal propagates instead of a user denial", async () => {
   const controller = new AbortController();
   const reason = new Error("run aborted");
   controller.abort(reason);
-  const aborting: Interactions = {
-    async permission(): Promise<PermissionReply> {
+  const aborting: UserInteraction = {
+    async select(): Promise<number | undefined> {
       throw reason;
+    },
+    async confirm() {
+      return false;
+    },
+    async input() {
+      return undefined;
     },
   };
 
@@ -193,18 +232,18 @@ test("a cancelled Run signal propagates instead of a user denial", async () => {
 });
 
 test("malformed Bash arguments are denied without asking", async () => {
-  const interactions = new RecordingInteractions([]);
+  const interaction = new RecordingInteractions([]);
 
   const decision = await decide(
     fileEvent("bash", { command: 42 }),
-    interactions,
+    interaction,
   );
 
   assert.deepEqual(decision, {
     kind: "deny",
     reason: "Permission request failed: invalid arguments for bash",
   });
-  assert.equal(interactions.requests.length, 0);
+  assert.equal(interaction.selects.length, 0);
 });
 
 // ── 外部目录（spec §7.2 / §11）──
@@ -217,7 +256,7 @@ test("trusted directories do not become approved rules", async () => {
       cwd: CWD,
       trustedDirectories: [PROJECT],
       approved,
-      interactions: new RecordingInteractions([]),
+      interaction: new RecordingInteractions([]),
     },
   );
 
@@ -225,31 +264,24 @@ test("trusted directories do not become approved rules", async () => {
   assert.deepEqual(approved, []);
 });
 
-test("a path outside the trusted directories asks with the full request", async () => {
-  const interactions = oneInteraction({ kind: "once" });
+test("a path outside the trusted directories asks with the target in the prompt", async () => {
+  const interaction = oneInteraction({ kind: "once" });
 
   const decision = await decide(
     fileEvent("read_file", { path: join(OUTSIDE, "data.txt") }),
-    interactions,
+    interaction,
   );
 
   assert.deepEqual(decision, { kind: "allow" });
-  const request = interactions.requests[0];
-  assert.ok(request);
-  assert.equal(request.kind, "external-directory");
-  if (request.kind !== "external-directory") return;
-  assert.equal(request.sessionId, "session-1");
-  assert.equal(request.runId, "run-1");
-  assert.equal(request.call.name, "read_file");
-  assert.equal(request.targetPath, join(OUTSIDE, "data.txt"));
-  assert.equal(request.directory, OUTSIDE);
-  assert.equal(request.reason, "outside the project directory");
+  assert.equal(interaction.selects.length, 1);
+  assert.match(interaction.selects[0]!.title, /outside the project directory/);
+  assert.match(interaction.selects[0]!.title, /data\.txt/);
 });
 
 test("every path tool asks for targets outside the trusted directories", async () => {
   const tools = ["read_file", "write_file", "edit_file", "glob"] as const;
   for (const name of tools) {
-    const interactions = oneInteraction({ kind: "once" });
+    const interaction = oneInteraction({ kind: "once" });
 
     const decision = await decide(
       fileEvent(name, {
@@ -257,51 +289,42 @@ test("every path tool asks for targets outside the trusted directories", async (
           ? { pattern: join(OUTSIDE, "src", "*.ts") }
           : { path: join(OUTSIDE, "data.txt") }),
       }),
-      interactions,
+      interaction,
     );
 
     assert.deepEqual(decision, { kind: "allow" }, name);
-    const request = interactions.requests[0];
-    assert.ok(request);
-    assert.equal(request.kind, "external-directory", name);
-    if (request.kind !== "external-directory") return;
-    assert.equal(request.call.name, name);
+    assert.equal(interaction.selects.length, 1, name);
   }
 });
 
 test("glob targets use the static prefix before the first wildcard", async () => {
-  const interactions = oneInteraction({ kind: "once" });
+  const interaction = oneInteraction({ kind: "once" });
 
   await decide(
     fileEvent("glob", { pattern: join(OUTSIDE, "src", "**", "*.ts") }),
-    interactions,
+    interaction,
   );
 
-  const request = interactions.requests[0];
-  assert.ok(request);
-  if (request.kind !== "external-directory") assert.fail("expected ask");
-  assert.equal(request.targetPath, join(OUTSIDE, "src"));
-  assert.equal(request.directory, join(OUTSIDE, "src"));
+  assert.equal(interaction.selects.length, 1);
+  assert.match(interaction.selects[0]!.title, /src/);
 });
 
 test("a glob without wildcards uses the whole pattern", async () => {
-  const interactions = oneInteraction({ kind: "once" });
+  const interaction = oneInteraction({ kind: "once" });
 
-  await decide(fileEvent("glob", { pattern: join(OUTSIDE, "src") }), interactions);
+  await decide(fileEvent("glob", { pattern: join(OUTSIDE, "src") }), interaction);
 
-  const request = interactions.requests[0];
-  assert.ok(request);
-  if (request.kind !== "external-directory") assert.fail("expected ask");
-  assert.equal(request.targetPath, join(OUTSIDE, "src"));
+  assert.equal(interaction.selects.length, 1);
+  assert.match(interaction.selects[0]!.title, /src/);
 });
 
 test("always records the directory rule covering descendants but not siblings", async () => {
   const approved: PermissionRule[] = [];
-  const interactions = new RecordingInteractions([{ kind: "always" }]);
+  const interaction = new RecordingInteractions([1]);
 
   const first = await decide(
     fileEvent("read_file", { path: join(OUTSIDE, "data.txt") }),
-    interactions,
+    interaction,
     approved,
   );
 
@@ -310,18 +333,18 @@ test("always records the directory rule covering descendants but not siblings", 
 
   const descendant = await decide(
     fileEvent("read_file", { path: join(OUTSIDE, "sub", "other.txt") }),
-    interactions,
+    interaction,
     approved,
   );
-  assert.equal(interactions.requests.length, 1);
+  assert.equal(interaction.selects.length, 1);
   assert.deepEqual(descendant, { kind: "allow" });
 
   const sibling = await decide(
     fileEvent("read_file", { path: join(CWD, "..", "outsidey", "x.txt") }),
-    interactions,
+    interaction,
     approved,
   );
-  assert.equal(interactions.requests.length, 2);
+  assert.equal(interaction.selects.length, 2);
   assert.deepEqual(sibling, { kind: "allow" });
 });
 
@@ -329,25 +352,25 @@ test("approved directory rules do not match sibling prefixes", async () => {
   const approved: PermissionRule[] = [
     { kind: "directory", directory: PROJECT },
   ];
-  const interactions = oneInteraction({ kind: "once" });
+  const interaction = oneInteraction({ kind: "once" });
 
   const decision = await decide(
     fileEvent("read_file", { path: join(CWD, "..", "projectx", "main.ts") }),
-    interactions,
+    interaction,
     approved,
   );
 
-  assert.equal(interactions.requests.length, 1);
+  assert.equal(interaction.selects.length, 1);
   assert.deepEqual(decision, { kind: "allow" });
 });
 
 test("once allows the current call but records no directory", async () => {
-  const interactions = new RecordingInteractions([{ kind: "once" }]);
+  const interaction = new RecordingInteractions([0]);
   const approved: PermissionRule[] = [];
 
   const first = await decide(
     fileEvent("read_file", { path: join(OUTSIDE, "data.txt") }),
-    interactions,
+    interaction,
     approved,
   );
 
@@ -356,33 +379,37 @@ test("once allows the current call but records no directory", async () => {
 
   const second = await decide(
     fileEvent("read_file", { path: join(OUTSIDE, "data.txt") }),
-    interactions,
+    interaction,
     approved,
   );
-  assert.equal(interactions.requests.length, 2);
+  assert.equal(interaction.selects.length, 2);
 });
 
-test("external-directory deny reasons flow verbatim", async () => {
-  const interactions = oneInteraction({
-    kind: "deny",
-    reason: "读取工作区之外的文件需要确认",
-  });
+test("a plain external-directory denial returns deny", async () => {
+  const interaction = oneInteraction({ kind: "deny" });
 
   const decision = await decide(
     fileEvent("read_file", { path: join(OUTSIDE, "data.txt") }),
-    interactions,
+    interaction,
   );
 
   assert.deepEqual(decision, {
     kind: "deny",
-    reason: "读取工作区之外的文件需要确认",
+    reason: "Permission denied by user",
   });
+  assert.equal(interaction.selects.length, 1);
 });
 
 test("external-directory interaction failures and invalid replies close the door", async () => {
-  const throwing: Interactions = {
-    async permission(): Promise<PermissionReply> {
+  const throwing: UserInteraction = {
+    async select(): Promise<number | undefined> {
       throw new Error("adapter disconnected");
+    },
+    async confirm() {
+      return false;
+    },
+    async input() {
+      return undefined;
     },
   };
   const failed = await decide(
@@ -394,18 +421,14 @@ test("external-directory interaction failures and invalid replies close the door
     reason: "Permission request failed: adapter disconnected",
   });
 
-  const invalidReply: Interactions = {
-    async permission(): Promise<PermissionReply> {
-      return { kind: "maybe" } as unknown as PermissionReply;
-    },
-  };
+  const invalidReply = new RecordingInteractions([99]);
   const invalid = await decide(
     fileEvent("read_file", { path: OUTSIDE }),
     invalidReply,
   );
   assert.deepEqual(invalid, {
     kind: "deny",
-    reason: "Permission request failed: invalid reply",
+    reason: "Permission denied by user",
   });
 });
 
@@ -413,9 +436,15 @@ test("a cancelled Run signal propagates for external directories too", async () 
   const controller = new AbortController();
   const reason = new Error("run aborted");
   controller.abort(reason);
-  const aborting: Interactions = {
-    async permission(): Promise<PermissionReply> {
+  const aborting: UserInteraction = {
+    async select(): Promise<number | undefined> {
       throw reason;
+    },
+    async confirm() {
+      return false;
+    },
+    async input() {
+      return undefined;
     },
   };
 
@@ -432,25 +461,23 @@ test("a cancelled Run signal propagates for external directories too", async () 
 });
 
 test("relative path targets resolve against the cwd", async () => {
-  const interactions = oneInteraction({ kind: "once" });
+  const interaction = oneInteraction({ kind: "once" });
 
   await decide(
     fileEvent("read_file", { path: "notes.txt" }),
-    interactions,
+    interaction,
     [],
     OUTSIDE,
   );
 
-  const request = interactions.requests[0];
-  assert.ok(request);
-  if (request.kind !== "external-directory") assert.fail("expected ask");
-  assert.equal(request.targetPath, join(OUTSIDE, "notes.txt"));
+  assert.equal(interaction.selects.length, 1);
+  assert.match(interaction.selects[0]!.title, /notes\.txt/);
 });
 
 test("malformed path arguments are denied instead of falling back to the cwd", async () => {
-  const interactions = new RecordingInteractions([]);
+  const interaction = new RecordingInteractions([]);
 
-  const read = await decide(fileEvent("read_file", { path: 42 }), interactions);
+  const read = await decide(fileEvent("read_file", { path: 42 }), interaction);
   assert.deepEqual(read, {
     kind: "deny",
     reason: "Permission request failed: invalid arguments for read_file",
@@ -458,67 +485,58 @@ test("malformed path arguments are denied instead of falling back to the cwd", a
 
   const glob = await decide(
     fileEvent("glob", { pattern: undefined }),
-    interactions,
+    interaction,
   );
   assert.deepEqual(glob, {
     kind: "deny",
     reason: "Permission request failed: invalid arguments for glob",
   });
 
-  assert.equal(interactions.requests.length, 0);
+  assert.equal(interaction.selects.length, 0);
 });
 
 test("tools unrelated to Permission pass through", async () => {
-  const interactions = new RecordingInteractions([]);
+  const interaction = new RecordingInteractions([]);
 
-  const decision = await decide(fileEvent("todo", {}), interactions);
+  const decision = await decide(fileEvent("todo", {}), interaction);
 
   assert.deepEqual(decision, { kind: "allow" });
-  assert.equal(interactions.requests.length, 0);
+  assert.equal(interaction.selects.length, 0);
 });
 
 // ── Bash 外部 cwd 与危险命令是两个连续分支 ──
 
 test("bash authorizes external cwd before asking for a dangerous command", async () => {
   const approved: PermissionRule[] = [];
-  const interactions = new RecordingInteractions([
-    { kind: "always" },
-    { kind: "once" },
-  ]);
+  const interaction = new RecordingInteractions([1, 0]);
 
   const result = await decidePermission(bashEvent("rm file.txt"), {
     cwd: OUTSIDE,
     trustedDirectories: [PROJECT],
     approved,
-    interactions,
+    interaction,
   });
 
   assert.deepEqual(result, { kind: "allow" });
-  assert.deepEqual(
-    interactions.requests.map((request) => request.kind),
-    ["external-directory", "dangerous-command"],
-  );
+  assert.equal(interaction.selects.length, 2);
   assert.deepEqual(approved, [
     { kind: "directory", directory: OUTSIDE },
   ]);
 });
 
 test("an external bash cwd denial stops before the command branch", async () => {
-  const interactions = oneInteraction({
-    kind: "deny",
-    reason: "bash 必须在项目目录内运行",
-  });
+  const interaction = oneInteraction({ kind: "deny" });
 
   const result = await decidePermission(bashEvent("echo hi"), {
     cwd: OUTSIDE,
     trustedDirectories: [PROJECT],
     approved: [],
-    interactions,
+    interaction,
   });
 
   assert.deepEqual(result, {
     kind: "deny",
-    reason: "bash 必须在项目目录内运行",
+    reason: "Permission denied by user",
   });
-  assert.equal(interactions.requests.length, 1);
+  assert.equal(interaction.selects.length, 1);
 });

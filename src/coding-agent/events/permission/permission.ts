@@ -1,11 +1,7 @@
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import type { PreToolDecision, ToolCallEvent } from "../../../core/harness/tools/events.js";
-import type {
-  Interactions,
-  PermissionReply,
-  PermissionRequest,
-} from "../../interaction/interactions.js";
+import type { UserInteraction } from "../../interaction/interactions.js";
 import { classifyBashCommand } from "./bash-policy.js";
 
 /**
@@ -16,6 +12,12 @@ import { classifyBashCommand } from "./bash-policy.js";
 export type PermissionRule =
   | { readonly kind: "command"; readonly command: string; readonly cwd: string }
   | { readonly kind: "directory"; readonly directory: string };
+
+/** One user decision for an ask-classified operation. Internal to Permission. */
+type PermissionReply =
+  | { readonly kind: "once" }
+  | { readonly kind: "always" }
+  | { readonly kind: "deny"; readonly reason?: string };
 
 /** Tool-operation classification is a Permission-internal detail. */
 type PermissionOperation = "read" | "write" | "edit" | "glob";
@@ -80,14 +82,33 @@ function fileTarget(
   return resolve(cwd, path);
 }
 
+const PERMISSION_OPTIONS = ["Allow once", "Always allow", "Deny"] as const;
+
+/** Maps a select index to a permission reply; out-of-range/undefined deny. */
+function replyFromIndex(index: number | undefined): PermissionReply {
+  switch (index) {
+    case 0:
+      return { kind: "once" };
+    case 1:
+      return { kind: "always" };
+    default:
+      return { kind: "deny" };
+  }
+}
+
 /** Delegates to the interaction, failing closed unless aborted. */
 async function ask(
-  interactions: Interactions,
-  request: PermissionRequest,
+  interaction: UserInteraction,
+  prompt: string,
   signal?: AbortSignal,
 ): Promise<PermissionReply> {
   try {
-    return await interactions.permission(request, signal);
+    const index = await interaction.select(
+      prompt,
+      PERMISSION_OPTIONS,
+      signal === undefined ? undefined : { signal },
+    );
+    return replyFromIndex(index);
   } catch (error) {
     if (signal?.aborted) throw error;
     return {
@@ -123,11 +144,11 @@ async function authorizeDirectory(
     readonly cwd: string;
     readonly trustedDirectories: readonly string[];
     readonly approved: PermissionRule[];
-    readonly interactions: Interactions;
+    readonly interaction: UserInteraction;
   },
   signal?: AbortSignal,
 ): Promise<PreToolDecision> {
-  const { trustedDirectories, approved, interactions } = options;
+  const { trustedDirectories, approved, interaction } = options;
   const trusted = trustedDirectories.some((trustedDirectory) =>
     contains(trustedDirectory, targetPath)
   );
@@ -137,16 +158,8 @@ async function authorizeDirectory(
   );
   if (approvedDirectory) return { kind: "allow" };
 
-  const request: PermissionRequest = {
-    kind: "external-directory",
-    sessionId: input.sessionId,
-    runId: input.runId,
-    call: input.call,
-    targetPath,
-    directory,
-    reason: OUTSIDE_PROJECT_REASON,
-  };
-  const reply = await ask(interactions, request, signal);
+  const prompt = `\n⚠ ${OUTSIDE_PROJECT_REASON}\n   ${targetPath}\n   Allow access to this directory?`;
+  const reply = await ask(interaction, prompt, signal);
   return applyReply(reply, () => {
     remember(approved, { kind: "directory", directory: resolve(directory) });
   });
@@ -159,11 +172,11 @@ async function authorizeCommand(
     readonly cwd: string;
     readonly trustedDirectories: readonly string[];
     readonly approved: PermissionRule[];
-    readonly interactions: Interactions;
+    readonly interaction: UserInteraction;
   },
   signal?: AbortSignal,
 ): Promise<PreToolDecision> {
-  const { cwd, approved, interactions } = options;
+  const { cwd, approved, interaction } = options;
   const classification = classifyBashCommand(command);
   if (classification.decision === "deny") {
     return { kind: "deny", reason: classification.reason };
@@ -171,16 +184,8 @@ async function authorizeCommand(
   if (matchesCommand(approved, command, cwd)) return { kind: "allow" };
   if (classification.decision === "allow") return { kind: "allow" };
 
-  const request: PermissionRequest = {
-    kind: "dangerous-command",
-    sessionId: input.sessionId,
-    runId: input.runId,
-    call: input.call,
-    command,
-    cwd,
-    reason: classification.reason,
-  };
-  const reply = await ask(interactions, request, signal);
+  const prompt = `\n⚠ ${classification.reason}\n   ${command}\n   Allow this command?`;
+  const reply = await ask(interaction, prompt, signal);
   return applyReply(reply, () => {
     remember(approved, { kind: "command", command, cwd });
   });
@@ -198,7 +203,7 @@ export async function decidePermission(
     readonly cwd: string;
     readonly trustedDirectories: readonly string[];
     readonly approved: PermissionRule[];
-    readonly interactions: Interactions;
+    readonly interaction: UserInteraction;
   },
   signal?: AbortSignal,
 ): Promise<PreToolDecision> {
