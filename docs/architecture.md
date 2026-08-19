@@ -1,12 +1,12 @@
 # Kea Agent 架构
 
-**更新：** 2026-08-18
+**更新：** 2026-08-19
 
 本文描述当前代码的所有权与边界。`ai`、`events`、`harness` 共同组成
 `src/core/` 下的 Harness 核心。依赖方向是
 `main -> ui -> coding-agent -> core/harness -> core/ai`；`core/events` 由核心运行时共享，
-`src/application/` 提供配置、参数和目录发现等无长期状态的启动能力，`main.ts` 是连接具体 UI、
-Coding Agent 和 AI provider 的唯一组合根。
+`coding-agent/cli` 与 `coding-agent/config` 提供配置、参数、模板和目录发现等无长期状态的启动
+能力，`main.ts` 是连接具体 UI、Coding Agent 和 AI provider 的唯一组合根。
 
 ## 1. AI：LLM 流式协议与显式 Provider
 
@@ -314,13 +314,15 @@ Session 或模型切换失败时保留旧 Harness、订阅和模型。
 
 `CliUi` 通过注入的 `reportError` 回调报告捕获的错误，不接触 Config 或凭据。
 
-## 6. application 与 main.ts：组合根
+## 6. 启动层与 main.ts：组合根
 
-`src/application/` 提供无长期状态的启动能力：`arguments.ts`（argv 解析）、
-`project-directory.ts`（启动目录 → Git 根 → 规范目录）、`config.ts`（唯一 Config）和
-`init.ts`（用户配置模板）。这些模块只被 `main.ts` 和测试导入。
+`coding-agent/cli` 与 `coding-agent/config` 提供无长期状态的启动能力：`cli/args.ts`（argv
+解析，返回 `diagnostics` 而非抛错）、`cli/project-directory.ts`（启动目录 → Git 根 → 规范目录）、
+`config/config.ts`（唯一 Config 与 `loadConfig` 引导入口）、`config/defaults.ts`、
+`config/schema.ts`（读取、解析与校验）和 `config/templates.ts`（用户配置模板）。这些模块只被
+`main.ts` 和测试导入，不依赖 UI 或 Coding Agent 的领域内部组件。
 
-### Config
+### Config 与 loadConfig
 
 `Config` 是唯一的应用设置实体，按优先级分层加载：内建默认值 < `~/.kea/config.json` <
 `<project>/.kea/config.json` < `--config` 文件 < CLI 直接覆盖（`--verbose`）。每个普通配置源
@@ -329,17 +331,21 @@ Session 或模型切换失败时保留旧 Harness、订阅和模型。
 每个 provider 的 `protocol` 为三者之一、`models` 非空 → `defaultModel` 必填且必须引用已配置
 provider 并列出其 `models` 中的模型 → 启用 provider 的 auth key 非空。
 
+`Config.load` 是纯加载：显式 `keaHome`、不建模板。应用引导入口 `loadConfig` 计算 `keaHome`
+（默认 `~/.kea`）、补建缺失模板、对 created 文件打印 `<path>: created`，再转调 `Config.load`，
+并返回 `{ config, keaHome }` 供 `openOrCreateProject` 使用。
+
 `Config` 保持 Provider 凭据私有（`#providers`），公开 `models`、`defaultModel`、
 `runtimeProviders()`、`maxTurns`、`toolTimeoutSeconds`、`thinking`、`toolDetails`、`verbose`
-和 `redact()`。`redact()` 把所有已加载的非空 API key 替换为 `[REDACTED]`；顶层错误、verbose
-日志和 listener 错误都经它输出。
+和 `redact()`。`redact()` 把所有已加载的非空 API key 替换为 `[REDACTED]`；顶层错误与 verbose
+日志经它输出。
 
 ### 启动顺序
 
-1. 解析 argv；
+1. `parseArgs()` 解析 argv，参数错误进 `diagnostics`；
 2. `resolveProjectDirectory()` 得到规范 Project 目录；
-3. 用户配置文件（`~/.kea/config.json`、`auth.json`）缺失时补建模板（独占创建，绝不
-   覆盖，只打印 `created`），然后 `Config.load()` 按上述顺序加载并验证；
+3. `loadConfig()` 计算 `keaHome`、补建用户配置模板（独占创建，绝不覆盖，只打印 `created`），
+   再按上述顺序加载并验证，返回 `{ config, keaHome }`；
 4. `createModelRuntime({ providers: config.runtimeProviders() })`；
 5. 构造 `CliUi`（models、display 设置、经 `redact()` 的 `reportError`）；
 6. `openOrCreateProject()` 打开或创建 Project；
@@ -360,8 +366,8 @@ provider 并列出其 `models` 中的模型 → 启用 provider 的 auth key 非
 - `src/ui/cli/index.ts`：`CliUi`、`CliInteractions`、`Renderer`（命令行实现）；
 - `src/index.ts`：汇总以上入口和通用 workspace helpers。
 
-`src/application/` 保持应用内部：Config、argv、模板创建和目录发现只由 `main.ts` 与测试导入。
-具体内置 Tool/事件工厂、Bash policy 和各 Tool 的 details 类型都是内部实现。
+`coding-agent/cli` 与 `coding-agent/config` 保持应用内部：args、Config、模板创建和目录发现只由
+`main.ts` 与测试导入。具体内置 Tool/事件工厂、Bash policy 和各 Tool 的 details 类型都是内部实现。
 
 ## 8. 边界约束
 
@@ -369,8 +375,10 @@ provider 并列出其 `models` 中的模型 → 启用 provider 的 auth key 非
 - `harness` 不依赖 `coding-agent` 或 `ui`；agent-loop、Tool 与事件契约同属本包，只声明自己的
   `EventMap` 契约；
 - `harness` 不依赖具体 coding Tool 或 UI；
-- `coding-agent` 不依赖 `src/ui` 或 `src/application`，只定义 `Interactions` 端口；
-- `application` 不依赖 UI 内部组件；main 从 Config 取出 UI 需要的值传给 UI；
+- `coding-agent` 的领域内部组件（project/tools/events/interaction）不依赖 `src/ui` 或
+  `coding-agent/cli`、`coding-agent/config`，只定义 `Interactions` 端口；
+- `coding-agent/cli` 与 `coding-agent/config` 不依赖 UI，也不依赖 Coding Agent 的领域内部组件；
+  main 从 Config 取出 UI 需要的值传给 UI；
 - `SessionRepository` 管理 Session 集合，`AgentHarness` 只绑定一份 Session；
 - `Project` 的原始 `Events` 私有；UI 只能通过 `harness.subscribe()` 观察；
 - 控制事件负责提交前控制，`emit` 事实负责事实通知；

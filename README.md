@@ -139,12 +139,12 @@ Harness 核心代码统一位于 `src/core/`；产品适配与界面代码位于
 | `ai` | [ai/README.md](src/core/ai/README.md) | 显式 Provider 的 `ModelRuntime`、消息与流协议 |
 | `events` | [events/README.md](src/core/events/README.md) | 核心事件契约与统一分发器 |
 | `harness` | [harness/README.md](src/core/harness/README.md) · [docs](src/core/harness/docs/) | 通用 agent：`runAgentLoop`、`AgentTool` 三阶段拦截、`AgentHarness`、Session/Repository、`HarnessEvent` |
-| `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | `Project`、`openOrCreateProject`、内置 Tools、Bash 策略、Interactions port |
-| `application` | — | `Config`（唯一设置实体）、argv、用户配置模板、目录发现 |
+| `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | 产品组装：`cli/`（args、目录发现）、`config/`（`Config`、模板）、`Project`、内置 Tools、Bash 策略、Interactions port |
 | `ui` | — | 命令语言（`parseInput`/`UiAction`）；`ui/cli` 提供命令行实现（`CliUi`、`CliInteractions`、`Renderer`） |
 
 源码依赖方向始终向下：`main -> ui -> coding-agent -> core/harness -> core/ai`；
-`core/events` 是 Harness 与 Coding Agent 共享的核心运行时。
+`core/events` 是 Harness 与 Coding Agent 共享的核心运行时。`coding-agent/cli` 与
+`coding-agent/config` 是纯启动能力，只向下依赖 `core`，不依赖 UI 或 Coding Agent 的领域内部组件。
 
 ## 工具系统
 
@@ -181,9 +181,10 @@ directory：
 
 ## CLI 与核心边界
 
-`main.ts` 只负责组合：Config → `createModelRuntime({ providers })` → `CliUi` →
-`openOrCreateProject()` → 交互循环。`application` 层不依赖 UI 内部组件，main 从 Config
-取出 UI 需要的值传给 UI；`src/ui` 不导入 `core/harness` 的内部模块，只使用其公开入口。
+`main.ts` 只负责组合：Config（`loadConfig`）→ `createModelRuntime({ providers })` → `CliUi` →
+`openOrCreateProject()` → 交互循环。`coding-agent/cli` 与 `coding-agent/config` 是纯启动能力，
+不依赖 UI 内部组件，main 从 Config 取出 UI 需要的值传给 UI；`src/ui` 不导入 `core/harness`
+的内部模块，只使用其公开入口。
 
 UI 观察运行事实的唯一入口是 `harness.subscribe()`：Project 的原始 `Events` 是私有的，
 `AgentHarness` 把属于本 Session 的 emit 事实投影成 `HarnessEvent` 转发给 listener。

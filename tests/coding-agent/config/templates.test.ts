@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { initializeUserConfiguration } from "../../src/application/init.js";
+import { initializeUserConfiguration } from "../../../src/coding-agent/config/templates.js";
 
 const USER_CONFIG_TEMPLATE = `{
   "defaultModel": {

@@ -51,8 +51,8 @@ async function requireDirectory(path: string): Promise<string> {
 /**
  * Resolve the canonical Project directory owning a startup directory:
  * absolute, realpath-normalized, then the Git work-tree root when the
- * directory is inside one. Git discovery is an application concern; the
- * Coding Agent factory receives the resolved directory.
+ * directory is inside one. Git discovery is a startup concern; the Coding
+ * Agent factory receives the resolved directory.
  */
 export async function resolveProjectDirectory(
   startupDirectory: string,

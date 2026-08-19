@@ -4,25 +4,25 @@ import { decidePermission, type PermissionRule } from "./permission/permission.j
 
 /**
  * Composition root: creates the Coding runtime's Events bus and registers the
- * default Permission listener on tools/pre-execute (spec §11). An external
- * assembler hands the returned bus to the Project that consumes it.
+ * default Permission listener on tools/pre-execute. An external assembler
+ * hands the returned bus to the Project that consumes it.
  *
  * The options object receives caller-owned, Project-scoped state (approved and
- * trustedDirectories), listener configuration and the Interaction port
- * directly; no environment abstraction hides them. ToolCallEvent carries the
- * Session cwd needed by Permission.
+ * trustedDirectories) and the Interaction port directly; no environment
+ * abstraction hides them. ToolCallEvent carries the Session cwd needed by
+ * Permission.
+ *
+ * Listener errors are surfaced through a built-in `console.error` handler so
+ * a throwing UI/extension listener is never silently swallowed.
  */
 export function createBuiltinEvents(options: {
   readonly interactions: Interactions;
   readonly approved: PermissionRule[];
   readonly trustedDirectories: readonly string[];
-  readonly onListenerError?: (
-    error: unknown,
-    name: string,
-    input: unknown,
-  ) => void;
 }): Events {
-  const events = new Events(options.onListenerError);
+  const events = new Events((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+  });
 
   events.on("tools/pre-execute", async (input, proceed, signal) => {
     const decision = await decidePermission(

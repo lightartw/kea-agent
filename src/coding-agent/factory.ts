@@ -57,11 +57,6 @@ export async function openOrCreateProject(options: {
   readonly interactions: Interactions;
   readonly maxTurns: number;
   readonly toolTimeoutSeconds: number;
-  readonly onListenerError?: (
-    error: unknown,
-    name: string,
-    input: unknown,
-  ) => void;
 }): Promise<Project> {
   const projectDirectory = await requireProjectDirectory(options.projectDirectory);
 
@@ -87,9 +82,6 @@ export async function openOrCreateProject(options: {
     interactions: options.interactions,
     approved,
     trustedDirectories: [projectDirectory],
-    ...(options.onListenerError === undefined
-      ? {}
-      : { onListenerError: options.onListenerError }),
   });
   return new Project({
     info,

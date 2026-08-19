@@ -1,21 +1,14 @@
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { parseArguments } from "./application/arguments.js";
-import { Config } from "./application/config.js";
-import { initializeUserConfiguration } from "./application/init.js";
-import { resolveProjectDirectory } from "./application/project-directory.js";
+import { parseArgs } from "./coding-agent/cli/args.js";
+import { resolveProjectDirectory } from "./coding-agent/cli/project-directory.js";
+import { loadConfig } from "./coding-agent/config/config.js";
 import { openOrCreateProject } from "./coding-agent/factory.js";
 import type { Project } from "./coding-agent/index.js";
 import { createModelRuntime } from "./core/ai/factory.js";
 import type { AgentHarness } from "./core/harness/index.js";
 import { CliUi } from "./ui/cli/index.js";
-
-/** Redacted diagnostic path; identity until a Config exists to redact with. */
-let writeDiagnostic = (message: string): void => {
-  console.error(message);
-};
 
 /**
  * Initial Harness for the prompt loop: `kea -c` resumes the newest Session,
@@ -38,38 +31,33 @@ export async function selectInitialHarness(
 
 /** Production composition root; never runs on import. */
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
-  const args = parseArguments(argv);
-  const keaHome = resolve(homedir(), ".kea");
+  const args = parseArgs(argv);
+  if (args.diagnostics.some((d) => d.type === "error")) {
+    for (const d of args.diagnostics) {
+      console.error(`${d.type}: ${d.message}`);
+    }
+    process.exitCode = 1;
+    return;
+  }
+
   const projectDirectory = await resolveProjectDirectory(args.directory);
-  // First-run fallback: create missing user templates with init semantics
-  // (never overwrite) and report only what was actually created.
-  const created = await initializeUserConfiguration(keaHome);
-  if (created.config === "created") {
-    console.log(`${join(keaHome, "config.json")}: created`);
-  }
-  if (created.auth === "created") {
-    console.log(`${join(keaHome, "auth.json")}: created`);
-  }
-  const config = await Config.load({
-    keaHome,
+  const { config, keaHome } = await loadConfig({
     projectDirectory,
     ...(args.config === undefined ? {} : { configOverride: args.config }),
     verbose: args.verbose,
   });
-  writeDiagnostic = (message: string): void => {
-    console.error(config.redact(message));
-  };
+
   const reportError = (error: unknown): void => {
-    writeDiagnostic(error instanceof Error ? error.message : String(error));
+    console.error(config.redact(error instanceof Error ? error.message : String(error)));
   };
 
   if (config.verbose) {
-    writeDiagnostic(`project directory: ${projectDirectory}`);
+    reportError(`project directory: ${projectDirectory}`);
     for (const model of config.models) {
-      writeDiagnostic(`model: ${model.provider}/${model.model}`);
+      reportError(`model: ${model.provider}/${model.model}`);
     }
     for (const provider of config.runtimeProviders()) {
-      writeDiagnostic(
+      reportError(
         `credentials: ${provider.name} ${provider.apiKey === "" ? "missing" : "configured"}`,
       );
     }
@@ -90,9 +78,6 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     interactions: ui.interactions,
     maxTurns: config.maxTurns,
     toolTimeoutSeconds: config.toolTimeoutSeconds,
-    onListenerError: (error) => {
-      reportError(error);
-    },
   });
   const initial = await selectInitialHarness(project, args.continue);
 
@@ -109,7 +94,7 @@ const isMainModule =
 
 if (isMainModule) {
   main().catch((error: unknown) => {
-    writeDiagnostic(error instanceof Error ? error.message : String(error));
+    console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   });
 }

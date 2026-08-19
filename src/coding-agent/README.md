@@ -81,11 +81,6 @@ function openOrCreateProject(options: {
   readonly interactions: Interactions;
   readonly maxTurns: number;
   readonly toolTimeoutSeconds: number;
-  readonly onListenerError?: (
-    error: unknown,
-    name: string,
-    input: unknown,
-  ) => void;
 }): Promise<Project>;
 ```
 
@@ -277,8 +272,8 @@ Project 发现、记录校验、Session cwd 校验中的失败使用 `ProjectErr
 内置 Tool 的普通执行失败通常转换成 `isError: true` 的 Tool Result，让模型能够读取失败原因并决定
 下一步。参数 lookup、超时、Tool listener 和 Agent Run 的通用规则由 `core/harness` 负责。
 
-`onListenerError` 只交给 Project 级 `Events`，用于报告 `emit()` listener 的错误；Permission
-使用的 `intercept()` 错误遵循 core Events 的传播规则。
+Project 级 `Events` 的 `emit()` listener 错误由 `createBuiltinEvents` 内建的 `console.error`
+handler 输出，不被静默吞掉；Permission 使用的 `intercept()` 错误遵循 core Events 的传播规则。
 
 ## 9. 公共导出
 

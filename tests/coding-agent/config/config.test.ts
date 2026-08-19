@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { Config, ConfigurationError } from "../../src/application/config.js";
+import { Config, loadConfig } from "../../../src/coding-agent/config/config.js";
+import { ConfigurationError } from "../../../src/coding-agent/config/schema.js";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "kea-config-"));
@@ -721,5 +723,45 @@ test("redact replaces every loaded non-empty key without lengths or prefixes", a
     assert.ok(!config.redact("use secret-key now").includes("secret-key"));
   } finally {
     await cleanUp(fixture);
+  }
+});
+
+test("loadConfig creates missing templates then fails on the empty auth key", async () => {
+  const keaHome = await tempDir();
+  const projectDirectory = await tempDir();
+  try {
+    await assert.rejects(
+      loadConfig({ projectDirectory, verbose: false, keaHome }),
+      (error: unknown) => {
+        assert.ok(error instanceof ConfigurationError);
+        assert.match(error.message, /must be non-empty/i);
+        return true;
+      },
+    );
+    assert.equal(existsSync(join(keaHome, "config.json")), true);
+    assert.equal(existsSync(join(keaHome, "auth.json")), true);
+  } finally {
+    await cleanUp({ keaHome, projectDirectory });
+  }
+});
+
+test("loadConfig returns config and keaHome for a valid setup", async () => {
+  const keaHome = await tempDir();
+  const projectDirectory = await tempDir();
+  try {
+    await writeJson(join(keaHome, "config.json"), {
+      defaultModel: { provider: "openai", model: "m" },
+      providers: { openai: { protocol: "openai", models: ["m"] } },
+    });
+    await writeJson(join(keaHome, "auth.json"), {
+      providers: { openai: { apiKey: "secret" } },
+    });
+
+    const result = await loadConfig({ projectDirectory, verbose: false, keaHome });
+    assert.equal(result.keaHome, keaHome);
+    assert.deepEqual(result.config.models, [{ provider: "openai", model: "m" }]);
+    assert.deepEqual(result.config.defaultModel, { provider: "openai", model: "m" });
+  } finally {
+    await cleanUp({ keaHome, projectDirectory });
   }
 });

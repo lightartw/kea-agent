@@ -84,10 +84,7 @@ class RecordingInteractions implements Interactions {
   }
 }
 
-function harness(
-  interactions: Interactions,
-  onListenerError?: (error: unknown, name: string, input: unknown) => void,
-) {
+function harness(interactions: Interactions) {
   const registry = new AgentToolRegistry();
   const bashTool = new BashTool();
   const readFileTool = new ReadFileTool();
@@ -98,7 +95,6 @@ function harness(
     interactions,
     approved,
     trustedDirectories: [PROJECT],
-    ...(onListenerError === undefined ? {} : { onListenerError }),
   });
   return {
     events,
@@ -180,24 +176,27 @@ test("paths outside the trusted directories ask and proceed once", async () => {
   assert.equal(request.targetPath, join(OUTSIDE, "data.txt"));
 });
 
-test("onListenerError is forwarded to the Events bus", async () => {
-  const reported: unknown[] = [];
-  const h = harness(new RecordingInteractions([]), (error, name, input) => {
-    reported.push(error, name, input);
-  });
+test("listener errors are surfaced through console.error", async () => {
+  const h = harness(new RecordingInteractions([]));
   const boom = new Error("boom");
   h.events.on("harness/run-start", () => {
     throw boom;
   });
 
-  await h.events.emit("harness/run-start", {
-    sessionId: "session-a",
-    runId: "run-1",
-  });
+  const original = console.error;
+  const captured: string[] = [];
+  console.error = (...args: unknown[]) => {
+    captured.push(args.map((a) => String(a)).join(" "));
+  };
+  try {
+    await h.events.emit("harness/run-start", {
+      sessionId: "session-a",
+      runId: "run-1",
+    });
+  } finally {
+    console.error = original;
+  }
 
-  assert.deepEqual(reported, [
-    boom,
-    "harness/run-start",
-    { sessionId: "session-a", runId: "run-1" },
-  ]);
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0], "boom");
 });

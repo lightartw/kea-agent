@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
-import { resolveProjectDirectory } from "../../src/application/project-directory.js";
+import { resolveProjectDirectory } from "../../../src/coding-agent/cli/project-directory.js";
 
 const execFileAsync = promisify(execFile);
 
