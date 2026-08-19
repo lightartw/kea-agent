@@ -12,12 +12,14 @@ import { Renderer } from "../../../src/ui/cli/renderer.js";
 function rendererWith(options: {
   readonly thinking?: "hidden" | "visible";
   readonly toolDetails?: "compact" | "full";
+  readonly color?: boolean;
 }): { readonly renderer: Renderer; readonly output: () => string; readonly logs: string[] } {
   const chunks: string[] = [];
   const logs: string[] = [];
   const renderer = new Renderer({
     thinking: options.thinking ?? "hidden",
     toolDetails: options.toolDetails ?? "compact",
+    color: options.color ?? false,
     write: (text) => chunks.push(text),
     log: (text) => logs.push(text),
   });
@@ -126,6 +128,34 @@ test("an error tool result terminates its line so later text starts fresh", () =
     text.indexOf("✗ bash: nope\n") < text.indexOf("recovering"),
     "later text must not join the error line",
   );
+});
+
+test("tool facts are styled and LLM text is left unstyled when color is on", () => {
+  const { renderer, output } = rendererWith({ toolDetails: "compact", color: true });
+  renderer.handle({
+    type: "tool-call",
+    runId: "run-1",
+    cwd: "/repo",
+    call: toolCall("bash", { command: "ls" }),
+  });
+  renderer.handle({
+    type: "tool-result",
+    runId: "run-1",
+    cwd: "/repo",
+    call: toolCall("bash", { command: "ls" }),
+    result: toolResult("ok"),
+  });
+  renderer.handle({
+    type: "text-delta",
+    runId: "run-1",
+    text: "plain text",
+  });
+
+  const text = output();
+  assert.ok(text.includes("\u001b[36m⚙ bash\u001b[0m"), "tool call name is cyan");
+  assert.ok(text.includes("\u001b[32m✓ bash\u001b[0m"), "tool result is green");
+  assert.ok(text.includes("plain text"), "LLM text renders");
+  assert.ok(!text.includes("\u001b[3plain text"), "LLM text carries no color style");
 });
 
 test("full tool facts include JSON-safe arguments and result content", () => {

@@ -124,6 +124,7 @@ function makeUi(options: {
     models: options.models ?? [MODEL],
     thinking: "hidden",
     toolDetails: "compact",
+    color: false,
     readline: options.readline,
     write: options.write ?? ((text) => options.calls.push(`render:${text}`)),
     log: () => {},
@@ -382,7 +383,7 @@ test("command errors render and the loop continues", async () => {
   ui.close();
 
   assert.ok(
-    calls.some((call) => call === "render:\n✗ /new does not accept arguments"),
+    calls.some((call) => call === "render:\n✗ /new does not accept arguments\n"),
     calls.join(" | "),
   );
   assert.deepEqual(

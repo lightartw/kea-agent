@@ -11,6 +11,7 @@ export interface CliUiOptions {
   readonly models: readonly ModelConfig[];
   readonly thinking: "hidden" | "visible";
   readonly toolDetails: "compact" | "full";
+  readonly color?: boolean;
   readonly reportError: (error: unknown) => void;
   readonly readline?: Interface;
   readonly input?: NodeJS.ReadStream;
@@ -53,6 +54,7 @@ export class CliUi {
     this.renderer = new Renderer({
       thinking: options.thinking,
       toolDetails: options.toolDetails,
+      ...(options.color === undefined ? {} : { color: options.color }),
       write: options.write ?? ((text: string) => process.stdout.write(text)),
       log: options.log ?? ((text: string) => console.log(text)),
     });

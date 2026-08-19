@@ -111,6 +111,7 @@ test("the full composition renders tool calls and the run summary", async () => 
       models: [MODEL],
       thinking: "hidden",
       toolDetails: "compact",
+      color: false,
       readline,
       write: (text) => chunks.push(text),
       log: () => {},

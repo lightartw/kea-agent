@@ -20,6 +20,7 @@ interface ToolCallStream {
 export interface RendererOptions {
   readonly thinking: "hidden" | "visible";
   readonly toolDetails: "compact" | "full";
+  readonly color?: boolean;
   readonly write: (text: string) => void;
   readonly log: (text: string) => void;
 }
@@ -37,6 +38,7 @@ function bounded(text: string, limit = PREVIEW_LENGTH): string {
 export class Renderer {
   private readonly thinking: "hidden" | "visible";
   private readonly toolDetails: "compact" | "full";
+  private readonly color: boolean;
   private readonly writeFn: (text: string) => void;
   private readonly logFn: (text: string) => void;
   private readonly toolCounts = new Map<string, number>();
@@ -45,8 +47,14 @@ export class Renderer {
   constructor(options: RendererOptions) {
     this.thinking = options.thinking;
     this.toolDetails = options.toolDetails;
+    this.color = options.color ?? true;
     this.writeFn = options.write;
     this.logFn = options.log;
+  }
+
+  /** ANSI styling; a no-op when color is disabled. */
+  private style(code: number, text: string): string {
+    return this.color ? `\u001b[${code}m${text}\u001b[0m` : text;
   }
 
   handle(event: HarnessEvent): void {
@@ -56,7 +64,7 @@ export class Renderer {
           this.writeFn(event.text);
           break;
         case "thinking-delta":
-          if (this.thinking === "visible") this.writeFn(event.thinking);
+          if (this.thinking === "visible") this.writeFn(this.style(2, event.thinking));
           break;
         case "tool-call-start":
           this.renderToolCallStart(event.runId, event.id, event.name);
@@ -94,7 +102,7 @@ export class Renderer {
     readonly messages: readonly AgentMessage[];
   }): void {
     this.writeFn(
-      `\nSession ${harness.sessionId} — ${harness.model.provider}/${harness.model.model}`,
+      `\n${this.style(36, `Session ${harness.sessionId} — ${harness.model.provider}/${harness.model.model}`)}\n`,
     );
     this.renderHistory(harness.messages);
   }
@@ -103,28 +111,28 @@ export class Renderer {
   renderHistory(messages: readonly AgentMessage[]): void {
     for (const message of messages) {
       if (message.role === "user") {
-        this.writeFn(`\n> ${message.content}`);
+        this.writeFn(`\n${this.style(1, `> ${message.content}`)}\n`);
       } else if (message.role === "assistant") {
         const text = message.content
           .filter((block) => block.type === "text")
           .map((block) => block.text)
           .join("");
-        if (text !== "") this.writeFn(`\n${text}`);
+        if (text !== "") this.writeFn(`\n${text}\n`);
       } else {
-        this.writeFn(`\n[tool] ${message.content}`);
+        this.writeFn(`\n${this.style(2, `[tool] ${message.content}`)}\n`);
       }
     }
   }
 
   renderError(message: string): void {
-    this.writeFn(`\n✗ ${message}`);
+    this.writeFn(`\n${this.style(31, `✗ ${message}`)}\n`);
   }
 
   /** Numbered options for /session and /model selection. */
   renderSelection(prompt: string, options: readonly string[]): void {
-    this.writeFn(`\n${prompt}`);
+    this.writeFn(`\n${prompt}\n`);
     for (const [index, option] of options.entries()) {
-      this.writeFn(`\n${index + 1}. ${option}`);
+      this.writeFn(`${index + 1}. ${option}\n`);
     }
   }
 
@@ -153,7 +161,7 @@ export class Renderer {
       argsWritten: 0,
       truncated: false,
     });
-    this.writeFn(`\n⚙ ${name} `);
+    this.writeFn(`\n${this.style(36, `⚙ ${name}`)} `);
   }
 
   /** Stream the arguments JSON in place; compact mode bounds the line. */
@@ -191,18 +199,20 @@ export class Renderer {
     const argumentsText = this.toolDetails === "compact"
       ? bounded(JSON.stringify(call.arguments))
       : JSON.stringify(call.arguments);
-    this.writeFn(`\n⚙ ${call.name} ${argumentsText}`);
+    this.writeFn(`\n${this.style(36, `⚙ ${call.name}`)} ${argumentsText}`);
   }
 
   private renderToolResult(call: AgentToolCall, result: AgentToolResult): void {
+    const marker = result.isError ? "✗" : "✓";
+    const code = result.isError ? 31 : 32;
     if (this.toolDetails === "full") {
-      this.writeFn(`\n${result.isError ? "✗" : "✓"} ${call.name}\n${result.content}\n`);
+      this.writeFn(`\n${this.style(code, `${marker} ${call.name}`)}\n${result.content}\n`);
       return;
     }
     if (result.isError) {
-      this.writeFn(`\n✗ ${call.name}: ${bounded(result.content)}\n`);
+      this.writeFn(`\n${this.style(code, `${marker} ${call.name}: ${bounded(result.content)}`)}\n`);
     } else {
-      this.writeFn(`\n✓ ${call.name}\n`);
+      this.writeFn(`\n${this.style(code, `${marker} ${call.name}`)}\n`);
     }
   }
 
@@ -214,11 +224,11 @@ export class Renderer {
       if (key.startsWith(streamPrefix)) this.toolCallStreams.delete(key);
     }
     if (event.reason === "error") {
-      this.writeFn(`\n✗ run failed: ${event.errorMessage} (${count} tool calls)\n`);
+      this.writeFn(`\n${this.style(31, `✗ run failed: ${event.errorMessage} (${count} tool calls)`)}\n`);
     } else if (event.reason === "completed") {
-      this.writeFn(`\n✓ completed (${count} tool calls)\n`);
+      this.writeFn(`\n${this.style(32, `✓ completed (${count} tool calls)`)}\n`);
     } else {
-      this.writeFn(`\naborted (${count} tool calls)\n`);
+      this.writeFn(`\n${this.style(2, `aborted (${count} tool calls)`)}\n`);
     }
   }
 }
