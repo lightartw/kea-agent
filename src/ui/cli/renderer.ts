@@ -43,6 +43,7 @@ export class Renderer {
   private readonly logFn: (text: string) => void;
   private readonly toolCounts = new Map<string, number>();
   private readonly toolCallStreams = new Map<string, ToolCallStream>();
+  private readonly thinkingRuns = new Set<string>();
 
   constructor(options: RendererOptions) {
     this.thinking = options.thinking;
@@ -60,13 +61,22 @@ export class Renderer {
   handle(event: HarnessEvent): void {
     try {
       switch (event.type) {
+        case "turn-start":
+          this.renderThinkingIndicator(event.runId);
+          break;
+        case "turn-end":
+          this.clearThinkingIndicator(event.runId);
+          break;
         case "text-delta":
+          this.clearThinkingIndicator(event.runId);
           this.writeFn(event.text);
           break;
         case "thinking-delta":
+          this.clearThinkingIndicator(event.runId);
           if (this.thinking === "visible") this.writeFn(this.style(2, event.thinking));
           break;
         case "tool-call-start":
+          this.clearThinkingIndicator(event.runId);
           this.renderToolCallStart(event.runId, event.id, event.name);
           break;
         case "tool-call-delta":
@@ -83,11 +93,18 @@ export class Renderer {
           this.renderToolResult(event.call, event.result);
           break;
         case "run-end":
+          this.clearThinkingIndicator(event.runId);
           this.renderRunEnd(event);
           break;
         default:
           break;
       }
+    } catch (error) {
+      this.logFn(
+        `renderer error: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
     } catch (error) {
       this.logFn(
         `renderer error: ${error instanceof Error ? error.message : String(error)}`,
@@ -118,6 +135,13 @@ export class Renderer {
           .map((block) => block.text)
           .join("");
         if (text !== "") this.writeFn(`\n${text}\n`);
+        // Replay the tool calls the assistant requested, matching the live
+        // run: one "⚙ name args" line per toolCall block.
+        for (const block of message.content) {
+          if (block.type === "toolCall") {
+            this.writeFn(this.toolCallLine(block.name, block.arguments));
+          }
+        }
       } else {
         // Tool messages replay like the live tool result, so restored history
         // matches the current run's rendering.
@@ -171,6 +195,11 @@ export class Renderer {
     return this.toolDetails === "compact" ? bounded(json) : json;
   }
 
+  /** One tool call line: styled name plus the bounded arguments JSON. */
+  private toolCallLine(name: string, arguments_: Record<string, unknown>): string {
+    return `\n${this.toolCallLabel(name)} ${this.toolArgumentsText(arguments_)}`;
+  }
+
   /** Open a tool call line; the arguments stream in as deltas. */
   private renderToolCallStart(runId: string, id: string, name: string): void {
     this.toolCallStreams.set(this.toolCallKey(runId, id), {
@@ -213,11 +242,7 @@ export class Renderer {
       }
       return;
     }
-    this.writeFn(`\n${this.toolCallLabel(call.name)} ${this.toolArgumentsText(call.arguments)}`);
-  }
-
-  private renderToolResult(call: AgentToolCall, result: AgentToolResult): void {
-    this.renderToolResultLine(call.name, result.isError, result.content);
+    this.writeFn(this.toolCallLine(call.name, call.arguments));
   }
 
   /** One styled tool-result line; shared by live results and history replay. */
@@ -228,11 +253,25 @@ export class Renderer {
       this.writeFn(`\n${this.style(code, `${marker} ${name}`)}\n${content}\n`);
       return;
     }
-    if (isError) {
-      this.writeFn(`\n${this.style(code, `${marker} ${name}: ${bounded(content)}`)}\n`);
-    } else {
-      this.writeFn(`\n${this.style(code, `${marker} ${name}`)}\n`);
-    }
+    // Compact mode still shows a bounded preview so the user can see what the
+    // tool returned.
+    const preview = bounded(content);
+    const label = preview === "" ? `${marker} ${name}` : `${marker} ${name}: ${preview}`;
+    this.writeFn(`\n${this.style(code, label)}\n`);
+  }
+
+  /** Show a dim "thinking…" indicator while the model works without output. */
+  private renderThinkingIndicator(runId: string): void {
+    if (this.thinkingRuns.has(runId)) return;
+    this.thinkingRuns.add(runId);
+    this.writeFn(`\n${this.style(2, "💭 thinking…")}`);
+  }
+
+  /** End the thinking indicator line once real output arrives. */
+  private clearThinkingIndicator(runId: string): void {
+    if (!this.thinkingRuns.has(runId)) return;
+    this.thinkingRuns.delete(runId);
+    this.writeFn("\n");
   }
 
   private renderRunEnd(event: HarnessRunEnd): void {

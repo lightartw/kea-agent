@@ -55,7 +55,7 @@ test("thinking is suppressed when hidden and written when visible", () => {
   assert.ok(visible.output().includes("visible reasoning"));
 });
 
-test("compact tool facts omit full result content", () => {
+test("compact tool facts show a bounded result preview", () => {
   const { renderer, output } = rendererWith({ toolDetails: "compact" });
   renderer.handle({
     type: "tool-call",
@@ -73,7 +73,8 @@ test("compact tool facts omit full result content", () => {
 
   assert.ok(output().includes("bash"));
   assert.ok(output().includes("ls -la"));
-  assert.ok(!output().includes("LONG"));
+  assert.ok(output().includes("LONG"), "compact shows a preview of the result");
+  assert.ok(!output().includes("LONG".repeat(1000)), "compact bounds the preview");
 });
 
 test("a tool result terminates its line so later text starts fresh", () => {
@@ -98,10 +99,10 @@ test("a tool result terminates its line so later text starts fresh", () => {
   });
 
   const text = output();
-  assert.ok(text.includes("✓ bash\n"), "success result must end the line");
+  assert.ok(text.includes("✓ bash: ok\n"), "success result must end the line");
   assert.ok(text.includes("next sentence"), "later text must render");
   assert.ok(
-    text.indexOf("✓ bash\n") < text.indexOf("next sentence"),
+    text.indexOf("✓ bash: ok\n") < text.indexOf("next sentence"),
     "later text must not join the result line",
   );
 });
@@ -153,9 +154,21 @@ test("tool facts are styled and LLM text is left unstyled when color is on", () 
 
   const text = output();
   assert.ok(text.includes("\u001b[36m⚙ bash\u001b[0m"), "tool call name is cyan");
-  assert.ok(text.includes("\u001b[32m✓ bash\u001b[0m"), "tool result is green");
+  assert.ok(text.includes("\u001b[32m✓ bash: ok\u001b[0m"), "tool result is green");
   assert.ok(text.includes("plain text"), "LLM text renders");
   assert.ok(!text.includes("\u001b[3plain text"), "LLM text carries no color style");
+});
+
+test("turn-start shows a thinking indicator that clears on real output", () => {
+  const { renderer, output } = rendererWith({ thinking: "hidden" });
+  renderer.handle({ type: "turn-start", runId: "run-1" });
+  assert.ok(output().includes("💭 thinking…"), "thinking indicator is shown");
+
+  renderer.handle({ type: "text-delta", runId: "run-1", text: "hello" });
+  const text = output();
+  assert.ok(text.includes("💭 thinking…\n"), "indicator line is terminated on output");
+  assert.ok(text.includes("hello"));
+  assert.ok(text.indexOf("💭 thinking") < text.indexOf("hello"));
 });
 
 test("full tool facts include JSON-safe arguments and result content", () => {
@@ -225,8 +238,7 @@ test("history renders user, assistant, and tool messages in order", () => {
   const text = output();
   assert.ok(text.includes("hello"));
   assert.ok(text.includes("hi there"));
-  assert.ok(text.includes("✓ bash"), "tool messages replay like a live tool result");
-  assert.ok(!text.includes("tool output"), "compact replay hides the result content");
+  assert.ok(text.includes("✓ bash: tool output"), "tool messages replay like a live tool result preview");
   assert.ok(!text.includes("skipped thinking"));
   assert.ok(text.indexOf("hello") < text.indexOf("hi there"));
   assert.ok(text.indexOf("hi there") < text.indexOf("✓ bash"));
