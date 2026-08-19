@@ -216,6 +216,26 @@ export class AgentHarness {
           });
         }
       }),
+      this.events.on("agent/text-start", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({ type: "text-start", runId: input.runId });
+        }
+      }),
+      this.events.on("agent/text-end", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({ type: "text-end", runId: input.runId });
+        }
+      }),
+      this.events.on("agent/thinking-start", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({ type: "thinking-start", runId: input.runId });
+        }
+      }),
+      this.events.on("agent/thinking-end", (input) => {
+        if (belongsToSession(input.sessionId)) {
+          listener({ type: "thinking-end", runId: input.runId });
+        }
+      }),
       this.events.on("agent/text-delta", (input) => {
         if (belongsToSession(input.sessionId)) {
           listener({ type: "text-delta", runId: input.runId, text: input.text });

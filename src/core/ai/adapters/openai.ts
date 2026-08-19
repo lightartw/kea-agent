@@ -86,6 +86,8 @@ export class OpenAIAdapter implements Adapter {
     let inputTokens = 0;
     let outputTokens = 0;
     let stopReason: StopReason = "stop";
+    let thinkingOpen = false;
+    let textOpen = false;
 
     const toolCalls = new Map<number, { id: string; name: string; arguments: string; started: boolean }>();
 
@@ -118,16 +120,36 @@ export class OpenAIAdapter implements Adapter {
           const delta = choice.delta ?? {};
 
           if (delta.reasoning_content) {
+            if (!thinkingOpen) {
+              thinkingOpen = true;
+              yield { type: "thinking_start" };
+            }
             reasoning += delta.reasoning_content;
             yield { type: "thinking_delta", thinking: delta.reasoning_content };
           }
 
           if (delta.content) {
+            if (thinkingOpen) {
+              thinkingOpen = false;
+              yield { type: "thinking_end" };
+            }
+            if (!textOpen) {
+              textOpen = true;
+              yield { type: "text_start" };
+            }
             text += delta.content;
             yield { type: "text_delta", text: delta.content };
           }
 
           for (const [position, call] of (delta.tool_calls ?? []).entries()) {
+            if (thinkingOpen) {
+              thinkingOpen = false;
+              yield { type: "thinking_end" };
+            }
+            if (textOpen) {
+              textOpen = false;
+              yield { type: "text_end" };
+            }
             const index = call.index ?? position;
             let tc = toolCalls.get(index);
             if (!tc) {
@@ -164,6 +186,15 @@ export class OpenAIAdapter implements Adapter {
             arguments: JSON.parse(tc.arguments || "{}"),
           },
         };
+      }
+
+      if (thinkingOpen) {
+        thinkingOpen = false;
+        yield { type: "thinking_end" };
+      }
+      if (textOpen) {
+        textOpen = false;
+        yield { type: "text_end" };
       }
 
       const contentBlocks: ContentBlock[] = [];

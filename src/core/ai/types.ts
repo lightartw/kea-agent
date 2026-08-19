@@ -69,8 +69,12 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 // ── Streaming events ──
 
 export type StreamChunk =
+  | { readonly type: "text_start" }
   | { readonly type: "text_delta";      readonly text: string }
+  | { readonly type: "text_end" }
+  | { readonly type: "thinking_start" }
   | { readonly type: "thinking_delta";  readonly thinking: string }
+  | { readonly type: "thinking_end" }
   | { readonly type: "toolcall_start";  readonly id: string; readonly name: string }
   | { readonly type: "toolcall_delta";  readonly id: string; readonly argumentsDelta: string }
   | { readonly type: "toolcall_end";    readonly toolCall: ToolCall }

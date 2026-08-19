@@ -67,6 +67,17 @@ export class Renderer {
         case "turn-end":
           this.clearThinkingIndicator(event.runId);
           break;
+        case "text-start":
+          this.clearThinkingIndicator(event.runId);
+          break;
+        case "text-end":
+          break;
+        case "thinking-start":
+          this.clearThinkingIndicator(event.runId);
+          break;
+        case "thinking-end":
+          this.writeFn("\n");
+          break;
         case "text-delta":
           this.clearThinkingIndicator(event.runId);
           this.writeFn(event.text);

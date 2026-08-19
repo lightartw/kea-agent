@@ -29,6 +29,10 @@ export type HarnessEvent =
       readonly message: AgentMessage;
       readonly toolResults: readonly AgentMessage[];
     }
+  | { readonly type: "text-start"; readonly runId: string }
+  | { readonly type: "text-end"; readonly runId: string }
+  | { readonly type: "thinking-start"; readonly runId: string }
+  | { readonly type: "thinking-end"; readonly runId: string }
   | { readonly type: "text-delta"; readonly runId: string; readonly text: string }
   | {
       readonly type: "thinking-delta";
@@ -85,6 +89,10 @@ declare module "../events/types.js" {
         readonly toolResults: readonly AgentMessage[];
       }
     >;
+    "agent/text-start": EmitEvent<AgentRunIdentity>;
+    "agent/text-end": EmitEvent<AgentRunIdentity>;
+    "agent/thinking-start": EmitEvent<AgentRunIdentity>;
+    "agent/thinking-end": EmitEvent<AgentRunIdentity>;
     "agent/text-delta": EmitEvent<
       AgentRunIdentity & { readonly text: string }
     >;

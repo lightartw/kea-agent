@@ -97,6 +97,18 @@ export async function runAgentLoop(
       aiEventToToolCalls(event, toolCalls);
 
       switch (event.type) {
+        case "text_start":
+          await context.events.emit("agent/text-start", { ...run });
+          break;
+        case "text_end":
+          await context.events.emit("agent/text-end", { ...run });
+          break;
+        case "thinking_start":
+          await context.events.emit("agent/thinking-start", { ...run });
+          break;
+        case "thinking_end":
+          await context.events.emit("agent/thinking-end", { ...run });
+          break;
         case "text_delta":
           await context.events.emit("agent/text-delta", { ...run, text: event.text });
           break;

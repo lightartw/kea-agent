@@ -126,8 +126,10 @@ export class AnthropicAdapter implements Adapter {
               yield { type: "toolcall_start", id: block.id, name: block.name };
             } else if (block.type === "thinking") {
               pending.set(event.index, { kind: "thinking", thinking: block.thinking ?? "" });
+              yield { type: "thinking_start" };
             } else {
               pending.set(event.index, { kind: "text", text: block.text ?? "" });
+              yield { type: "text_start" };
             }
             break;
           }
@@ -156,8 +158,14 @@ export class AnthropicAdapter implements Adapter {
               yield { type: "toolcall_end", toolCall };
               block.ended = true;
             }
-            if (block && block.kind === "thinking" && (event as any).content_block?.signature) {
-              block.signature = (event as any).content_block.signature;
+            if (block && block.kind === "thinking") {
+              yield { type: "thinking_end" };
+              if ((event as any).content_block?.signature) {
+                block.signature = (event as any).content_block.signature;
+              }
+            }
+            if (block && block.kind === "text") {
+              yield { type: "text_end" };
             }
             break;
           }

@@ -113,6 +113,8 @@ export class GeminiAdapter implements Adapter {
     let stopReason: StopReason = "stop";
     let allCalls: ToolCall[] = [];
     let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    let thinkingOpen = false;
+    let textOpen = false;
 
     try {
       const sdkStream = await this.sdk.models.generateContentStream({
@@ -131,13 +133,44 @@ export class GeminiAdapter implements Adapter {
 
         if (chunk.usageMetadata) usage = extractUsage(chunk);
 
+        const parts: ReadonlyArray<{ readonly thought?: boolean; readonly text?: string }> =
+          chunk.candidates?.[0]?.content?.parts ?? [];
+
+        const thoughtParts = parts.filter((part) => part.thought === true);
+        if (thoughtParts.length > 0) {
+          if (!thinkingOpen) {
+            thinkingOpen = true;
+            yield { type: "thinking_start" };
+          }
+          for (const part of thoughtParts) {
+            if (part.text) {
+              yield { type: "thinking_delta", thinking: part.text };
+            }
+          }
+        } else if (thinkingOpen) {
+          thinkingOpen = false;
+          yield { type: "thinking_end" };
+        }
+
         if (chunk.text) {
+          if (thinkingOpen) {
+            thinkingOpen = false;
+            yield { type: "thinking_end" };
+          }
+          if (!textOpen) {
+            textOpen = true;
+            yield { type: "text_start" };
+          }
           content += chunk.text;
           yield { type: "text_delta", text: chunk.text };
         }
 
         const functionCalls = chunk.functionCalls ?? [];
         for (const [i, call] of functionCalls.entries()) {
+          if (textOpen) {
+            textOpen = false;
+            yield { type: "text_end" };
+          }
           const id = call.id || `gemini-call-${allCalls.length + i}`;
           const name = call.name;
           const args = call.args ?? {};
@@ -155,6 +188,15 @@ export class GeminiAdapter implements Adapter {
         if (reason !== "stop" || chunk.candidates?.[0]?.finishReason) {
           stopReason = reason;
         }
+      }
+
+      if (thinkingOpen) {
+        thinkingOpen = false;
+        yield { type: "thinking_end" };
+      }
+      if (textOpen) {
+        textOpen = false;
+        yield { type: "text_end" };
       }
 
       const contentBlocks: ContentBlock[] = [];
