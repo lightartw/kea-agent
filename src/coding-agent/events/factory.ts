@@ -1,5 +1,5 @@
 import { Events } from "../../core/events/events.js";
-import type { Interactions } from "../interaction/interactions.js";
+import type { UserInteraction } from "../interaction/interactions.js";
 import { decidePermission, type PermissionRule } from "./permission/permission.js";
 
 /**
@@ -16,7 +16,7 @@ import { decidePermission, type PermissionRule } from "./permission/permission.j
  * a throwing UI/extension listener is never silently swallowed.
  */
 export function createBuiltinEvents(options: {
-  readonly interactions: Interactions;
+  readonly interaction: UserInteraction;
   readonly approved: PermissionRule[];
   readonly trustedDirectories: readonly string[];
 }): Events {
@@ -31,7 +31,7 @@ export function createBuiltinEvents(options: {
         cwd: input.cwd,
         trustedDirectories: options.trustedDirectories,
         approved: options.approved,
-        interactions: options.interactions,
+        interaction: options.interaction,
       },
       signal,
     );

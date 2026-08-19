@@ -6,7 +6,6 @@ export type {
   ProjectInfo,
 } from "./project/project.js";
 export type {
-  Interactions,
-  PermissionRequest,
-  PermissionReply,
+  InteractionOptions,
+  UserInteraction,
 } from "./interaction/interactions.js";

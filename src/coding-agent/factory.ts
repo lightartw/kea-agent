@@ -6,7 +6,7 @@ import type { ModelConfig, ModelRuntime } from "../core/ai/types.js";
 import { SessionRepository } from "../core/harness/session/repository.js";
 import { createBuiltinEvents } from "./events/factory.js";
 import type { PermissionRule } from "./events/permission/permission.js";
-import type { Interactions } from "./interaction/interactions.js";
+import type { UserInteraction } from "./interaction/interactions.js";
 import { Project, ProjectError } from "./project/project.js";
 import { ProjectStorage } from "./project/storage.js";
 
@@ -54,7 +54,7 @@ export async function openOrCreateProject(options: {
   readonly projectDirectory: string;
   readonly runtime: ModelRuntime;
   readonly modelConfig: ModelConfig;
-  readonly interactions: Interactions;
+  readonly interaction: UserInteraction;
   readonly maxTurns: number;
   readonly toolTimeoutSeconds: number;
 }): Promise<Project> {
@@ -79,7 +79,7 @@ export async function openOrCreateProject(options: {
   const sessions = new SessionRepository(storage.dataDirectory(info.id));
   const approved: PermissionRule[] = [];
   const events = createBuiltinEvents({
-    interactions: options.interactions,
+    interaction: options.interaction,
     approved,
     trustedDirectories: [projectDirectory],
   });

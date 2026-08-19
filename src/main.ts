@@ -76,7 +76,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     projectDirectory,
     runtime,
     modelConfig: config.defaultModel,
-    interactions: ui.interactions,
+    interaction: ui.interactions,
     maxTurns: config.maxTurns,
     toolTimeoutSeconds: config.toolTimeoutSeconds,
   });
