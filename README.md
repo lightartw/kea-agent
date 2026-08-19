@@ -138,7 +138,7 @@ Harness 核心代码统一位于 `src/core/`；产品适配与界面代码位于
 |----|--------|------|
 | `ai` | [ai/README.md](src/core/ai/README.md) | 显式 Provider 的 `ModelRuntime`、消息与流协议 |
 | `events` | [events/README.md](src/core/events/README.md) | 核心事件契约与统一分发器 |
-| `harness` | [harness/README.md](src/core/harness/README.md) | 通用 agent：`runAgentLoop`、`AgentTool` 注册与三阶段拦截、`AgentHarness`（`subscribe`）、Session/Repository、`HarnessEvent` |
+| `harness` | [harness/README.md](src/core/harness/README.md) · [docs](src/core/harness/docs/) | 通用 agent：`runAgentLoop`、`AgentTool` 三阶段拦截、`AgentHarness`、Session/Repository、`HarnessEvent` |
 | `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | `Project`、`openOrCreateProject`、内置 Tools、Bash 策略、Interactions port |
 | `application` | — | `Config`（唯一设置实体）、argv、用户配置模板、目录发现 |
 | `ui` | — | 命令语言（`parseInput`/`UiAction`）；`ui/cli` 提供命令行实现（`CliUi`、`CliInteractions`、`Renderer`） |
