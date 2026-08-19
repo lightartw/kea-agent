@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 
 import type { AgentMessage } from "../types.js";
 import type { ModelConfig } from "../../ai/types.js";
-import { newId } from "./records.js";
+import { newId, parseSessionRecord } from "./records.js";
 import {
   SessionError,
   type SessionMetadata,
@@ -130,8 +130,9 @@ export class Session {
           createdAt: new Date().toISOString(),
           selection: input.selection,
         };
-    await this.commit(node);
-    return node.id;
+    const parsed = parseSessionRecord(node);
+    await this.commit(parsed);
+    return parsed.id;
   }
 
   async setTitle(title: string): Promise<void> {

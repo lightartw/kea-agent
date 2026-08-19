@@ -118,10 +118,10 @@ test("the first persisted user prompt generates one title before the main model 
     { role: "user", content: "effective prompt" },
   ]);
   assert.equal(titleContext?.tools, undefined);
-  assert.equal(titleOptions?.maxTokens, 64);
+  assert.equal(titleOptions?.maxTokens, 1024);
 });
 
-test("title generation failure keeps the default title and does not stop the run", async () => {
+test("title generation failure falls back to the prompt text", async () => {
   let completeCalls = 0;
   let streamCalls = 0;
   const runtime: ModelRuntime = {
@@ -140,7 +140,7 @@ test("title generation failure keeps the default title and does not stop the run
 
   assert.equal(completeCalls, 1);
   assert.equal(streamCalls, 1);
-  assert.equal(harness.title, "unknown");
+  assert.equal(harness.title, "hello");
   assert.deepEqual(harness.messages.map((message) => message.role), [
     "user",
     "assistant",

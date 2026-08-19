@@ -1,0 +1,19 @@
+stages:
+  - test
+
+unit-test:
+  stage: test
+  image: node:24
+  timeout: 20m
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+  variables:
+    npm_config_cache: "$CI_PROJECT_DIR/.npm"
+  script:
+    - npm ci
+    - npm run typecheck
+    - npm test

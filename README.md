@@ -1,40 +1,71 @@
-# Kea Agent
+# Kea
 
-一个最小化的 TypeScript 命令行编程代理。它以 readline 交互循环在项目目录（Git worktree
-根）中执行 shell 命令，支持 Anthropic、OpenAI 或 Gemini 作为模型后端。
+Kea 是一个用 TypeScript 编写的终端编码智能体。通过 `kea` 命令启动，能调用 Bash 与文件工具完成编码任务，并在本地保存会话。支持 OpenAI、Anthropic 与 Gemini 三种协议。
 
-架构文档：[docs/architecture.md](docs/architecture.md)
+课程功能要求见 [SPEC.md](SPEC.md)，架构说明见 [docs/architecture.md](docs/architecture.md)。
+
+## 功能概览
+
+- 支持 OpenAI、Anthropic、Gemini 三种协议，可通过 `baseUrl` 接入兼容服务。
+- 用 JSON 文件管理模型配置与密钥（`~/.kea/config.json`、`~/.kea/auth.json`）；密钥独立存放，项目配置禁止包含凭据。
+- 内置工具：`bash`、`read_file`、`write_file`、`edit_file`、`glob`、`todo_write`。
+- 自动保存会话；可用 `-c` 恢复最近会话，或 `/session` 切换会话。
+- Bash 命令按风险分类：自动允许、需要确认、直接拒绝。
+- 默认显示思考过程，工具详情紧凑显示；两者均可在配置中调整。
+- 可在 Windows、Linux、macOS 上从源码运行，也可通过 npm 全局安装运行。
 
 ## 环境要求
 
-- Node.js 24 LTS（小于 25）
-- npm 11 或 Node.js 24 自带的兼容 npm 版本
-- Anthropic、OpenAI 或 Gemini 中任意一家可用的 API 凭据
+- Node.js 24.x
+- npm
+- 至少一个模型服务商的 API Key
+- Windows 用户需安装 Git for Windows（Kea 的 Bash 工具依赖 Git Bash）；Linux / macOS 需可用 `bash`
 
-## 初始化
+## 快速开始
+
+### 方式一：从源码直接运行
 
 ```bash
+cd kea_agent
 npm ci
 npm run build
 npm start
 ```
 
-Windows PowerShell 使用相同命令。
+- `npm ci` 安装依赖；
+- `npm run build` 编译 TypeScript 到 `dist/`；
+- `npm start` 运行（等价于 `node dist/src/main.js`）。
 
-首次运行 `kea` 会自动检测 `~/.kea/config.json` 与 `auth.json`，缺失的文件按模板补建
-（独占创建、只打印 `created`、**绝不覆盖**已有文件），然后继续启动：
+首次运行会自动创建 `~/.kea/config.json` 与 `~/.kea/auth.json` 并打印路径。修改源码后需重新 `npm run build` 再 `npm start`。
 
-- `config.json` — 用户配置模板（provider/model、agent、tools、ui 设置）；
-- `auth.json` — 凭据文件（权限 0600），只保存 provider 的 API key。
+### 方式二：构建后全局安装运行
 
-补建后 `auth.json` 里的 API key 仍是空的，填入后重新运行即可。
+```bash
+cd kea_agent
+npm ci
+npm run build
+npm install -g .
+```
 
-## 配置
+这会注册一个全局 `kea` 命令。之后在任意代码项目目录直接运行：
 
-配置按优先级分层加载：**内建默认值 < `~/.kea/config.json` < `<project>/.kea/config.json`
-< `--config <path>` 文件 < CLI 直接覆盖（`--verbose`）**。每个普通配置源独立验证后才合并。
+```bash
+kea
+```
 
-首次运行生成的 `config.json` 模板：
+卸载：
+
+```bash
+npm uninstall -g kea-agent
+```
+
+`npm install -g .` 安装的是本地构建产物，`kea` 命令指向 `dist/src/main.js`，因此安装前必须先 `npm run build`。
+
+### 首次配置
+
+首次运行会自动创建 `~/.kea/config.json` 与 `~/.kea/auth.json`。把 `config.json` 中服务商的 `models` 改为真实模型名，并把 API Key 写入 `auth.json`。
+
+`config.json` 示例：
 
 ```json
 {
@@ -52,190 +83,115 @@ Windows PowerShell 使用相同命令。
 }
 ```
 
-`auth.json` 模板：
+`auth.json` 示例：
 
 ```json
 {
-  "providers": {
-    "openai": { "apiKey": "" }
-  }
+  "providers": { "openai": { "apiKey": "your-api-key" } }
 }
 ```
 
-规则：
+进入需要处理的代码项目目录，运行 `kea`，看到 `kea>` 提示符后输入任务并按 Enter。
 
-- **凭据只来自 `~/.kea/auth.json`**，在所有普通配置源之后加载。普通配置源（包括
-  `--config`）拒绝 credential 字段（`apiKey`/`token`/`secret`/`password`）。
-- `defaultModel` 必填：必须引用已配置 provider，且 model 在该 provider 的 `models` 列表中。
-- `providers` 以 provider 名为键，每项含 `protocol`（`anthropic`/`openai`/`gemini` 之一）、
-  非空 `models` 数组和可选 `baseUrl`；provider 按配置顺序生效。被启用 provider 的 auth key
-  必须非空。
-- 内建默认值：`maxTurns` 20、`tools.timeoutSeconds` 120、`thinking` `"visible"`、
-  `toolDetails` `"compact"`。`ui.thinking: "hidden"` 隐藏思考过程，`ui.toolDetails: "full"`
-  展开工具事实。
-- `kea --config <path>` 指定的文件必须存在，否则启动失败。
+## 命令行用法
 
-生产启动绝不调用 dotenv，也绝不从 `process.env` 读取 provider 凭据。所有诊断输出
-（顶层错误、verbose 日志、listener 错误）都会把已加载的 API key 替换为 `[REDACTED]`。
-
-## 使用方法
-
-```text
-kea> 帮我修一下测试失败
+```
+kea [directory] [-c] [--verbose] [--config <path>]
 ```
 
-在 `kea> ` 提示符后输入任务并回车。只有字符 0 位置的精确 slash token 才是命令，其余输入
-原样作为任务 prompt：
+- `directory`：启动目录，默认当前目录；若在 Git 仓库内，自动解析到仓库根目录。
+- `-c`：恢复该项目最近一次会话。
+- `--verbose`：打印项目目录、模型与凭据配置诊断信息。
+- `--config <path>`：使用指定配置文件覆盖默认配置。
 
-| 命令 | 作用 |
-|------|------|
-| `/new` | 新建一个 Session |
-| `/session` | 列出全部 Session（最新在前），按编号切换 |
-| `/model` | 在已配置的 provider/model 之间切换 |
-| `/help` | 显示命令帮助 |
-| `/exit` | 退出；EOF（Ctrl+D）同样退出 |
+交互命令（在 `kea>` 提示符输入）：
 
-`kea -c` 启动时直接恢复最新 Session；没有历史时回退为新 Session。一次只读一个 Prompt，
-`prompt()` 运行期间不再读第二个普通 Prompt；SIGINT（Ctrl+C）在运行中时中止当前 Run，
-空闲时取消当前输入。切换 Session 或模型失败会保留旧状态。
+- `/new`：新建会话
+- `/session`：切换会话
+- `/model`：切换模型
+- `/help`：查看帮助
+- `/exit`：退出
+- `Ctrl+C`：中止当前运行（SIGINT）；`Ctrl+D`：退出
 
-模型产生的工具调用显示为 `[tool]`，执行状态使用 `[exec]`、`[done]`、`[error]` 或
-`[rejected]`。被 Bash 安全策略归为 `ask` 的操作会请求确认：
+## 配置说明
 
-```text
-Allow once [o/N] (a = always)?
-```
+配置优先级从高到低：
 
-`o` 或 `once` 允许一次；`a` 或 `always` 允许并记住（仅当前进程）；其他输入（含空回车）
-拒绝。硬拒绝命令不会询问。
+1. `--config <path>` 指定的配置文件
+2. 当前项目 `<project>/.kea/config.json`
+3. 用户目录 `~/.kea/config.json`
+4. 程序默认值（`maxTurns` 20、`toolTimeoutSeconds` 120、`thinking` visible、`toolDetails` compact）
 
-请只在可信目录中运行本程序，并检查模型生成的命令。权限确认只是防误操作机制，不是完整
-沙箱，也不能替代系统权限隔离。
+API Key 只从 `~/.kea/auth.json` 读取。项目配置可以覆盖模型、工具限制与 UI 选项，但禁止包含 `apiKey` 等凭据字段。
 
-在 Windows 上，BashTool 优先使用 Git Bash；未安装时使用 `bash.exe`（例如 WSL）。因此模型
-生成的命令统一采用 Bash 语法，例如 Windows 目录在 WSL 中写为 `/mnt/d/project`，不要使用
-`cd D:\project`。
+会话与项目记录保存在 `~/.kea/projects/<projectId>/`。
 
-## 启动路径
+## 内置工具
 
-```text
-parseArguments → resolveProjectDirectory → 补建用户配置模板 → Config.load →
-createModelRuntime({ providers }) → new CliUi(...) → openOrCreateProject →
-selectInitialHarness（-c 取最新 Session，否则新建）→ ui.run → finally ui.close()
-```
+| 工具 | 用途 |
+| --- | --- |
+| `bash` | 在当前会话的工作目录运行 Bash 命令 |
+| `read_file` | 读取项目内文件 |
+| `write_file` | 新建或覆盖项目内文件 |
+| `edit_file` | 精确修改项目内文件 |
+| `glob` | 按模式查找项目内文件 |
+| `todo_write` | 维护任务清单与进度 |
 
-`main.ts` 是连接具体 UI、Coding Agent 和 AI provider 的唯一组合根：它解析 argv（`-c`、
-`--config <path>`、`--verbose`、可选目录），把启动目录解析为 Git worktree 根并规范化，
-`Config.load()` 按上文分层加载配置，用 `config.runtimeProviders()` 构造显式
-`ModelRuntime`，然后组装 `CliUi` 和 `Project`，最后进入交互循环；`finally` 中幂等关闭
-UI。
+## 权限与安全
 
-## 包结构
+Bash 命令会被分类处理：
 
-Harness 核心代码统一位于 `src/core/`；产品适配与界面代码位于核心层之外。
+- **直接拒绝**：`sudo`、`shutdown`/`reboot`、`mkfs`、`dd` 原始写入、重定向到 `/dev`、递归强制删除根目录（`rm -rf /` 等）。
+- **需要确认**：`rm`、写入 `/etc/`、`chmod 777`。
+- **其余自动允许**。
 
-| 包 | README | 职责 |
-|----|--------|------|
-| `ai` | [ai/README.md](src/core/ai/README.md) | 显式 Provider 的 `ModelRuntime`、消息与流协议 |
-| `events` | [events/README.md](src/core/events/README.md) | 核心事件契约与统一分发器 |
-| `harness` | [harness/README.md](src/core/harness/README.md) · [docs](src/core/harness/docs/) | 通用 agent：`runAgentLoop`、`AgentTool` 三阶段拦截、`AgentHarness`、Session/Repository、`HarnessEvent` |
-| `coding-agent` | [coding-agent/README.md](src/coding-agent/README.md) | 产品组装：`cli/`（args、目录发现）、`config/`（`Config`、模板）、`Project`、内置 Tools、Bash 策略、Interactions port |
-| `ui` | — | 命令语言（`parseInput`/`UiAction`）；`ui/cli` 提供命令行实现（`CliUi`、`CliInteractions`、`Renderer`） |
+文件工具（`read_file`/`write_file`/`edit_file`/`glob`）不能访问项目目录之外的路径。
 
-源码依赖方向始终向下：`main -> ui -> coding-agent -> core/harness -> core/ai`；
-`core/events` 是 Harness 与 Coding Agent 共享的核心运行时。`coding-agent/cli` 与
-`coding-agent/config` 是纯启动能力，只向下依赖 `core`，不依赖 UI 或 Coding Agent 的领域内部组件。
-
-## 工具系统
-
-`openOrCreateProject()` 为每份 Session 创建独立的 Tool Registry。默认内置工具为：
-
-| Tool | 行为 |
-|---|---|
-| `bash` | 在 Session cwd 中运行 shell command；非零退出码产生错误结果 |
-| `read_file` | 读取文本文件，或按稳定顺序列出目录；支持一基 `offset` 和 `limit` |
-| `write_file` | 写入完整 UTF-8 内容，必要时创建父目录 |
-| `edit_file` | 精确替换唯一出现的一段文本；缺失或出现多次时拒绝修改 |
-| `glob` | 从 Session cwd 匹配、去重并稳定排序路径 |
-| `todo_write` | 返回调用方提交的完整任务列表；Tool 本身不跨调用保存状态 |
-
-输出有界：通用文本输出最多保留 2,000 行和 50 KiB，`glob` 最多 1,000 个结果，`bash`
-保留输出尾部。结构化指标放在 Tool Result 的 `details` 中，模型可见的说明放在 `content` 中。
-
-## 权限
-
-Permission listener 注册在 `tools/pre-execute` 上，使用 Project 目录作为初始 trusted
-directory：
-
-1. **文件类 Tool**：目标位于 trusted directory 内直接允许；在 Project 外时发送
-   `external-directory` 请求，选择 `always` 后该目录在本进程内视为已批准。
-2. **Bash**：先确认执行 cwd 受信任，再对命令分类——
-   - **硬拒绝**（`sudo`、关机、格式化文件系统、原始 `dd` 输入、`/dev` 重定向、强制递归
-     删除根目录等）：直接拒绝，不询问 UI，也不被已记住的授权覆盖；
-   - **询问**（文件删除、写入 `/etc`、`chmod 777` 等）：通过 Interactions port 确认；
-   - **允许**：直接放行。
-
-`always` 对 Bash 记录的是完整 command 与 cwd 的组合；同一命令换到另一个 cwd 后需要重新
-判断。文件工具始终拒绝逃出已批准目录的路径。`Interactions` 端口由调用方显式提供，本包
-没有默认实现，避免在没有用户确认渠道时静默放行。
-
-## CLI 与核心边界
-
-`main.ts` 只负责组合：Config（`loadConfig`）→ `createModelRuntime({ providers })` → `CliUi` →
-`openOrCreateProject()` → 交互循环。`coding-agent/cli` 与 `coding-agent/config` 是纯启动能力，
-不依赖 UI 内部组件，main 从 Config 取出 UI 需要的值传给 UI；`src/ui` 不导入 `core/harness`
-的内部模块，只使用其公开入口。
-
-UI 观察运行事实的唯一入口是 `harness.subscribe()`：Project 的原始 `Events` 是私有的，
-`AgentHarness` 把属于本 Session 的 emit 事实投影成 `HarnessEvent` 转发给 listener。
-控制事件（`user-prompt`、`context`、工具三阶段拦截）在状态提交前执行；被动的展示不是
-控制事件，而是 UI 层针对订阅事件的 renderer 行为。
-
-## AI 层
-
-`createModelRuntime({ providers })` 只接收显式 Provider 列表：
-
-```ts
-createModelRuntime({
-  providers: [{ name: "openai", protocol: "openai", apiKey: "sk-..." }],
-});
-```
-
-`ModelRuntime` 拥有 provider 路由和 lazy adapter；`ModelConfig` 是“这次请求选择哪个模型”
-的值。请求未配置的 provider 会抛出 `Unknown provider`。应用组合根负责从 `auth.json`
-读取凭据并构造 `runtimeProviders()`；`ai` 本身不读环境变量、不保存 Session 或模型选择。
+这些检查用于减少误操作，不是完整的系统沙箱。请只在可信目录中运行 Kea，并在授权前检查命令内容。
 
 ## 开发与验证
 
 ```bash
 npm run typecheck
 npm test
-npm run build
 ```
 
-测试使用 Node.js 内置 test runner。`npm test` 会先编译到 `dist/`，再运行编译后的测试。
+`npm test` 会重新编译并运行全部测试。
 
-## 更新依赖
+## 项目结构
 
-依赖使用精确版本并由 `package-lock.json` 锁定。例如：
+- `src/main.ts`：程序入口
+- `src/coding-agent/`：项目、配置加载、CLI 参数、事件与权限、内置工具
+- `src/core/ai/`：模型接口、消息类型与 OpenAI / Anthropic / Gemini 适配器
+- `src/core/events/`：统一事件定义与分发
+- `src/core/harness/`：会话存储、运行循环与工具注册
+- `src/core/util/`：通用工具
+- `src/ui/`：终端界面与命令解析
 
-```bash
-npm install --save-exact openai@6.48.0
-npm install --save-dev --save-exact typescript@7.0.2
-```
-
-更新后运行 `npm test`、`npm run typecheck`，并提交 `package.json` 与 `package-lock.json`。
+主要依赖方向为 `ui -> coding-agent -> harness -> ai`，事件系统由各层共享。
 
 ## 常见问题
 
-- 启动报 `must be non-empty`：`~/.kea/auth.json` 中的 API key 还是空的。首次运行会自动
-  补建缺失的 `config.json`/`auth.json`；填入所选 provider 的 key 后重新运行即可。
-- 提示没有配置 provider：在 `~/.kea/config.json` 的 `providers` 中至少配置一家 provider。
-- 提示 `defaultModel` 必填或引用错误：在 `~/.kea/config.json` 设置 `defaultModel`，
-  `{ "provider": "...", "model": "..." }` 必须引用已配置 provider，且 model 在其
-  `models` 列表中。
-- 在普通配置源里写 `apiKey` 报错：凭据只能放在 `~/.kea/auth.json`。
-- 提示 `Directory does not exist`：确认启动目录存在；`--config` 指定的文件必须存在。
-- `kea -c` 没有历史：会自动创建新 Session。
-- 自定义接口无法连接：检查对应 provider 的 `baseUrl`、网络以及服务端支持的模型标识。
-- 安装成功但调用失败：本地依赖安装成功不代表凭据、网络或 provider 服务可用。
+### 找不到 `kea` 命令
+
+确认已执行 `npm install -g .` 并重新打开终端；或改用方式一从源码运行 `npm start`。
+
+### 提示模型或凭据缺失
+
+检查 `~/.kea/config.json` 中 `defaultModel` 对应的 provider 与 model，以及 `~/.kea/auth.json` 中同名 provider 的 `apiKey`。不要把真实密钥提交到仓库。
+
+### Windows 上 Bash 工具无法启动
+
+安装 Git for Windows，并确认 Git Bash 的 `bash.exe` 可用。标准安装位置通常是 `C:\Program Files\Git\bin\bash.exe`；自定义安装时应把其 `bin` 目录加入 `PATH`。
+
+## 课程作业提交
+
+课程交付文档：
+
+- [SPEC.md](SPEC.md)
+- [PLAN.md](PLAN.md)
+- [SPEC_PROCESS.md](SPEC_PROCESS.md)
+- [AGENT_LOG.md](AGENT_LOG.md)
+- [REFLECTION.md](REFLECTION.md)
+
+源码压缩包不应包含 `.git`、`.env`、`.kea`、`.superpowers`、`node_modules`、`dist` 或本机日志。
