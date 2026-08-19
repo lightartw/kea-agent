@@ -74,6 +74,60 @@ test("compact tool facts omit full result content", () => {
   assert.ok(!output().includes("LONG"));
 });
 
+test("a tool result terminates its line so later text starts fresh", () => {
+  const { renderer, output } = rendererWith({ toolDetails: "compact" });
+  renderer.handle({
+    type: "tool-call",
+    runId: "run-1",
+    cwd: "/repo",
+    call: toolCall("bash", { command: "ls" }),
+  });
+  renderer.handle({
+    type: "tool-result",
+    runId: "run-1",
+    cwd: "/repo",
+    call: toolCall("bash", { command: "ls" }),
+    result: toolResult("ok"),
+  });
+  renderer.handle({
+    type: "text-delta",
+    runId: "run-1",
+    text: "next sentence",
+  });
+
+  const text = output();
+  assert.ok(text.includes("✓ bash\n"), "success result must end the line");
+  assert.ok(text.includes("next sentence"), "later text must render");
+  assert.ok(
+    text.indexOf("✓ bash\n") < text.indexOf("next sentence"),
+    "later text must not join the result line",
+  );
+});
+
+test("an error tool result terminates its line so later text starts fresh", () => {
+  const { renderer, output } = rendererWith({ toolDetails: "compact" });
+  renderer.handle({
+    type: "tool-result",
+    runId: "run-1",
+    cwd: "/repo",
+    call: toolCall("bash", { command: "bad" }),
+    result: toolResult("nope", true),
+  });
+  renderer.handle({
+    type: "text-delta",
+    runId: "run-1",
+    text: "recovering",
+  });
+
+  const text = output();
+  assert.ok(text.includes("✗ bash: nope\n"), "error result must end the line");
+  assert.ok(text.includes("recovering"));
+  assert.ok(
+    text.indexOf("✗ bash: nope\n") < text.indexOf("recovering"),
+    "later text must not join the error line",
+  );
+});
+
 test("full tool facts include JSON-safe arguments and result content", () => {
   const { renderer, output } = rendererWith({ toolDetails: "full" });
   renderer.handle({

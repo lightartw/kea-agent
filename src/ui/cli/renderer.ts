@@ -196,13 +196,13 @@ export class Renderer {
 
   private renderToolResult(call: AgentToolCall, result: AgentToolResult): void {
     if (this.toolDetails === "full") {
-      this.writeFn(`\n${result.isError ? "✗" : "✓"} ${call.name}\n${result.content}`);
+      this.writeFn(`\n${result.isError ? "✗" : "✓"} ${call.name}\n${result.content}\n`);
       return;
     }
     if (result.isError) {
-      this.writeFn(`\n✗ ${call.name}: ${bounded(result.content)}`);
+      this.writeFn(`\n✗ ${call.name}: ${bounded(result.content)}\n`);
     } else {
-      this.writeFn(`\n✓ ${call.name}`);
+      this.writeFn(`\n✓ ${call.name}\n`);
     }
   }
 
@@ -214,11 +214,11 @@ export class Renderer {
       if (key.startsWith(streamPrefix)) this.toolCallStreams.delete(key);
     }
     if (event.reason === "error") {
-      this.writeFn(`\n✗ run failed: ${event.errorMessage} (${count} tool calls)`);
+      this.writeFn(`\n✗ run failed: ${event.errorMessage} (${count} tool calls)\n`);
     } else if (event.reason === "completed") {
-      this.writeFn(`\n✓ completed (${count} tool calls)`);
+      this.writeFn(`\n✓ completed (${count} tool calls)\n`);
     } else {
-      this.writeFn(`\naborted (${count} tool calls)`);
+      this.writeFn(`\naborted (${count} tool calls)\n`);
     }
   }
 }
