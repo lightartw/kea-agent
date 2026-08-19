@@ -1,7 +1,6 @@
 import type {
-  Interactions,
-  PermissionReply,
-  PermissionRequest,
+  InteractionOptions,
+  UserInteraction,
 } from "../../coding-agent/index.js";
 
 export interface CliInteractionsOptions {
@@ -13,11 +12,11 @@ export interface CliInteractionsOptions {
 }
 
 /**
- * CLI adapter for the Coding Agent Permission port. One question owns
+ * CLI adapter for the Coding Agent `UserInteraction` port. One question owns
  * the terminal until answered; Run cancellation aborts the question and
- * propagates, ordinary cancellation returns deny.
+ * propagates, ordinary cancellation (EOF / blank) returns a neutral value.
  */
-export class CliInteractions implements Interactions {
+export class CliInteractions implements UserInteraction {
   private readonly questionFn: CliInteractionsOptions["question"];
   private readonly logFn: (text: string) => void;
 
@@ -26,32 +25,69 @@ export class CliInteractions implements Interactions {
     this.logFn = options.log ?? ((text) => console.error(text));
   }
 
-  async permission(
-    request: PermissionRequest,
-    signal?: AbortSignal,
-  ): Promise<PermissionReply> {
+  async select(
+    title: string,
+    options: readonly string[],
+    opts?: InteractionOptions,
+  ): Promise<number | undefined> {
     try {
-      const answer = signal === undefined
-        ? await this.questionFn(this.promptText(request))
-        : await this.questionFn(this.promptText(request), { signal });
-      const normalized = answer.trim().toLowerCase();
-      if (normalized === "o" || normalized === "once") return { kind: "once" };
-      if (normalized === "a" || normalized === "always") return { kind: "always" };
-      return { kind: "deny" };
+      const numbered = options
+        .map((option, index) => `  ${index + 1}. ${option}`)
+        .join("\n");
+      const answer = await this.ask(`\n${title}\n${numbered}\n  Selection? `, opts);
+      const trimmed = answer.trim();
+      if (!/^\d+$/u.test(trimmed)) return undefined;
+      const selected = Number.parseInt(trimmed, 10);
+      return selected >= 1 && selected <= options.length ? selected - 1 : undefined;
     } catch (error) {
-      // A cancelled Run must not turn into a user deny.
-      signal?.throwIfAborted();
-      if (error instanceof Error && error.name === "AbortError") {
-        return { kind: "deny" };
-      }
-      throw error;
+      return this.cancelOrThrow(opts, error);
     }
   }
 
-  private promptText(request: PermissionRequest): string {
-    const target = request.kind === "dangerous-command"
-      ? request.command
-      : request.targetPath;
-    return `\n⚠ ${request.reason}\n   ${target}\n   Allow once [o/N] (a = always)? `;
+  async confirm(
+    title: string,
+    message: string,
+    opts?: InteractionOptions,
+  ): Promise<boolean> {
+    try {
+      const answer = await this.ask(`\n⚠ ${message}\n  (y/N) `, opts);
+      const normalized = answer.trim().toLowerCase();
+      return normalized === "y" || normalized === "yes";
+    } catch (error) {
+      this.cancelOrThrow(opts, error);
+      return false;
+    }
+  }
+
+  async input(
+    title: string,
+    placeholder?: string,
+    opts?: InteractionOptions,
+  ): Promise<string | undefined> {
+    try {
+      const hint = placeholder === undefined ? "" : ` (${placeholder})`;
+      const answer = await this.ask(`\n${title}${hint}\n  > `, opts);
+      const trimmed = answer.trim();
+      return trimmed === "" ? undefined : trimmed;
+    } catch (error) {
+      return this.cancelOrThrow(opts, error);
+    }
+  }
+
+  private ask(prompt: string, opts?: InteractionOptions): Promise<string> {
+    const signal = opts?.signal;
+    return signal === undefined
+      ? this.questionFn(prompt)
+      : this.questionFn(prompt, { signal });
+  }
+
+  /** Rethrow a genuine abort; treat an AbortError/EOF as a neutral cancel. */
+  private cancelOrThrow(
+    opts: InteractionOptions | undefined,
+    error: unknown,
+  ): undefined {
+    opts?.signal?.throwIfAborted();
+    if (error instanceof Error && error.name === "AbortError") return undefined;
+    throw error;
   }
 }
