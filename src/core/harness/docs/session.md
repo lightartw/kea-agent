@@ -13,7 +13,7 @@
 - `SessionRepository` 创建、打开、列举、fork 和删除多份 Session;
 - `SessionStorage` 是 Repository 内部使用的持久化接口,不从 Harness 包入口导出。
 
-调用方主要使用 `Session` 和 `SessionRepository`。`SessionStorage`、`SessionRecord` 和 JSONL
+调用方主要使用 `Session` 和 `SessionRepository`。`SessionStorage`、`SessionNode` 和 JSONL
 格式只在理解持久化实现时才需要关注。
 
 ## Session
@@ -145,19 +145,12 @@ Harness。
 ## SessionStorage
 
 `SessionStorage` 是内部持久化接口。一个 Repository 持有一个 Storage,该 Storage 管理多份
-Session。接口只有 `create/load/list/append/delete`,其中 `create/load` 在边界上交换逻辑的
+Session。接口有 `create/load/list/append/setTitle/delete`,其中 `create/load` 在边界上交换逻辑的
 `metadata` 和 `nodes`。
 
-### SessionRecord
-
-`SessionRecord` 是 Storage 接受和解析的一条持久化记录:
-
-- `message` 和 `model_selection` 记录同时也是 `SessionNode`;
-- `session_title` 表示标题变化,只用于持久化,不是节点。
-
-Session 的内存状态不保存 `SessionRecord[]`。Storage 加载数据时把标题记录折叠进当前 metadata,
-只把逻辑 nodes 返回给 Session。Session 修改标题时会把一次标题变化交给 Storage;Storage 接受后,
-Session 只更新 `metadataState`。
+持久化行是 `SessionNode`(`message` 或 `model_selection`)。`title` 是 Session 的**字段**,保存在
+header 里,`setTitle` 重写 header 而不是追加记录。Session 的内存状态只保存逻辑 nodes;Storage
+加载数据时把 header 的 title 与最新时间折叠进 metadata,只把逻辑 nodes 返回给 Session。
 
 ### 创建、加载与追加
 
@@ -170,25 +163,26 @@ Session 只更新 `metadataState`。
 重新打开一份 Session:
 
 1. Storage 读取并解析全部持久化记录;
-2. Storage 校验节点关系,把最后的标题和最新时间折叠进 metadata;
+2. Storage 校验节点关系,把 header 的 title 和最新时间折叠进 metadata;
 3. Storage 返回 `{ metadata, nodes }`;
 4. Repository 用它构造 Session。
 
-追加节点或标题:
+追加节点或设置标题:
 
-1. Session 构造并校验一条完整记录;
-2. `Storage.append()` 持久接受该记录;
+1. Session 构造并校验一条完整节点,或规范化标题;
+2. `Storage.append()` 持久接受节点,或 `Storage.setTitle()` 重写 header 的 title 与 updatedAt;
 3. Session 更新对应的节点、head 或 metadata。
 
 ### JsonlSessionStorage
 
 文件位于 `<storageDir>/sessions/<sessionId>.jsonl`。第一行是 version-2 header
-(`type: "session"`、`version: 2`、`id`、`cwd`、`title`、`createdAt`,fork 时还有
-`parentSessionId`);后续每行是一条 `SessionRecord`。version-1 文件被显式拒绝。
+(`type: "session"`、`version: 2`、`id`、`cwd`、`title`、`createdAt`、`updatedAt`,fork 时还有
+`parentSessionId`);后续每行是一条 `SessionNode`。version-1 文件被显式拒绝。
 
-`create()` 先写入临时文件,再通过 rename 发布最终文件;`load()` 校验 header、文件名、记录和
-节点树;`list()` 忽略隐藏文件、临时文件和非 JSONL 文件,但不会静默忽略损坏的 Session;
-`delete()` 只删除指定 Session 文件。
+`create()` 先写入临时文件,再通过 rename 发布最终文件;`setTitle()` 重写 header 的 title 与
+updatedAt(同样先写临时文件再 rename);`load()` 校验 header、文件名、节点和树;`list()` 忽略
+隐藏文件、临时文件和非 JSONL 文件,但不会静默忽略损坏的 Session;`delete()` 只删除指定 Session
+文件。
 
 解析或树结构错误分别使用 `invalid_session`、`invalid_record`;文件系统失败使用 `storage`;
 目标不存在使用 `not_found`。

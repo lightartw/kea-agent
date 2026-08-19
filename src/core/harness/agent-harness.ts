@@ -109,7 +109,6 @@ export class AgentHarness {
             if (message.role === "user") {
               await ensureSessionTitle({
                 session: this.session,
-                prompt: message.content,
                 runtime: this.runtime,
                 model: this.currentModel,
                 signal: abortController.signal,

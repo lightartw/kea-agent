@@ -10,7 +10,6 @@ import {
 import { isAbsolute, join, resolve } from "node:path";
 
 import {
-  isSessionNode,
   parseSessionId,
   parseSessionRecord,
   validateSessionRecords,
@@ -19,7 +18,6 @@ import {
   SessionError,
   type SessionMetadata,
   type SessionNode,
-  type SessionRecord,
   type SessionStorage,
 } from "./types.js";
 
@@ -30,6 +28,7 @@ interface StoredSessionHeader {
   readonly cwd: string;
   readonly title: string;
   readonly createdAt: string;
+  readonly updatedAt: string;
   readonly parentSessionId?: string;
 }
 
@@ -79,7 +78,7 @@ function parseHeader(raw: unknown): StoredSessionHeader {
   if (!isRecord(raw) || raw.type !== "session" || raw.version !== 2 ||
     !isString(raw.cwd) || !isAbsolute(raw.cwd) ||
     !isString(raw.title) || raw.title.trim() === "" || raw.title.includes("\n") ||
-    !isTimestamp(raw.createdAt)) {
+    !isTimestamp(raw.createdAt) || !isTimestamp(raw.updatedAt)) {
     invalidSession("Session header is invalid");
   }
   const id = parseSessionId(raw.id);
@@ -93,6 +92,7 @@ function parseHeader(raw: unknown): StoredSessionHeader {
     cwd: resolve(raw.cwd),
     title: raw.title,
     createdAt: raw.createdAt,
+    updatedAt: raw.updatedAt,
     ...(parentSessionId === undefined ? {} : { parentSessionId }),
   };
 }
@@ -100,17 +100,15 @@ function parseHeader(raw: unknown): StoredSessionHeader {
 /** Fold the last title record and the maximum record timestamp into metadata. */
 function metadataFrom(
   header: StoredSessionHeader,
-  records: readonly SessionRecord[],
+  nodes: readonly SessionNode[],
 ): SessionMetadata {
-  let title = header.title;
-  let updatedAt = header.createdAt;
-  for (const record of records) {
-    if (record.createdAt > updatedAt) updatedAt = record.createdAt;
-    if (record.type === "session_title") title = record.title;
+  let updatedAt = header.updatedAt > header.createdAt ? header.updatedAt : header.createdAt;
+  for (const node of nodes) {
+    if (node.createdAt > updatedAt) updatedAt = node.createdAt;
   }
   return {
     id: header.id,
-    title,
+    title: header.title,
     cwd: header.cwd,
     createdAt: header.createdAt,
     updatedAt,
@@ -143,17 +141,12 @@ export class JsonlSessionStorage implements SessionStorage {
       cwd: stored.metadata.cwd,
       title: stored.metadata.title,
       createdAt: stored.metadata.createdAt,
+      updatedAt: stored.metadata.updatedAt,
       ...(stored.metadata.parentSessionId !== undefined
         ? { parentSessionId: stored.metadata.parentSessionId }
         : {}),
     });
-    const nodes = stored.nodes.map((node) => {
-      const record = parseSessionRecord(node);
-      if (!isSessionNode(record)) {
-        throw new SessionError("invalid_record", "Session node is invalid");
-      }
-      return record;
-    });
+    const nodes = stored.nodes.map((node) => parseSessionRecord(node));
     validateSessionRecords(nodes);
 
     const contents = [
@@ -201,15 +194,15 @@ export class JsonlSessionStorage implements SessionStorage {
       invalidSession("Session header ID does not match the filename");
     }
 
-    const records: SessionRecord[] = [];
+    const nodes: SessionNode[] = [];
     for (let index = 1; index < lines.length; index++) {
-      records.push(parseSessionRecord(parseJson(lines[index]!)));
+      nodes.push(parseSessionRecord(parseJson(lines[index]!)));
     }
-    validateSessionRecords(records);
+    validateSessionRecords(nodes);
 
     return {
-      metadata: metadataFrom(header, records),
-      nodes: records.filter(isSessionNode),
+      metadata: metadataFrom(header, nodes),
+      nodes,
     };
   }
 
@@ -239,9 +232,9 @@ export class JsonlSessionStorage implements SessionStorage {
     return sessions;
   }
 
-  async append(sessionId: string, record: SessionRecord): Promise<void> {
+  async append(sessionId: string, node: SessionNode): Promise<void> {
     const id = parseSessionId(sessionId);
-    const detached = parseSessionRecord(record);
+    const detached = parseSessionRecord(node);
     const path = sessionPath(this.storageDir, id);
     try {
       const file = await open(path, "r+");
@@ -266,6 +259,40 @@ export class JsonlSessionStorage implements SessionStorage {
       }
     } catch (error) {
       throw asStorageError("Could not persist session row", error);
+    }
+  }
+
+  /** Rewrite the header line with the new title and an updated timestamp. */
+  async setTitle(sessionId: string, title: string): Promise<void> {
+    const id = parseSessionId(sessionId);
+    if (title.trim() === "" || title.includes("\n")) {
+      throw new SessionError("invalid_record", "Session title must be a single non-empty line");
+    }
+    const path = sessionPath(this.storageDir, id);
+    let contents: string;
+    try {
+      contents = await readFile(path, "utf8");
+    } catch (error) {
+      throw asStorageError("Could not read session storage", error);
+    }
+    if (contents.trim() === "") invalidSession("Session file is empty");
+
+    const lines = contents.split(/\r?\n/);
+    const header = parseHeader(parseJson(lines[0]!));
+    lines[0] = JSON.stringify({
+      ...header,
+      title,
+      updatedAt: new Date().toISOString(),
+    });
+
+    // Rewrite in place rather than temp-file + rename: a rename needs delete
+    // access, which Windows editors don't grant for an open file. Appends
+    // already write in place, so an in-place rewrite stays consistent with
+    // the file being watched live.
+    try {
+      await writeFile(path, lines.join("\n"), { encoding: "utf8" });
+    } catch (error) {
+      throw asStorageError("Could not update session title", error);
     }
   }
 

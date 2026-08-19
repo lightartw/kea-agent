@@ -2,12 +2,11 @@ import { resolve } from "node:path";
 
 import type { AgentMessage } from "../types.js";
 import type { ModelConfig } from "../../ai/types.js";
-import { newId, parseSessionRecord } from "./records.js";
+import { newId } from "./records.js";
 import {
   SessionError,
   type SessionMetadata,
   type SessionNode,
-  type SessionRecord,
   type SessionStorage,
 } from "./types.js";
 
@@ -116,7 +115,7 @@ export class Session {
     | { readonly type: "message"; readonly message: AgentMessage }
     | { readonly type: "model_selection"; readonly selection: ModelConfig }
   ): Promise<string> {
-    const record: SessionRecord = input.type === "message"
+    const node: SessionNode = input.type === "message"
       ? {
           type: "message",
           id: newId(),
@@ -131,44 +130,40 @@ export class Session {
           createdAt: new Date().toISOString(),
           selection: input.selection,
         };
-    const parsed = parseSessionRecord(record);
-    if (parsed.type === "session_title") {
-      throw new Error("Node append produced a title record");
-    }
-    await this.commit(parsed);
-    return parsed.id;
+    await this.commit(node);
+    return node.id;
   }
 
   async setTitle(title: string): Promise<void> {
     const normalized = this.normalizeTitle(title);
-    await this.commit({
-      type: "session_title",
-      createdAt: new Date().toISOString(),
+    if (this.storage !== undefined) {
+      await this.storage.setTitle(this.id, normalized);
+    }
+    this.metadataState = {
+      ...this.metadataState,
       title: normalized,
-    });
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   /** Durable append when storage exists, then apply to memory. */
-  private async commit(record: SessionRecord): Promise<void> {
+  private async commit(node: SessionNode): Promise<void> {
     if (this.storage !== undefined) {
-      await this.storage.append(this.id, record);
+      await this.storage.append(this.id, node);
     }
-    this.apply(record);
+    this.apply(node);
   }
 
-  /** Apply one accepted storage record to logical Session state. */
-  private apply(record: SessionRecord): void {
+  /** Apply one accepted node to logical Session state. */
+  private apply(node: SessionNode): void {
     this.metadataState = {
       ...this.metadataState,
-      updatedAt: record.createdAt > this.metadataState.updatedAt
-        ? record.createdAt
+      updatedAt: node.createdAt > this.metadataState.updatedAt
+        ? node.createdAt
         : this.metadataState.updatedAt,
-      ...(record.type === "session_title" ? { title: record.title } : {}),
     };
-    if (record.type !== "session_title") {
-      this.nodeById.set(record.id, record);
-      this._headId = record.id;
-    }
+    this.nodeById.set(node.id, node);
+    this._headId = node.id;
   }
 
   /** Enforce one non-empty trimmed line. */

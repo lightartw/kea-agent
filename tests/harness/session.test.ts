@@ -186,7 +186,7 @@ test("path follows the head parent chain and skips abandoned nodes", async () =>
     ];
     await writeFileSync(
       join(dir, "branched.jsonl"),
-      `${JSON.stringify({ type: "session", version: 2, id: "branched", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      `${JSON.stringify({ type: "session", version: 2, id: "branched", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" })}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
     );
 
     const session = await new SessionRepository(storageDir).open("branched");
@@ -309,6 +309,7 @@ test("append publishes nothing when storage rejects", async () => {
     append: async () => {
       throw failure;
     },
+    setTitle: async () => {},
     delete: async () => {},
   };
   const session = Session.fromStorage(

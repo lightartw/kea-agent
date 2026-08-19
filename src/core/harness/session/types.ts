@@ -27,21 +27,7 @@ export type SessionNode =
     };
 
 /**
- * One logical state change accepted into the durable Session log. Tree records
- * are `SessionNode`s; a Session-wide title change is a record but not a node.
- *
- * @internal
- */
-export type SessionRecord =
-  | SessionNode
-  | {
-      readonly type: "session_title";
-      readonly createdAt: string;
-      readonly title: string;
-    };
-
-/**
- * Internal persistence port. A Session accepts new records only after this
+ * Internal persistence port. A Session accepts new nodes only after this
  * port resolves; it is not exported from the Harness package entry, so a
  * future shared immutable node store can back it unchanged.
  *
@@ -57,7 +43,9 @@ export interface SessionStorage {
     readonly nodes: readonly SessionNode[];
   }>;
   list(): Promise<readonly SessionMetadata[]>;
-  append(sessionId: string, record: SessionRecord): Promise<void>;
+  append(sessionId: string, node: SessionNode): Promise<void>;
+  /** Persist the session title as a header field, not as a record. */
+  setTitle(sessionId: string, title: string): Promise<void>;
   delete(sessionId: string): Promise<void>;
 }
 

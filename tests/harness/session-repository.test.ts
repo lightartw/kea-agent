@@ -84,6 +84,7 @@ test("create writes an unknown-title version-2 header and is immediately listed"
       title: "unknown",
       cwd: resolve(process.cwd()),
       createdAt: session.metadata.createdAt,
+      updatedAt: session.metadata.createdAt,
     });
     assert.equal(session.headId, null);
 
@@ -227,7 +228,7 @@ test("open rejects missing, empty, malformed, headerless, and version-1 sessions
 
     await writeFile(
       join(dir, "bad-header.jsonl"),
-      `${JSON.stringify({ type: "session", version: 2, id: "other", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n`,
+      `${JSON.stringify({ type: "session", version: 2, id: "other", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" })}\n`,
     );
     await assert.rejects(
       repo.open("bad-header"),
@@ -242,7 +243,7 @@ test("open rejects missing, empty, malformed, headerless, and version-1 sessions
 
     await writeFile(
       join(dir, "bad-row.jsonl"),
-      `${JSON.stringify({ type: "session", version: 2, id: "bad-row", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${JSON.stringify({ type: "unknown", id: "y", parentId: null, createdAt: "2026-01-01T00:00:00.000Z" })}\n`,
+      `${JSON.stringify({ type: "session", version: 2, id: "bad-row", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" })}\n${JSON.stringify({ type: "unknown", id: "y", parentId: null, createdAt: "2026-01-01T00:00:00.000Z" })}\n`,
     );
     await assert.rejects(
       repo.open("bad-row"),
@@ -298,7 +299,7 @@ test("open rejects duplicate IDs, missing parents, and multiple roots", async ()
     for (const { name, entries } of invalidTrees) {
       await writeFile(
         join(dir, `${name}.jsonl`),
-        `${JSON.stringify({ type: "session", version: 2, id: name, cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+        `${JSON.stringify({ type: "session", version: 2, id: name, cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" })}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
       );
       await assert.rejects(
         repository(storageDir).open(name),
@@ -359,7 +360,7 @@ test("fork of a selected node copies only the root-to-node path", async () => {
   }
 });
 
-test("fork ignores abandoned branches and title rows", async () => {
+test("fork ignores abandoned branches", async () => {
   const storageDir = await tempStorage();
   const dir = sessionsDir(storageDir);
   const abandoned: AgentMessage = {
@@ -374,11 +375,10 @@ test("fork ignores abandoned branches and title rows", async () => {
     await mkdir(dir, { recursive: true });
     await writeFile(
       join(dir, "branched.jsonl"),
-      `${JSON.stringify({ type: "session", version: 2, id: "branched", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z" })}\n` +
+      `${JSON.stringify({ type: "session", version: 2, id: "branched", cwd: process.cwd(), title: "x", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" })}\n` +
         `${JSON.stringify({ type: "message", id: "root", parentId: null, createdAt: "2026-01-01T00:00:00.000Z", message: user })}\n` +
         `${JSON.stringify({ type: "message", id: "abandoned", parentId: "root", createdAt: "2026-01-01T00:00:00.000Z", message: abandoned })}\n` +
-        `${JSON.stringify({ type: "message", id: "current", parentId: "root", createdAt: "2026-01-01T00:00:00.000Z", message: current })}\n` +
-        `${JSON.stringify({ type: "session_title", createdAt: "2026-01-01T00:00:00.000Z", title: "Source title" })}\n`,
+        `${JSON.stringify({ type: "message", id: "current", parentId: "root", createdAt: "2026-01-01T00:00:00.000Z", message: current })}\n`,
     );
 
     const repo = repository(storageDir);

@@ -7,11 +7,7 @@ import type {
   TokenUsage,
 } from "../../ai/types.js";
 import type { AgentMessage } from "../types.js";
-import {
-  SessionError,
-  type SessionNode,
-  type SessionRecord,
-} from "./types.js";
+import { SessionError, type SessionNode } from "./types.js";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const STOP_REASONS = new Set(["stop", "length", "toolUse", "error", "aborted"]);
@@ -176,11 +172,11 @@ function parseModelSelection(raw: unknown): ModelConfig {
 // ── Record parsing ──
 
 /**
- * Decode and detach one untrusted SessionRecord. Constructs the exact matching
+ * Decode and detach one untrusted SessionNode. Constructs the exact matching
  * union variant and clones nested message data, so caller-owned references and
  * unknown properties never enter Session memory.
  */
-export function parseSessionRecord(raw: unknown): SessionRecord {
+export function parseSessionRecord(raw: unknown): SessionNode {
   if (!isRecord(raw) || !isString(raw.type) || !isTimestamp(raw.createdAt)) {
     invalidRecord("Session record has invalid metadata");
   }
@@ -208,26 +204,17 @@ export function parseSessionRecord(raw: unknown): SessionRecord {
     };
   }
 
-  if (raw.type === "session_title") {
-    if (!isString(raw.title) || raw.title.trim() === "" || raw.title.includes("\n")) {
-      invalidRecord("Session title record is invalid");
-    }
-    return { type: "session_title", createdAt: raw.createdAt, title: raw.title };
-  }
-
   invalidRecord("Session record has an unknown type");
 }
 
 /**
  * Validate IDs, parent-before-child ordering, one root, and no missing parent.
- * Title records do not participate in the tree.
  */
-export function validateSessionRecords(records: readonly SessionRecord[]): void {
+export function validateSessionRecords(records: readonly SessionNode[]): void {
   const byId = new Set<string>();
   let rootCount = 0;
 
   for (const record of records) {
-    if (!isSessionNode(record)) continue;
     if (byId.has(record.id)) {
       invalidRecord("Session contains duplicate node IDs");
     }
@@ -239,12 +226,7 @@ export function validateSessionRecords(records: readonly SessionRecord[]): void 
     byId.add(record.id);
   }
 
-  if (records.some(isSessionNode) && rootCount !== 1) {
+  if (records.length > 0 && rootCount !== 1) {
     invalidRecord("Session nodes must form one rooted tree");
   }
-}
-
-/** Whether a durable record participates in the parent-linked tree. */
-export function isSessionNode(record: SessionRecord): record is SessionNode {
-  return record.type !== "session_title";
 }
