@@ -15,6 +15,6 @@ export const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
 export const BUILTIN_DEFAULTS = {
   maxTurns: 20,
   toolTimeoutSeconds: 120,
-  thinking: "hidden" as const,
+  thinking: "visible" as const,
   toolDetails: "compact" as const,
 };

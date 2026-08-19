@@ -119,7 +119,13 @@ export class Renderer {
           .join("");
         if (text !== "") this.writeFn(`\n${text}\n`);
       } else {
-        this.writeFn(`\n${this.style(2, `[tool] ${message.content}`)}\n`);
+        // Tool messages replay like the live tool result, so restored history
+        // matches the current run's rendering.
+        this.renderToolResultLine(
+          message.name,
+          message.isError ?? false,
+          message.content,
+        );
       }
     }
   }
@@ -154,14 +160,25 @@ export class Renderer {
     return `${runId}\u0000${id}`;
   }
 
-  /** Open the tool call line; the arguments stream in as deltas. */
+  /** Styled "⚙ name" marker shared by streamed and one-shot tool call lines. */
+  private toolCallLabel(name: string): string {
+    return this.style(36, `⚙ ${name}`);
+  }
+
+  /** Bounded JSON for a tool call's arguments, per toolDetails mode. */
+  private toolArgumentsText(arguments_: Record<string, unknown>): string {
+    const json = JSON.stringify(arguments_);
+    return this.toolDetails === "compact" ? bounded(json) : json;
+  }
+
+  /** Open a tool call line; the arguments stream in as deltas. */
   private renderToolCallStart(runId: string, id: string, name: string): void {
     this.toolCallStreams.set(this.toolCallKey(runId, id), {
       name,
       argsWritten: 0,
       truncated: false,
     });
-    this.writeFn(`\n${this.style(36, `⚙ ${name}`)} `);
+    this.writeFn(`\n${this.toolCallLabel(name)} `);
   }
 
   /** Stream the arguments JSON in place; compact mode bounds the line. */
@@ -183,36 +200,38 @@ export class Renderer {
     this.writeFn(`${argumentsDelta.slice(0, Math.max(remaining, 0))}…`);
   }
 
+  /**
+   * Close a tool call line. If the arguments were already streamed, only a
+   * still-empty line needs its JSON appended; otherwise the whole line is
+   * rendered at once.
+   */
   private renderToolCall(runId: string, call: AgentToolCall): void {
     const stream = this.toolCallStreams.get(this.toolCallKey(runId, call.id));
     if (stream !== undefined) {
-      // The arguments were already streamed; only an empty call needs the JSON.
       if (stream.argsWritten === 0) {
-        this.writeFn(
-          this.toolDetails === "compact"
-            ? bounded(JSON.stringify(call.arguments))
-            : JSON.stringify(call.arguments),
-        );
+        this.writeFn(this.toolArgumentsText(call.arguments));
       }
       return;
     }
-    const argumentsText = this.toolDetails === "compact"
-      ? bounded(JSON.stringify(call.arguments))
-      : JSON.stringify(call.arguments);
-    this.writeFn(`\n${this.style(36, `⚙ ${call.name}`)} ${argumentsText}`);
+    this.writeFn(`\n${this.toolCallLabel(call.name)} ${this.toolArgumentsText(call.arguments)}`);
   }
 
   private renderToolResult(call: AgentToolCall, result: AgentToolResult): void {
-    const marker = result.isError ? "✗" : "✓";
-    const code = result.isError ? 31 : 32;
+    this.renderToolResultLine(call.name, result.isError, result.content);
+  }
+
+  /** One styled tool-result line; shared by live results and history replay. */
+  private renderToolResultLine(name: string, isError: boolean, content: string): void {
+    const marker = isError ? "✗" : "✓";
+    const code = isError ? 31 : 32;
     if (this.toolDetails === "full") {
-      this.writeFn(`\n${this.style(code, `${marker} ${call.name}`)}\n${result.content}\n`);
+      this.writeFn(`\n${this.style(code, `${marker} ${name}`)}\n${content}\n`);
       return;
     }
-    if (result.isError) {
-      this.writeFn(`\n${this.style(code, `${marker} ${call.name}: ${bounded(result.content)}`)}\n`);
+    if (isError) {
+      this.writeFn(`\n${this.style(code, `${marker} ${name}: ${bounded(content)}`)}\n`);
     } else {
-      this.writeFn(`\n${this.style(code, `${marker} ${call.name}`)}\n`);
+      this.writeFn(`\n${this.style(code, `${marker} ${name}`)}\n`);
     }
   }
 

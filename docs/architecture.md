@@ -306,7 +306,7 @@ class CliUi {
 字符 0 位置匹配精确 slash token（`/new`、`/session`、`/model`、`/help`、`/exit`）；其他输入
 原样作为 Prompt。`/session` 与 `/model` 使用一基编号选择器，空输入取消。
 
-`Renderer` 把 `HarnessEvent` 与用户输入投影到终端（thinking 默认隐藏、tool 事实默认 compact）；
+`Renderer` 把 `HarnessEvent` 与用户输入投影到终端（thinking 默认可见、tool 事实默认 compact）；
 `CliInteractions` 实现 `Interactions` 端口，把 `o`/`a`/其它回答映射为 once/always/deny。
 Run 取消中止 Permission 提问并传播，普通取消返回 deny。SIGINT 在 `current.isRunning` 时调用
 `current.abort()`（包括 Permission 持有提问时）；没有 Run 时留给 readline 自身的输入取消。

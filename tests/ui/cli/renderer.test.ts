@@ -225,10 +225,24 @@ test("history renders user, assistant, and tool messages in order", () => {
   const text = output();
   assert.ok(text.includes("hello"));
   assert.ok(text.includes("hi there"));
-  assert.ok(text.includes("tool output"));
+  assert.ok(text.includes("✓ bash"), "tool messages replay like a live tool result");
+  assert.ok(!text.includes("tool output"), "compact replay hides the result content");
   assert.ok(!text.includes("skipped thinking"));
   assert.ok(text.indexOf("hello") < text.indexOf("hi there"));
-  assert.ok(text.indexOf("hi there") < text.indexOf("tool output"));
+  assert.ok(text.indexOf("hi there") < text.indexOf("✓ bash"));
+});
+
+test("history tool messages show content in full mode", () => {
+  const { renderer, output } = rendererWith({ toolDetails: "full" });
+  renderer.renderHistory([
+    { role: "tool", toolCallId: "call-1", name: "bash", content: "tool output", isError: false },
+    { role: "tool", toolCallId: "call-2", name: "bash", content: "boom", isError: true },
+  ]);
+
+  const text = output();
+  assert.ok(text.includes("✓ bash"));
+  assert.ok(text.includes("tool output"), "full replay shows the result content");
+  assert.ok(text.includes("✗ bash\nboom"), "error replay renders the failure");
 });
 
 test("selections render numbered options and help lists commands", () => {

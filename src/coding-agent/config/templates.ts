@@ -22,7 +22,7 @@ const USER_CONFIG_TEMPLATE = `{
     "timeoutSeconds": 120
   },
   "ui": {
-    "thinking": "hidden",
+    "thinking": "visible",
     "toolDetails": "compact"
   }
 }

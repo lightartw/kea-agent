@@ -153,7 +153,7 @@ test("defaults apply when only a Provider is configured", async () => {
 
     assert.equal(config.maxTurns, 20);
     assert.equal(config.toolTimeoutSeconds, 120);
-    assert.equal(config.thinking, "hidden");
+    assert.equal(config.thinking, "visible");
     assert.equal(config.toolDetails, "compact");
     assert.equal(config.verbose, false);
     assert.deepEqual(config.defaultModel, { provider: "openai", model: "gpt-test" });
