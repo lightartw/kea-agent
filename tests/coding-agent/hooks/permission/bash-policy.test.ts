@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   classifyBashCommand,
   hardDeniedBashReason,
-} from "../../../../src/coding-agent/events/permission/bash-policy.js";
+} from "../../../../src/coding-agent/hooks/permission/bash-policy.js";
 
 test("Bash policy hard-denies commands that must never reach UI", () => {
   for (const command of [

@@ -10,7 +10,7 @@ import {
   type ToolExecutionContext,
 } from "../../../src/core/harness/tools/types.js";
 import { AgentToolRegistry } from "../../../src/core/harness/tools/registry.js";
-import { Events } from "../../../src/core/events/events.js";
+import { HarnessHooks } from "../../../src/core/harness/events.js";
 
 const parameters = Type.Object({ value: Type.String() });
 
@@ -42,14 +42,14 @@ function echoCall(overrides: Partial<{ id: string; name: string; arguments: Reco
 }
 
 function contextFor(
-  events = new Events(),
+  hooks = new HarnessHooks(),
   signal?: AbortSignal,
 ): ToolExecutionContext {
   return {
     sessionId: "session-1",
     runId: "run-1",
     cwd: process.cwd(),
-    events,
+    hooks,
     ...(signal === undefined ? {} : { signal }),
   };
 }
@@ -97,64 +97,71 @@ test("execute rejects invalid arguments", async () => {
   assert.match(result.content, /Invalid arguments for tool 'echo'/);
 });
 
-test("execute runs lookup, validation, tools/pre-execute, then execute", async () => {
+test("execute allows by default when no beforeTool handler is registered", async () => {
   const registry = new AgentToolRegistry();
-  const tool = new EchoTool();
-  registry.register(tool);
-  const events = new Events();
-  const stages: string[] = [];
-  events.on("tools/pre-execute", (input, proceed) => {
-    stages.push("pre-execute");
-    return proceed({
-      ...input,
-      call: { ...input.call, arguments: { value: "changed" } },
-    });
-  });
-  events.on("tools/execute", (input, proceed) => {
-    stages.push(`execute:${(input.call.arguments as { value: string }).value}`);
-    return proceed(input);
-  });
-  events.on("tools/post-execute", (input, proceed) => {
-    stages.push("post-execute");
-    return proceed(input);
-  });
+  registry.register(new EchoTool());
 
-  const result = await registry.execute(echoCall(), contextFor(events));
+  const result = await registry.execute(echoCall(), contextFor());
 
   assert.deepEqual(result, { content: "ok", isError: false });
-  assert.deepEqual(stages, [
-    "pre-execute",
-    "execute:ok",
-    "post-execute",
-  ]);
 });
 
-test("execute returns a pre-execute block result without running the tool", async () => {
+test("a beforeTool deny blocks execution without running the tool body", async () => {
   const registry = new AgentToolRegistry();
   const tool = new EchoTool();
   registry.register(tool);
-  const events = new Events();
-  events.on("tools/pre-execute", () => ({
-    kind: "deny",
-    reason: "blocked",
-  }));
-  let executeCalls = 0;
-  let postCalls = 0;
-  events.on("tools/execute", (input, proceed) => {
-    executeCalls += 1;
-    return proceed(input);
-  });
-  events.on("tools/post-execute", (input, proceed) => {
-    postCalls += 1;
-    return proceed(input);
-  });
+  const hooks = new HarnessHooks();
+  hooks.on("beforeTool", () => ({ kind: "deny", reason: "blocked" }));
 
-  const result = await registry.execute(echoCall(), contextFor(events));
+  const result = await registry.execute(echoCall(), contextFor(hooks));
 
   assert.deepEqual(result, { content: "Error: blocked", isError: true });
   assert.equal(tool.validations.length, 1);
-  assert.equal(executeCalls, 0);
-  assert.equal(postCalls, 0);
+});
+
+test("multiple beforeTool handlers stop at the first deny", async () => {
+  const registry = new AgentToolRegistry();
+  registry.register(new EchoTool());
+  const hooks = new HarnessHooks();
+  const order: string[] = [];
+  hooks.on("beforeTool", () => {
+    order.push("a");
+    return { kind: "deny", reason: "no" };
+  });
+  hooks.on("beforeTool", () => {
+    order.push("b");
+    return { kind: "allow" };
+  });
+
+  const result = await registry.execute(echoCall(), contextFor(hooks));
+
+  assert.deepEqual(result, { content: "Error: no", isError: true });
+  assert.deepEqual(order, ["a"]);
+});
+
+test("beforeTool receives the call, run identity, and signal", async () => {
+  const registry = new AgentToolRegistry();
+  registry.register(new EchoTool());
+  const hooks = new HarnessHooks();
+  const controller = new AbortController();
+  let seen:
+    | { call: AgentToolCall; sessionId: string; runId: string; signal: AbortSignal | undefined }
+    | undefined;
+  hooks.on("beforeTool", (input, ctx) => {
+    seen = {
+      call: input.call,
+      sessionId: ctx.sessionId,
+      runId: ctx.runId,
+      signal: ctx.signal,
+    };
+  });
+
+  await registry.execute(echoCall(), contextFor(hooks, controller.signal));
+
+  assert.equal(seen?.call.name, "echo");
+  assert.equal(seen?.sessionId, "session-1");
+  assert.equal(seen?.runId, "run-1");
+  assert.equal(seen?.signal, controller.signal);
 });
 
 test("execute applies its global timeout", async () => {
@@ -199,130 +206,10 @@ test("execute forwards a caller abort into the running tool", async () => {
   const controller = new AbortController();
   const execution = registry.execute(
     echoCall(),
-    contextFor(new Events(), controller.signal),
+    contextFor(new HarnessHooks(), controller.signal),
   );
   await startedPromise;
   controller.abort();
   assert.equal((await execution).isError, true);
   assert.equal(received?.aborted, true);
-});
-
-test("a failing Tool interceptor becomes this call's error result", async () => {
-  const registry = new AgentToolRegistry();
-  registry.register(new EchoTool());
-  const events = new Events();
-  events.on("tools/execute", () => {
-    throw new Error("tool pipeline failed");
-  });
-
-  const result = await registry.execute(echoCall(), contextFor(events));
-
-  assert.equal(result.isError, true);
-  assert.match(result.content, /tool pipeline failed/);
-});
-
-test("Tool interception events carry Run identity, the call, and the result", async () => {
-  const registry = new AgentToolRegistry();
-  const tool = new EchoTool();
-  registry.register(tool);
-  const events = new Events();
-  const seen: Array<{
-    stage: string;
-    sessionId: string;
-    runId: string;
-    call: AgentToolCall;
-    result?: AgentToolResult;
-  }> = [];
-  events.on("tools/pre-execute", (input, proceed) => {
-    seen.push({ stage: "pre", sessionId: input.sessionId, runId: input.runId, call: input.call });
-    return proceed(input);
-  });
-  events.on("tools/execute", (input, proceed) => {
-    seen.push({ stage: "execute", sessionId: input.sessionId, runId: input.runId, call: input.call });
-    return proceed(input);
-  });
-  events.on("tools/post-execute", (input, proceed) => {
-    seen.push({
-      stage: "post",
-      sessionId: input.sessionId,
-      runId: input.runId,
-      call: input.call,
-      result: input.result,
-    });
-    return proceed(input);
-  });
-
-  const result = await registry.execute(echoCall(), contextFor(events));
-
-  assert.deepEqual(result, { content: "ok", isError: false });
-  assert.deepEqual(seen.map((entry) => entry.stage), ["pre", "execute", "post"]);
-  for (const entry of seen) {
-    assert.equal(entry.sessionId, "session-1");
-    assert.equal(entry.runId, "run-1");
-    assert.equal(entry.call.name, "echo");
-  }
-  assert.deepEqual(seen[2]!.result, { content: "ok", isError: false });
-});
-
-test("unknown tools and invalid arguments never reach tools/pre-execute", async () => {
-  const registry = new AgentToolRegistry();
-  const tool = new EchoTool();
-  registry.register(tool);
-  const events = new Events();
-  let preCalls = 0;
-  events.on("tools/pre-execute", (input, proceed) => {
-    preCalls += 1;
-    return proceed(input);
-  });
-
-  const unknown = await registry.execute(
-    echoCall({ name: "missing" }),
-    contextFor(events),
-  );
-  const invalid = await registry.execute(
-    echoCall({ arguments: {} }),
-    contextFor(events),
-  );
-
-  assert.equal(unknown.isError, true);
-  assert.equal(invalid.isError, true);
-  assert.equal(preCalls, 0);
-});
-
-test("tools/pre-execute cannot replace the executed tool call", async () => {
-  const registry = new AgentToolRegistry();
-  const tool = new EchoTool();
-  const other = new EchoTool("other");
-  registry.register(tool);
-  registry.register(other);
-  const events = new Events();
-  events.on("tools/pre-execute", (input, proceed) => proceed({
-    ...input,
-    call: { ...input.call, name: "other" },
-  }));
-
-  const result = await registry.execute(echoCall(), contextFor(events));
-
-  assert.deepEqual(result, { content: "ok", isError: false });
-  assert.equal(tool.validations.length, 1);
-  assert.equal(other.validations.length, 0);
-});
-
-test("tool interception listeners receive the Run signal", async () => {
-  const registry = new AgentToolRegistry();
-  registry.register(new EchoTool());
-  const events = new Events();
-  const controller = new AbortController();
-  let received: AbortSignal | undefined;
-  events.on("tools/pre-execute", (input, proceed, signal) => {
-    received = signal;
-    return proceed(input);
-  });
-
-  await registry.execute(
-    echoCall(),
-    contextFor(events, controller.signal),
-  );
-
-  assert.equal(received, controller.signal);
 });

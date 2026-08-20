@@ -10,6 +10,7 @@ import type {
   StreamFn,
 } from "./types.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
+import type { HookContext } from "./events.js";
 
 // ── Helpers ──
 
@@ -38,11 +39,20 @@ function toToolResultMessage(
   };
 }
 
+function hookContext(context: AgentContext): HookContext {
+  return {
+    sessionId: context.sessionId,
+    runId: context.runId,
+    cwd: context.cwd,
+    ...(context.signal === undefined ? {} : { signal: context.signal }),
+  };
+}
+
 /**
  * Run one Agent Run from a user input. Complete messages are committed
- * through `context.appendMessage()` before their events are emitted.
- * Events and cancellation come from `context`, which the caller built
- * for this Run.
+ * through `context.appendMessage()` before their facts are emitted. Facts go
+ * through the Harness observation bus (`context.events`); control goes through
+ * the fixed hooks (`context.hooks`).
  */
 export async function runAgentLoop(
   input: string,
@@ -50,16 +60,13 @@ export async function runAgentLoop(
   config: AgentLoopConfig,
   streamFn: StreamFn,
 ): Promise<void> {
-  const run = { sessionId: context.sessionId, runId: context.runId };
   const signal = context.signal;
+  const hooks = hookContext(context);
 
-  // ── agent/user-prompt (intercept) ──
-  const prompt = await context.events.intercept(
-    "agent/user-prompt",
-    { ...run, prompt: input },
-    async (value) => value.prompt,
-    signal,
-  );
+  signal?.throwIfAborted();
+
+  // ── beforePrompt (control) ──
+  const prompt = await context.hooks.beforePrompt(input, hooks);
   if (prompt === undefined) return;
 
   await context.appendMessage({ role: "user", content: prompt });
@@ -69,15 +76,12 @@ export async function runAgentLoop(
   while (true) {
     if (signal?.aborted) return;
 
-    await context.events.emit("agent/turn-start", run);
+    await context.events.emit({ type: "turn-start", runId: context.runId });
 
-    // ── agent/context (intercept) ──
-    const requestMessages = [...context.messages];
-    const effectiveMessages = await context.events.intercept(
-      "agent/context",
-      { ...run, messages: requestMessages },
-      async (value) => value.messages,
-      signal,
+    // ── transformContext (control) ──
+    const effectiveMessages = await context.hooks.transformContext(
+      [...context.messages],
+      hooks,
     );
     const llmMessages: readonly Message[] = config.convertToLlm(effectiveMessages);
     const llmContext: Context = {
@@ -98,28 +102,28 @@ export async function runAgentLoop(
 
       switch (event.type) {
         case "text_start":
-          await context.events.emit("agent/text-start", { ...run });
+          await context.events.emit({ type: "text-start", runId: context.runId });
           break;
         case "text_end":
-          await context.events.emit("agent/text-end", { ...run });
+          await context.events.emit({ type: "text-end", runId: context.runId });
           break;
         case "thinking_start":
-          await context.events.emit("agent/thinking-start", { ...run });
+          await context.events.emit({ type: "thinking-start", runId: context.runId });
           break;
         case "thinking_end":
-          await context.events.emit("agent/thinking-end", { ...run });
+          await context.events.emit({ type: "thinking-end", runId: context.runId });
           break;
         case "text_delta":
-          await context.events.emit("agent/text-delta", { ...run, text: event.text });
+          await context.events.emit({ type: "text-delta", runId: context.runId, text: event.text });
           break;
         case "thinking_delta":
-          await context.events.emit("agent/thinking-delta", { ...run, thinking: event.thinking });
+          await context.events.emit({ type: "thinking-delta", runId: context.runId, thinking: event.thinking });
           break;
         case "toolcall_start":
-          await context.events.emit("agent/tool-call-start", { ...run, id: event.id, name: event.name });
+          await context.events.emit({ type: "tool-call-start", runId: context.runId, id: event.id, name: event.name });
           break;
         case "toolcall_delta":
-          await context.events.emit("agent/tool-call-delta", { ...run, id: event.id, argumentsDelta: event.argumentsDelta });
+          await context.events.emit({ type: "tool-call-delta", runId: context.runId, id: event.id, argumentsDelta: event.argumentsDelta });
           break;
         case "toolcall_end":
           break;
@@ -129,8 +133,9 @@ export async function runAgentLoop(
           break;
         case "error":
           await context.appendMessage(event.message);
-          await context.events.emit("agent/turn-end", {
-            ...run,
+          await context.events.emit({
+            type: "turn-end",
+            runId: context.runId,
             message: event.message,
             toolResults: [],
           });
@@ -148,26 +153,29 @@ export async function runAgentLoop(
     // ── Execute Tool Calls in source order; every call produces exactly one result ──
     const toolResults: AgentMessage[] = [];
     for (const call of toolCalls) {
-      const toolEvent = { ...run, cwd: context.cwd, call };
-      await context.events.emit("agent/tool-call", toolEvent);
+      await context.events.emit({ type: "tool-call", runId: context.runId, cwd: context.cwd, call });
       const result = await context.tools.execute(call, {
         sessionId: context.sessionId,
         runId: context.runId,
         cwd: context.cwd,
-        events: context.events,
+        hooks: context.hooks,
         ...(context.signal === undefined ? {} : { signal: context.signal }),
       });
       const resultMessage = toToolResultMessage(call, result);
       await context.appendMessage(resultMessage);
       toolResults.push(resultMessage);
-      await context.events.emit("agent/tool-result", {
-        ...toolEvent,
+      await context.events.emit({
+        type: "tool-result",
+        runId: context.runId,
+        cwd: context.cwd,
+        call,
         result,
       });
     }
 
-    await context.events.emit("agent/turn-end", {
-      ...run,
+    await context.events.emit({
+      type: "turn-end",
+      runId: context.runId,
       message: turnMessage,
       toolResults,
     });

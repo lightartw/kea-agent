@@ -1,5 +1,4 @@
 import { errorMessage, runWithTimeout } from "../../util/index.js";
-import type { PreToolDecision, ToolCallEvent } from "./events.js";
 import {
   AgentTool,
   type AgentToolCall,
@@ -7,10 +6,11 @@ import {
   type ToolExecutionContext,
 } from "./types.js";
 import type { Tool } from "../../ai/types.js";
+import type { HookContext } from "../events.js";
 
 const ERROR_PREFIX = "Error: ";
 
-/** Validates and executes tool calls through the three Tool interception stages. */
+/** Validates and executes tool calls; permission is a fixed beforeTool hook. */
 export class AgentToolRegistry {
   private readonly tools = new Map<string, AgentTool>();
 
@@ -44,10 +44,10 @@ export class AgentToolRegistry {
   }
 
   /**
-   * Run one Tool Call through pre-execute, execute, and post-execute.
-   * The call is the first parameter; the context carries Run identity,
-   * execution cwd, events, and cancellation. Returns the final
-   * AgentToolResult; every call produces exactly one result.
+   * Run one Tool Call: validate, consult the beforeTool permission hook, then
+   * execute with the configured timeout. The call is the first parameter; the
+   * context carries Run identity, execution cwd, hooks, and cancellation.
+   * Returns exactly one AgentToolResult per call.
    */
   async execute(
     call: AgentToolCall,
@@ -66,39 +66,22 @@ export class AgentToolRegistry {
         );
       }
 
-      const event: ToolCallEvent = {
+      const hookCtx: HookContext = {
         sessionId: executionContext.sessionId,
         runId: executionContext.runId,
         cwd: executionContext.cwd,
-        call,
+        ...(executionContext.signal === undefined
+          ? {}
+          : { signal: executionContext.signal }),
       };
-      const preDecision = await executionContext.events.intercept(
-        "tools/pre-execute",
-        event,
-        (): PreToolDecision => ({ kind: "allow" }),
-        executionContext.signal,
-      );
+      const preDecision = await executionContext.hooks.beforeTool(call, hookCtx);
       if (preDecision.kind === "deny") {
         return this.error(preDecision.reason ?? "Tool execution denied");
       }
 
-      const result = await executionContext.events.intercept(
-        "tools/execute",
-        event,
-        (input) =>
-          runWithTimeout(
-            this.timeout,
-            (timeoutSignal) =>
-              tool.execute(input.call.arguments, timeoutSignal),
-            executionContext.signal,
-          ),
-        executionContext.signal,
-      );
-
-      return await executionContext.events.intercept(
-        "tools/post-execute",
-        { ...event, result },
-        (input) => input.result,
+      return await runWithTimeout(
+        this.timeout,
+        (timeoutSignal) => tool.execute(call.arguments, timeoutSignal),
         executionContext.signal,
       );
     } catch (error) {

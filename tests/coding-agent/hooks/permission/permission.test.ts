@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import type {
   AgentToolCall,
 } from "../../../../src/core/harness/tools/types.js";
-import type { ToolCallEvent } from "../../../../src/core/harness/tools/events.js";
+import type { ToolCallEvent } from "../../../../src/core/harness/events.js";
 import type {
   InteractionOptions,
   UserInteraction,
@@ -13,7 +13,7 @@ import type {
 import {
   decidePermission,
   type PermissionRule,
-} from "../../../../src/coding-agent/events/permission/permission.js";
+} from "../../../../src/coding-agent/hooks/permission/permission.js";
 
 const PROJECT = resolve(join("work", "project"));
 const CWD = PROJECT;

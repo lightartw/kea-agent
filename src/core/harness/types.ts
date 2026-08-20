@@ -6,14 +6,14 @@ import type {
   StreamChunk,
   StreamOptions,
 } from "../ai/types.js";
-import type { Events } from "../events/events.js";
+import type { HarnessEventBus, HarnessEventType, HarnessHooks } from "./events.js";
 import type { AgentToolRegistry } from "./tools/registry.js";
 import type { Session } from "./session/session.js";
 
 /**
- * Identity of one Agent Run. One Project-level `Events` instance is shared by
- * multiple Sessions, so listeners need `sessionId` to filter; `runId`
- * correlates events across the concurrent Runs of a shared dispatcher.
+ * Identity of one Agent Run. Each Harness owns one event bus and one hooks
+ * registry bound to a single Session, so events carry no Session identity;
+ * `runId` still correlates the events of one Run.
  */
 export interface AgentRunIdentity {
   readonly sessionId: string;
@@ -52,8 +52,10 @@ export interface AgentContext {
   readonly messages: readonly AgentMessage[];
   readonly tools: AgentToolRegistry;
 
-  /** Shared event dispatcher; control listeners wrap pending behavior via intercept(). */
-  readonly events: Events;
+  /** Observation bus owned by the Harness; the loop emits facts through it. */
+  readonly events: HarnessEventBus;
+  /** Fixed control hooks (beforePrompt / transformContext / beforeTool). */
+  readonly hooks: HarnessHooks;
   /** Cancellation for the whole Run. */
   readonly signal?: AbortSignal;
 
@@ -82,5 +84,10 @@ export interface HarnessConfig {
   readonly maxTurns?: number;
   readonly toolRegistry: AgentToolRegistry;
   readonly systemPrompt: string;
-  readonly events: Events;
+  /** Reporter for observation-listener errors (default: console.error). */
+  readonly onListenerError?: (
+    error: unknown,
+    type: HarnessEventType,
+    event: unknown,
+  ) => void;
 }

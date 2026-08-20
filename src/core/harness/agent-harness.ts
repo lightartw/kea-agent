@@ -9,10 +9,9 @@ import type {
 } from "./types.js";
 import type { AgentTool } from "./tools/types.js";
 import type { AgentToolRegistry } from "./tools/registry.js";
-import type { Events } from "../events/events.js";
+import { HarnessEventBus, HarnessHooks, type HarnessEvent, type HarnessEventType } from "./events.js";
 import type { ModelConfig, ModelRuntime } from "../ai/types.js";
 import { errorMessage } from "../util/index.js";
-import type { HarnessEvent, HarnessRunEnd } from "./events.js";
 import { Session } from "./session/session.js";
 import { ensureSessionTitle } from "./session-title.js";
 import type { HarnessConfig } from "./types.js";
@@ -29,11 +28,29 @@ function isAbortFailure(error: unknown, signal: AbortSignal): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
+const EVENT_TYPES: readonly HarnessEventType[] = [
+  "run-start",
+  "run-end",
+  "turn-start",
+  "turn-end",
+  "text-start",
+  "text-end",
+  "thinking-start",
+  "thinking-end",
+  "text-delta",
+  "thinking-delta",
+  "tool-call-start",
+  "tool-call-delta",
+  "tool-call",
+  "tool-result",
+];
+
 export class AgentHarness {
   private readonly session: Session;
   private readonly toolRegistry: AgentToolRegistry;
   private readonly systemPrompt: string;
-  private readonly events: Events;
+  private readonly events: HarnessEventBus;
+  private readonly hooksState: HarnessHooks;
 
   private activeRun: ActiveRun | undefined;
   private readonly runtime: ModelRuntime;
@@ -53,7 +70,12 @@ export class AgentHarness {
     this.runtime = config.runtime;
     this.maxTurns = config.maxTurns;
     this.currentModel = config.session.modelSelection() ?? config.modelConfig;
-    this.events = config.events;
+    this.events = new HarnessEventBus(
+      config.onListenerError === undefined
+        ? undefined
+        : (error, type, event) => config.onListenerError!(error, type, event),
+    );
+    this.hooksState = new HarnessHooks();
   }
 
   // ── Private helpers ──
@@ -89,7 +111,7 @@ export class AgentHarness {
 
     try {
       started = true;
-      await this.events.emit("harness/run-start", run);
+      await this.events.emit({ type: "run-start", runId: run.runId });
 
       if (!this.abortRequested) {
         const config = this.createLoopConfig();
@@ -102,6 +124,7 @@ export class AgentHarness {
           messages,
           tools: this.toolRegistry,
           events: this.events,
+          hooks: this.hooksState,
           signal: abortController.signal,
           appendMessage: async (message) => {
             await this.session.append({ type: "message", message });
@@ -135,10 +158,18 @@ export class AgentHarness {
     }
 
     if (started) {
-      const endInput: HarnessRunEnd = failure === undefined
-        ? { ...run, reason: sawAborted ? "aborted" : "completed" }
-        : { ...run, reason: "error", errorMessage: errorMessage(failure) };
-      await this.events.emit("harness/run-end", endInput);
+      await this.events.emit(failure === undefined
+        ? {
+            type: "run-end",
+            runId: run.runId,
+            reason: sawAborted ? "aborted" : "completed",
+          }
+        : {
+            type: "run-end",
+            runId: run.runId,
+            reason: "error",
+            errorMessage: errorMessage(failure),
+          });
     }
 
     if (failure !== undefined) throw failure;
@@ -175,127 +206,18 @@ export class AgentHarness {
   // ── Subscription ──
 
   /**
-   * Observe the emit facts belonging to this Session through a typed facade.
-   * The listener never sees Session identity or intercept control points;
-   * listener errors are isolated by the shared Events error handler.
-   * The returned unsubscribe function is idempotent.
+   * Observe the facts of this Harness through its own event bus. Each Harness
+   * is bound to one Session, so there is no session filtering or projection;
+   * listener errors are isolated by the bus. The returned unsubscribe is
+   * idempotent.
    */
   subscribe(listener: (event: HarnessEvent) => void): () => void {
-    const belongsToSession = (sessionId: string): boolean =>
-      sessionId === this.session.id;
-    const off = [
-      this.events.on("harness/run-start", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({ type: "run-start", runId: input.runId });
-        }
-      }),
-      this.events.on("harness/run-end", (input) => {
-        if (!belongsToSession(input.sessionId)) return;
-        listener(input.reason === "error"
-          ? {
-              type: "run-end",
-              runId: input.runId,
-              reason: "error",
-              errorMessage: input.errorMessage,
-            }
-          : { type: "run-end", runId: input.runId, reason: input.reason });
-      }),
-      this.events.on("agent/turn-start", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({ type: "turn-start", runId: input.runId });
-        }
-      }),
-      this.events.on("agent/turn-end", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({
-            type: "turn-end",
-            runId: input.runId,
-            message: input.message,
-            toolResults: input.toolResults,
-          });
-        }
-      }),
-      this.events.on("agent/text-start", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({ type: "text-start", runId: input.runId });
-        }
-      }),
-      this.events.on("agent/text-end", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({ type: "text-end", runId: input.runId });
-        }
-      }),
-      this.events.on("agent/thinking-start", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({ type: "thinking-start", runId: input.runId });
-        }
-      }),
-      this.events.on("agent/thinking-end", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({ type: "thinking-end", runId: input.runId });
-        }
-      }),
-      this.events.on("agent/text-delta", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({ type: "text-delta", runId: input.runId, text: input.text });
-        }
-      }),
-      this.events.on("agent/thinking-delta", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({
-            type: "thinking-delta",
-            runId: input.runId,
-            thinking: input.thinking,
-          });
-        }
-      }),
-      this.events.on("agent/tool-call-start", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({
-            type: "tool-call-start",
-            runId: input.runId,
-            id: input.id,
-            name: input.name,
-          });
-        }
-      }),
-      this.events.on("agent/tool-call-delta", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({
-            type: "tool-call-delta",
-            runId: input.runId,
-            id: input.id,
-            argumentsDelta: input.argumentsDelta,
-          });
-        }
-      }),
-      this.events.on("agent/tool-call", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({
-            type: "tool-call",
-            runId: input.runId,
-            cwd: input.cwd,
-            call: input.call,
-          });
-        }
-      }),
-      this.events.on("agent/tool-result", (input) => {
-        if (belongsToSession(input.sessionId)) {
-          listener({
-            type: "tool-result",
-            runId: input.runId,
-            cwd: input.cwd,
-            call: input.call,
-            result: input.result,
-          });
-        }
-      }),
-    ];
+    const offs = EVENT_TYPES.map((type) => this.events.on(type, listener));
     let closed = false;
     return () => {
       if (closed) return;
       closed = true;
-      for (const unsubscribe of off) unsubscribe();
+      for (const unsubscribe of offs) unsubscribe();
     };
   }
 
@@ -303,6 +225,10 @@ export class AgentHarness {
 
   get sessionId(): string {
     return this.session.id;
+  }
+
+  get hooks(): HarnessHooks {
+    return this.hooksState;
   }
 
   get title(): string {

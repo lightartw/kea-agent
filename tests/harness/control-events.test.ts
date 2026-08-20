@@ -9,7 +9,7 @@ import type {
   AgentLoopConfig,
   AgentMessage,
 } from "../../src/core/harness/types.js";
-import { Events } from "../../src/core/events/events.js";
+import { HarnessEventBus, HarnessHooks } from "../../src/core/harness/events.js";
 import { AgentTool, type AgentToolResult } from "../../src/core/harness/tools/types.js";
 import type { AgentToolCall } from "../../src/core/harness/tools/types.js";
 import { AgentToolRegistry } from "../../src/core/harness/tools/registry.js";
@@ -40,7 +40,8 @@ function makeConfig(): AgentLoopConfig {
 function memoryContext(
   tools = new AgentToolRegistry(),
   history: AgentMessage[] = [],
-  events = new Events(),
+  hooks = new HarnessHooks(),
+  events = new HarnessEventBus(),
   signal?: AbortSignal,
 ): AgentContext {
   return {
@@ -50,6 +51,7 @@ function memoryContext(
     systemPrompt: "",
     messages: history,
     tools,
+    hooks,
     events,
     ...(signal === undefined ? {} : { signal }),
     appendMessage: async (message) => { history.push(message); },
@@ -102,7 +104,6 @@ function streamForToolCall(call: AgentToolCall): TestStream {
 
 class TypedTool extends AgentTool<typeof typedParameters> {
   ran = false;
-  seen = "";
   constructor() {
     super("typed", "Typed tool.", typedParameters);
   }
@@ -110,7 +111,6 @@ class TypedTool extends AgentTool<typeof typedParameters> {
     arguments_: Static<typeof typedParameters>,
   ): Promise<AgentToolResult> {
     this.ran = true;
-    this.seen = arguments_.value;
     return { content: arguments_.value, isError: false };
   }
 }
@@ -126,18 +126,14 @@ class NoopTool extends AgentTool<typeof emptyParameters> {
   }
 }
 
-// ── agent/user-prompt ──
+// ── beforePrompt ──
 
-test("agent/user-prompt blocking prevents message insertion and model calls", async () => {
-  const events = new Events();
-  events.on("agent/user-prompt", () => undefined);
+test("beforePrompt returning undefined prevents message insertion and model calls", async () => {
+  const hooks = new HarnessHooks();
+  hooks.on("beforePrompt", () => undefined);
   let streams = 0;
   const history: AgentMessage[] = [];
-  const context = memoryContext(undefined, history, events);
-  const recorded: string[] = [];
-  events.on("agent/turn-start", (input) => {
-    if (input.sessionId === "session-1") recorded.push("turn-start");
-  });
+  const context = memoryContext(undefined, history, hooks);
 
   await runAgentLoop(
     "secret",
@@ -151,14 +147,13 @@ test("agent/user-prompt blocking prevents message insertion and model calls", as
 
   assert.equal(streams, 0);
   assert.deepEqual(history, []);
-  assert.deepEqual(recorded, []);
 });
 
-test("agent/user-prompt a returned prompt runs the Run", async () => {
-  const events = new Events();
-  events.on("agent/user-prompt", (input, proceed) => proceed(input));
+test("beforePrompt passing the prompt through runs the Run", async () => {
+  const hooks = new HarnessHooks();
+  hooks.on("beforePrompt", ({ prompt }) => ({ prompt }));
   const history: AgentMessage[] = [];
-  const context = memoryContext(undefined, history, events);
+  const context = memoryContext(undefined, history, hooks);
 
   await runAgentLoop(
     "hello",
@@ -172,14 +167,11 @@ test("agent/user-prompt a returned prompt runs the Run", async () => {
   assert.deepEqual(history.map((message) => message.role), ["user", "assistant"]);
 });
 
-test("agent/user-prompt transformation reaches persisted history and the model request", async () => {
-  const events = new Events();
-  events.on("agent/user-prompt", (input, proceed) => proceed({
-    ...input,
-    prompt: input.prompt.toUpperCase(),
-  }));
+test("beforePrompt transformation reaches persisted history and the model request", async () => {
+  const hooks = new HarnessHooks();
+  hooks.on("beforePrompt", ({ prompt }) => ({ prompt: prompt.toUpperCase() }));
   const history: AgentMessage[] = [];
-  const context = memoryContext(undefined, history, events);
+  const context = memoryContext(undefined, history, hooks);
   let requestMessages: readonly Message[] = [];
 
   await runAgentLoop(
@@ -199,19 +191,18 @@ test("agent/user-prompt transformation reaches persisted history and the model r
   assert.deepEqual(history.map((message) => message.role), ["user", "assistant"]);
 });
 
-// ── agent/context ──
+// ── transformContext ──
 
-test("agent/context intercept reaches the model without replacing history", async () => {
-  const events = new Events();
-  events.on("agent/context", (input, proceed) => proceed({
-    ...input,
+test("transformContext reaches the model without replacing history", async () => {
+  const hooks = new HarnessHooks();
+  hooks.on("transformContext", ({ messages }) => ({
     messages: [
-      ...input.messages,
+      ...messages,
       { role: "user", content: "request-only" },
     ],
   }));
   const history: AgentMessage[] = [];
-  const context = memoryContext(undefined, history, events);
+  const context = memoryContext(undefined, history, hooks);
   let requestMessages: readonly Message[] = [];
 
   await runAgentLoop(
@@ -238,9 +229,9 @@ test("agent/context intercept reaches the model without replacing history", asyn
   );
 });
 
-// ── Tool interception and facts ──
+// ── beforeTool and facts ──
 
-test("invalid arguments fail before tools/pre-execute runs", async () => {
+test("invalid arguments fail before beforeTool runs", async () => {
   const tool = new TypedTool();
   const tools = new AgentToolRegistry();
   tools.register(tool);
@@ -250,32 +241,30 @@ test("invalid arguments fail before tools/pre-execute runs", async () => {
     name: "typed",
     arguments: { value: 1 },
   };
-  const events = new Events();
-  let preCalls = 0;
-  events.on("tools/pre-execute", (input, proceed) => {
-    preCalls += 1;
-    return proceed(input);
+  const hooks = new HarnessHooks();
+  let beforeToolCalls = 0;
+  hooks.on("beforeTool", () => {
+    beforeToolCalls += 1;
   });
+  const events = new HarnessEventBus();
   const results: AgentToolResult[] = [];
-  events.on("agent/tool-result", (input) => {
-    if (input.sessionId === "session-1") results.push(input.result);
-  });
+  events.on("tool-result", (event) => { results.push(event.result); });
 
   await runAgentLoop(
     "run",
-    memoryContext(tools, undefined, events),
+    memoryContext(tools, [], hooks, events),
     makeConfig(),
     streamForToolCall(call),
   );
 
   assert.equal(tool.ran, false);
-  assert.equal(preCalls, 0);
+  assert.equal(beforeToolCalls, 0);
   assert.equal(results.length, 1);
   assert.equal(results[0]!.isError, true);
   assert.match(results[0]!.content, /Invalid arguments for tool 'typed'/);
 });
 
-test("tools/pre-execute can block execution", async () => {
+test("beforeTool deny blocks execution", async () => {
   const tool = new NoopTool();
   const tools = new AgentToolRegistry();
   tools.register(tool);
@@ -283,20 +272,19 @@ test("tools/pre-execute can block execution", async () => {
   const call: AgentToolCall = {
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
-  const events = new Events();
-  events.on("tools/pre-execute", () => ({
+  const hooks = new HarnessHooks();
+  hooks.on("beforeTool", () => ({
     kind: "deny",
     reason: "denied by policy",
   }));
-  const context = memoryContext(tools, history, events);
+  const context = memoryContext(tools, history, hooks);
+  const events = new HarnessEventBus();
   const results: AgentToolResult[] = [];
-  events.on("agent/tool-result", (input) => {
-    if (input.sessionId === "session-1") results.push(input.result);
-  });
+  events.on("tool-result", (event) => { results.push(event.result); });
 
   await runAgentLoop(
     "run",
-    context,
+    { ...context, events },
     makeConfig(),
     streamForToolCall(call),
   );
@@ -306,61 +294,21 @@ test("tools/pre-execute can block execution", async () => {
   assert.deepEqual(results[0], { content: "Error: denied by policy", isError: true });
 });
 
-test("tools/post-execute transformed result is identical in tool message and next request", async () => {
-  const tool = new NoopTool();
-  const tools = new AgentToolRegistry();
-  tools.register(tool);
-  const history: AgentMessage[] = [];
-  const call: AgentToolCall = {
-    type: "toolCall", id: "c1", name: "noop", arguments: {},
-  };
-  const events = new Events();
-  events.on("tools/post-execute", (input, proceed) => proceed({
-    ...input,
-    result: { content: "patched", isError: true },
-  }));
-  const context = memoryContext(tools, history, events);
-  let secondRequest: readonly Message[] = [];
-  const stream = streamWithEvents([
-    [
-      { type: "toolcall_start", id: call.id, name: call.name },
-      { type: "toolcall_end", toolCall: call },
-      { type: "done", message: assistantMsg("", [call]) },
-    ],
-    [{ type: "done", message: assistantMsg("done") }],
-  ], (context, index) => {
-    if (index === 1) secondRequest = [...context.messages];
-  });
-  const results: AgentToolResult[] = [];
-  events.on("agent/tool-result", (input) => {
-    if (input.sessionId === "session-1") results.push(input.result);
-  });
-
-  await runAgentLoop("run", context, makeConfig(), stream);
-
-  assert.deepEqual(results[0], { content: "patched", isError: true });
-  assert.deepEqual(history[2], {
-    role: "tool",
-    toolCallId: "c1",
-    name: "noop",
-    content: "patched",
-    isError: true,
-  });
-  assert.deepEqual(secondRequest.at(-1), history[2]);
-});
-
 // ── shared signal ──
 
-test("the same AbortSignal reaches every control listener", async () => {
-  const events = new Events();
+test("the same AbortSignal reaches every control hook", async () => {
+  const hooks = new HarnessHooks();
   const seen: Array<{ type: string; signal: AbortSignal | undefined }> = [];
-  events.on("agent/user-prompt", (input, proceed, signal) => {
-    seen.push({ type: "user_prompt", signal });
-    return proceed(input);
+  hooks.on("beforePrompt", (input, ctx) => {
+    seen.push({ type: "beforePrompt", signal: ctx.signal });
+    return { prompt: input.prompt };
   });
-  events.on("agent/context", (input, proceed, signal) => {
-    seen.push({ type: "context", signal });
-    return proceed(input);
+  hooks.on("transformContext", (input, ctx) => {
+    seen.push({ type: "transformContext", signal: ctx.signal });
+    return { messages: input.messages };
+  });
+  hooks.on("beforeTool", (_input, ctx) => {
+    seen.push({ type: "beforeTool", signal: ctx.signal });
   });
   const tool = new NoopTool();
   const tools = new AgentToolRegistry();
@@ -372,15 +320,16 @@ test("the same AbortSignal reaches every control listener", async () => {
 
   await runAgentLoop(
     "run",
-    memoryContext(tools, undefined, events, controller.signal),
+    memoryContext(tools, [], hooks, new HarnessEventBus(), controller.signal),
     makeConfig(),
     streamForToolCall(call),
   );
 
   assert.deepEqual(seen.map(({ type }) => type), [
-    "user_prompt",
-    "context",
-    "context",
+    "beforePrompt",
+    "transformContext",
+    "beforeTool",
+    "transformContext",
   ]);
   assert.ok(seen.every(({ signal }) => signal === controller.signal));
 });

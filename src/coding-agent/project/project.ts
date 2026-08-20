@@ -1,16 +1,17 @@
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
-// Include Agent's EventMap augmentation when Project is compiled in isolation.
-import type {} from "../../core/harness/events.js";
+// Include Agent's Event augmentation when Project is compiled in isolation.
 import type { ModelConfig, ModelRuntime } from "../../core/ai/types.js";
-import type { Events } from "../../core/events/events.js";
 import { AgentHarness } from "../../core/harness/agent-harness.js";
 import { SessionRepository } from "../../core/harness/session/repository.js";
 import type { Session } from "../../core/harness/session/session.js";
 import type { SessionMetadata } from "../../core/harness/session/types.js";
 import { createSystemPrompt } from "../system-prompt.js";
 import { createBuiltinToolRegistry } from "../tools/factory.js";
+import { registerBuiltinHooks } from "../hooks/register.js";
+import type { PermissionRule } from "../hooks/permission/permission.js";
+import type { UserInteraction } from "../interaction/interactions.js";
 
 /** One durable Project record: identity plus the normalized Project directory. */
 export interface ProjectInfo {
@@ -68,9 +69,6 @@ export function validateProjectInfo(info: ProjectInfo): void {
  * update/save/delete operation.
  */
 export class Project {
-  /** Project-scoped Events bus; Harnesses observe it through subscribe(). */
-  private readonly events: Events;
-
   private readonly infoState: ProjectInfo;
   private readonly projectDirectory: string;
   private readonly sessions: SessionRepository;
@@ -78,6 +76,8 @@ export class Project {
   private readonly modelConfig: ModelConfig;
   private readonly maxTurns: number;
   private readonly toolTimeoutSeconds: number;
+  private readonly approved: PermissionRule[];
+  private readonly interaction: UserInteraction;
 
   constructor(options: {
     readonly info: ProjectInfo;
@@ -86,7 +86,8 @@ export class Project {
     readonly modelConfig: ModelConfig;
     readonly maxTurns: number;
     readonly toolTimeoutSeconds: number;
-    readonly events: Events;
+    readonly approved: PermissionRule[];
+    readonly interaction: UserInteraction;
   }) {
     validateProjectInfo(options.info);
     this.infoState = {
@@ -102,7 +103,8 @@ export class Project {
     this.modelConfig = options.modelConfig;
     this.maxTurns = options.maxTurns;
     this.toolTimeoutSeconds = options.toolTimeoutSeconds;
-    this.events = options.events;
+    this.approved = options.approved;
+    this.interaction = options.interaction;
   }
 
   get info(): ProjectInfo {
@@ -144,14 +146,19 @@ export class Project {
 
   private buildHarness(session: Session): AgentHarness {
     const cwd = session.metadata.cwd;
-    return new AgentHarness({
+    const harness = new AgentHarness({
       session,
       runtime: this.runtime,
       modelConfig: this.modelConfig,
       maxTurns: this.maxTurns,
       toolRegistry: createBuiltinToolRegistry(cwd, this.toolTimeoutSeconds),
       systemPrompt: createSystemPrompt(this.projectDirectory, cwd),
-      events: this.events,
     });
+    registerBuiltinHooks(harness, {
+      approved: this.approved,
+      interaction: this.interaction,
+      trustedDirectories: [this.projectDirectory],
+    });
+    return harness;
   }
 }

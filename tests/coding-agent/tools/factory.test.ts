@@ -4,7 +4,7 @@ import test from "node:test";
 import { Type } from "typebox";
 
 import { AgentTool } from "../../../src/core/harness/tools/types.js";
-import { Events } from "../../../src/core/events/events.js";
+import { HarnessHooks } from "../../../src/core/harness/events.js";
 import { createBuiltinToolRegistry } from "../../../src/coding-agent/tools/factory.js";
 
 test("createBuiltinToolRegistry registers the six built-ins in order", () => {
@@ -40,7 +40,7 @@ test("the registry timeout applies to tool execution", async () => {
 
   const result = await registry.execute(
     { type: "toolCall", id: "c1", name: "slow", arguments: {} },
-    { sessionId: "s", runId: "r", cwd: process.cwd(), events: new Events() },
+    { sessionId: "s", runId: "r", cwd: process.cwd(), hooks: new HarnessHooks() },
   );
 
   assert.equal(result.isError, true);

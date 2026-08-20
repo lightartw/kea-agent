@@ -4,8 +4,7 @@ import { basename, isAbsolute, resolve } from "node:path";
 
 import type { ModelConfig, ModelRuntime } from "../core/ai/types.js";
 import { SessionRepository } from "../core/harness/session/repository.js";
-import { createBuiltinEvents } from "./events/factory.js";
-import type { PermissionRule } from "./events/permission/permission.js";
+import type { PermissionRule } from "./hooks/permission/permission.js";
 import type { UserInteraction } from "./interaction/interactions.js";
 import { Project, ProjectError } from "./project/project.js";
 import { ProjectStorage } from "./project/storage.js";
@@ -78,11 +77,6 @@ export async function openOrCreateProject(options: {
   // Assemble fresh Project-scoped runtime state around the durable record.
   const sessions = new SessionRepository(storage.dataDirectory(info.id));
   const approved: PermissionRule[] = [];
-  const events = createBuiltinEvents({
-    interaction: options.interaction,
-    approved,
-    trustedDirectories: [projectDirectory],
-  });
   return new Project({
     info,
     sessions,
@@ -90,6 +84,7 @@ export async function openOrCreateProject(options: {
     modelConfig: options.modelConfig,
     maxTurns: options.maxTurns,
     toolTimeoutSeconds: options.toolTimeoutSeconds,
-    events,
+    approved,
+    interaction: options.interaction,
   });
 }

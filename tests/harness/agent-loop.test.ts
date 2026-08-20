@@ -17,7 +17,7 @@ import type { TestStream } from "../fixtures/model-runtime.js";
 import { AgentTool, type AgentToolResult } from "../../src/core/harness/tools/types.js";
 import type { AgentToolCall } from "../../src/core/harness/tools/types.js";
 import { AgentToolRegistry } from "../../src/core/harness/tools/registry.js";
-import { Events } from "../../src/core/events/events.js";
+import { HarnessEventBus, HarnessHooks } from "../../src/core/harness/events.js";
 
 const emptyParameters = Type.Object({}, { additionalProperties: false });
 const testModel: ModelConfig = { provider: "test", model: "test-model" };
@@ -66,7 +66,8 @@ function streamWithEvents(
 function memoryContext(
   tools = new AgentToolRegistry(),
   history: AgentMessage[] = [],
-  events = new Events(),
+  hooks = new HarnessHooks(),
+  events = new HarnessEventBus(),
   signal?: AbortSignal,
 ): AgentContext {
   return {
@@ -76,6 +77,7 @@ function memoryContext(
     systemPrompt: "",
     messages: history,
     tools,
+    hooks,
     events,
     ...(signal === undefined ? {} : { signal }),
     appendMessage: async (message) => { history.push(message); },
@@ -124,10 +126,18 @@ class NoopTool extends AgentTool<typeof emptyParameters> {
   }
 }
 
+class ThrowingTool extends AgentTool<typeof emptyParameters> {
+  constructor() {
+    super("throwing", "Throwing tool.", emptyParameters);
+  }
+  async execute(): Promise<AgentToolResult> {
+    throw new Error("pipeline crashed");
+  }
+}
+
 // ── Turn and Tool lifecycle ordering ──
 
 test("successful two-Turn order matches the lifecycle", async () => {
-  const observed: string[] = [];
   class NoopTool2 extends AgentTool<typeof emptyParameters> {
     constructor() {
       super("noop", "No-op tool.", emptyParameters);
@@ -139,9 +149,10 @@ test("successful two-Turn order matches the lifecycle", async () => {
   const registry = new AgentToolRegistry();
   registry.register(new NoopTool2());
   const tc = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
+  let turn = 0;
   const stream: TestStream = async function* () {
-    if (observed.length === 0) {
-      observed.push("first");
+    turn += 1;
+    if (turn === 1) {
       yield { type: "toolcall_start", id: "c1", name: "noop" };
       yield { type: "toolcall_end", toolCall: tc };
       yield { type: "done", message: assistantMsg("", [tc]) };
@@ -149,36 +160,34 @@ test("successful two-Turn order matches the lifecycle", async () => {
       yield { type: "done", message: assistantMsg("done") };
     }
   };
-  const events = new Events();
+  const events = new HarnessEventBus();
+  const hooks = new HarnessHooks();
   const factOrder: string[] = [];
-  events.on("agent/turn-start", () => { factOrder.push("agent/turn-start"); });
-  events.on("agent/turn-end", () => { factOrder.push("agent/turn-end"); });
-  events.on("agent/tool-call", () => { factOrder.push("agent/tool-call"); });
-  events.on("agent/tool-result", () => { factOrder.push("agent/tool-result"); });
-  events.on("tools/pre-execute", (input, proceed) => { factOrder.push("tools/pre-execute"); return proceed(input); });
-  events.on("tools/execute", (input, proceed) => { factOrder.push("tools/execute"); return proceed(input); });
-  events.on("tools/post-execute", (input, proceed) => { factOrder.push("tools/post-execute"); return proceed(input); });
+  events.on("turn-start", () => { factOrder.push("turn-start"); });
+  events.on("turn-end", () => { factOrder.push("turn-end"); });
+  events.on("tool-call", () => { factOrder.push("tool-call"); });
+  events.on("tool-result", () => { factOrder.push("tool-result"); });
+  hooks.on("beforeTool", () => { factOrder.push("beforeTool"); });
+
   await runAgentLoop(
     "run",
-    memoryContext(registry, [], events),
+    memoryContext(registry, [], hooks, events),
     makeConfig(),
     stream,
   );
 
   assert.deepEqual(factOrder, [
-    "agent/turn-start",
-    "agent/tool-call",
-    "tools/pre-execute",
-    "tools/execute",
-    "tools/post-execute",
-    "agent/tool-result",
-    "agent/turn-end",
-    "agent/turn-start",
-    "agent/turn-end",
+    "turn-start",
+    "tool-call",
+    "beforeTool",
+    "tool-result",
+    "turn-end",
+    "turn-start",
+    "turn-end",
   ]);
 });
 
-test("agent/tool-call is emitted once per model-requested call", async () => {
+test("tool-call is emitted once per model-requested call", async () => {
   const registry = new AgentToolRegistry();
   registry.register(new NoopTool());
   const tc1 = { type: "toolCall" as const, id: "c1", name: "noop", arguments: {} };
@@ -196,15 +205,13 @@ test("agent/tool-call is emitted once per model-requested call", async () => {
       yield { type: "done", message: assistantMsg("done") };
     }
   };
-  const events = new Events();
+  const events = new HarnessEventBus();
   const calls: AgentToolCall[] = [];
-  events.on("agent/tool-call", (input) => {
-    if (input.sessionId === "session-1") calls.push(input.call);
-  });
+  events.on("tool-call", (event) => { calls.push(event.call); });
 
   await runAgentLoop(
     "run",
-    memoryContext(registry, [], events),
+    memoryContext(registry, [], new HarnessHooks(), events),
     makeConfig(),
     stream,
   );
@@ -272,7 +279,8 @@ test("tool results are in history before the next model stream", async () => {
     systemPrompt: "",
     messages: history,
     tools: registry,
-    events: new Events(),
+    hooks: new HarnessHooks(),
+    events: new HarnessEventBus(),
     appendMessage: async (message) => { history.push(message); },
   };
 
@@ -288,11 +296,11 @@ test("tool results are in history before the next model stream", async () => {
   assert.deepEqual(history.at(-1), assistantMsg(""));
 });
 
-test("agent/tool-result is emitted only after its Tool message is appended", async () => {
+test("tool-result is emitted only after its Tool message is appended", async () => {
   const registry = new AgentToolRegistry();
   registry.register(new NoopTool());
   const history: AgentMessage[] = [];
-  const events = new Events();
+  const events = new HarnessEventBus();
   const context: AgentContext = {
     sessionId: "session-1",
     runId: "run-1",
@@ -300,6 +308,7 @@ test("agent/tool-result is emitted only after its Tool message is appended", asy
     systemPrompt: "",
     messages: history,
     tools: registry,
+    hooks: new HarnessHooks(),
     events,
     appendMessage: async (message) => { history.push(message); },
   };
@@ -307,17 +316,15 @@ test("agent/tool-result is emitted only after its Tool message is appended", asy
     type: "toolCall", id: "c1", name: "noop", arguments: {},
   };
   const checks: string[] = [];
-  events.on("agent/tool-result", (input) => {
-    if (input.sessionId !== "session-1") return;
+  events.on("tool-result", (event) => {
     const committed = history.some((message) =>
       message.role === "tool" && message.toolCallId === "c1" &&
-      message.content === input.result.content,
+      message.content === event.result.content,
     );
     checks.push(`tool-result:${committed}`);
   });
-  events.on("agent/turn-end", (input) => {
-    if (input.sessionId !== "session-1") return;
-    const committed = history.some((message) => message === input.message);
+  events.on("turn-end", (event) => {
+    const committed = history.some((message) => message === event.message);
     checks.push(`turn-end:${committed}`);
   });
 
@@ -339,42 +346,35 @@ test("unknown, invalid, blocked, and thrown tools each produce exactly one error
       label: "unknown",
       call: { type: "toolCall" as const, id: "c1", name: "missing", arguments: {} },
       register: () => undefined,
-      event: () => undefined,
+      configure: () => undefined,
     },
     {
       label: "invalid",
       call: { type: "toolCall" as const, id: "c2", name: "typed", arguments: { value: 1 } },
       register: (registry: AgentToolRegistry) => registry.register(new TypedTool()),
-      event: () => undefined,
+      configure: () => undefined,
     },
     {
       label: "blocked",
       call: { type: "toolCall" as const, id: "c3", name: "noop", arguments: {} },
       register: (registry: AgentToolRegistry) => registry.register(new NoopTool()),
-      event: (events: Events) => {
-        events.on("tools/pre-execute", () => ({
-          kind: "deny",
-          reason: "blocked",
-        }));
+      configure: (hooks: HarnessHooks) => {
+        hooks.on("beforeTool", () => ({ kind: "deny", reason: "blocked" }));
       },
     },
     {
       label: "thrown",
-      call: { type: "toolCall" as const, id: "c4", name: "noop", arguments: {} },
-      register: (registry: AgentToolRegistry) => registry.register(new NoopTool()),
-      event: (events: Events) => {
-        events.on("tools/execute", () => {
-          throw new Error("pipeline crashed");
-        });
-      },
+      call: { type: "toolCall" as const, id: "c4", name: "throwing", arguments: {} },
+      register: (registry: AgentToolRegistry) => registry.register(new ThrowingTool()),
+      configure: () => undefined,
     },
   ];
 
   for (const scenario of scenarios) {
     const registry = new AgentToolRegistry();
     scenario.register(registry);
-    const events = new Events();
-    scenario.event(events);
+    const hooks = new HarnessHooks();
+    scenario.configure(hooks);
     const history: AgentMessage[] = [];
     const context: AgentContext = {
       sessionId: "session-1",
@@ -383,12 +383,13 @@ test("unknown, invalid, blocked, and thrown tools each produce exactly one error
       systemPrompt: "",
       messages: history,
       tools: registry,
-      events,
+      hooks,
+      events: new HarnessEventBus(),
       appendMessage: async (message) => { history.push(message); },
     };
     const results: AgentToolResult[] = [];
-    events.on("agent/tool-result", (input) => {
-      if (input.sessionId === "session-1") results.push(input.result);
+    context.events.on("tool-result", (event) => {
+      results.push(event.result);
     });
 
     await runAgentLoop(
@@ -410,29 +411,29 @@ test("unknown, invalid, blocked, and thrown tools each produce exactly one error
   }
 });
 
-// ── Control interceptor failures ──
+// ── Control hook failures ──
 
-test("failing agent/user-prompt or agent/context interceptors reject the Run", async () => {
+test("failing beforePrompt or transformContext hooks reject the Run", async () => {
   const cases: Array<{
-    name: "agent/user-prompt" | "agent/context";
-    register: (events: Events) => void;
+    name: "beforePrompt" | "transformContext";
+    register: (hooks: HarnessHooks) => void;
   }> = [
     {
-      name: "agent/user-prompt",
-      register: (events) => { events.on("agent/user-prompt", () => { throw new Error("agent/user-prompt failed"); }); },
+      name: "beforePrompt",
+      register: (hooks) => { hooks.on("beforePrompt", () => { throw new Error("beforePrompt failed"); }); },
     },
     {
-      name: "agent/context",
-      register: (events) => { events.on("agent/context", () => { throw new Error("agent/context failed"); }); },
+      name: "transformContext",
+      register: (hooks) => { hooks.on("transformContext", () => { throw new Error("transformContext failed"); }); },
     },
   ];
   for (const { name, register } of cases) {
-    const events = new Events();
-    register(events);
+    const hooks = new HarnessHooks();
+    register(hooks);
     await assert.rejects(
       runAgentLoop(
         "start",
-        memoryContext(undefined, [], events),
+        memoryContext(undefined, [], hooks),
         makeConfig(),
         streamWithEvents([[{ type: "done", message: assistantMsg("") }]]),
       ),
@@ -444,7 +445,7 @@ test("failing agent/user-prompt or agent/context interceptors reject the Run", a
 // ── Stream edge cases ──
 
 test("AI error terminal chunk appends its message and rejects", async () => {
-  const events = new Events();
+  const events = new HarnessEventBus();
   const failed = {
     ...assistantMsg(""),
     stopReason: "error" as const,
@@ -458,13 +459,12 @@ test("AI error terminal chunk appends its message and rejects", async () => {
     systemPrompt: "",
     messages: history,
     tools: new AgentToolRegistry(),
+    hooks: new HarnessHooks(),
     events,
     appendMessage: async (message) => { history.push(message); },
   };
   const turnEnds: Array<{ message: AgentMessage; toolResults: readonly AgentMessage[] }> = [];
-  events.on("agent/turn-end", (input) => {
-    if (input.sessionId === "session-1") turnEnds.push(input);
-  });
+  events.on("turn-end", (event) => { turnEnds.push(event); });
 
   await assert.rejects(
     runAgentLoop(
@@ -483,14 +483,13 @@ test("AI error terminal chunk appends its message and rejects", async () => {
 });
 
 test("pre-aborted run rejects with AbortError before model streaming", async () => {
-  const events = new Events();
   const controller = new AbortController();
   controller.abort();
 
   await assert.rejects(
     runAgentLoop(
       "start",
-      memoryContext(undefined, [], events, controller.signal),
+      memoryContext(undefined, [], new HarnessHooks(), new HarnessEventBus(), controller.signal),
       makeConfig(),
       streamWithEvents([]),
     ),
@@ -499,7 +498,7 @@ test("pre-aborted run rejects with AbortError before model streaming", async () 
 });
 
 test("stream ending without a terminal chunk rejects and emits no turn-end", async () => {
-  const events = new Events();
+  const events = new HarnessEventBus();
   const history: AgentMessage[] = [];
   const context: AgentContext = {
     sessionId: "session-1",
@@ -508,13 +507,12 @@ test("stream ending without a terminal chunk rejects and emits no turn-end", asy
     systemPrompt: "",
     messages: history,
     tools: new AgentToolRegistry(),
+    hooks: new HarnessHooks(),
     events,
     appendMessage: async (message) => { history.push(message); },
   };
   let turnEnds = 0;
-  events.on("agent/turn-end", (input) => {
-    if (input.sessionId === "session-1") turnEnds++;
-  });
+  events.on("turn-end", () => { turnEnds++; });
 
   await assert.rejects(
     runAgentLoop(
@@ -567,7 +565,7 @@ test("abort during execution still produces exactly one result per call", async 
   };
 
   const history: AgentMessage[] = [];
-  const events = new Events();
+  const events = new HarnessEventBus();
   const controller = new AbortController();
   const context: AgentContext = {
     sessionId: "session-1",
@@ -576,13 +574,14 @@ test("abort during execution still produces exactly one result per call", async 
     systemPrompt: "",
     messages: history,
     tools: registry,
+    hooks: new HarnessHooks(),
     events,
     signal: controller.signal,
     appendMessage: async (message) => { history.push(message); },
   };
   const results: AgentToolResult[] = [];
-  events.on("agent/tool-result", (input) => {
-    if (input.sessionId === "session-1") results.push(input.result);
+  events.on("tool-result", (event) => {
+    results.push(event.result);
   });
 
   const run = runAgentLoop(

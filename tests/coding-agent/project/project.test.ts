@@ -9,14 +9,27 @@ import { Type } from "typebox";
 import { AgentTool, type AgentToolResult } from "../../../src/core/harness/tools/types.js";
 import type { AssistantMessage, ModelConfig, Tool } from "../../../src/core/ai/types.js";
 import { SessionRepository } from "../../../src/core/harness/session/repository.js";
-import { Events } from "../../../src/core/events/events.js";
 import { Project } from "../../../src/coding-agent/project/project.js";
 import type { ProjectInfo } from "../../../src/coding-agent/project/project.js";
+import type { UserInteraction } from "../../../src/coding-agent/interaction/interactions.js";
 import { runtimeFromStream, type TestStream } from "../../fixtures/model-runtime.js";
 
 const VALID_ID = "550e8400-e29b-41d4-a716-446655440000";
 
 const modelConfig: ModelConfig = { provider: "test", model: "model-a" };
+
+/** A permissive UserInteraction stub (allows everything). */
+const testInteraction: UserInteraction = {
+  async select() {
+    return undefined;
+  },
+  async confirm() {
+    return false;
+  },
+  async input() {
+    return undefined;
+  },
+};
 
 const assistant: AssistantMessage = {
   role: "assistant",
@@ -73,7 +86,7 @@ async function makeProject(options: {
     modelConfig,
     maxTurns: options.maxTurns ?? 20,
     toolTimeoutSeconds: options.toolTimeoutSeconds ?? 120,
-    events: new Events(),
+    approved: [], interaction: testInteraction,
   });
   return { project, projectDir, prompts, toolsList };
 }
@@ -99,7 +112,7 @@ test("info returns a defensive snapshot and invalid info is rejected at construc
         modelConfig,
         maxTurns: 20,
         toolTimeoutSeconds: 120,
-        events: new Events(),
+        approved: [], interaction: testInteraction,
       }),
       /invalid/i,
     );
@@ -114,7 +127,7 @@ test("info returns a defensive snapshot and invalid info is rejected at construc
         modelConfig,
         maxTurns: 20,
         toolTimeoutSeconds: 120,
-        events: new Events(),
+        approved: [], interaction: testInteraction,
       }),
       /invalid/i,
     );

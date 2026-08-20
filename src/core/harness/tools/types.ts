@@ -2,7 +2,7 @@ import type { Static, TObject } from "typebox";
 import { Compile, type Validator } from "typebox/compile";
 
 import type { Tool } from "../../ai/types.js";
-import type { Events } from "../../events/events.js";
+import type { HarnessHooks } from "../events.js";
 
 /** The result returned by AgentTool.execute(), before being wrapped into a ToolResultMessage. */
 export interface AgentToolResult<TDetails = unknown> {
@@ -21,7 +21,7 @@ export interface AgentToolCall {
 
 /**
  * Everything the Registry needs to orchestrate one Tool Call: Run identity,
- * execution cwd, the shared event dispatcher, and Run cancellation. The call
+ * execution cwd, the fixed control hooks, and Run cancellation. The call
  * itself is the first parameter of `execute(call, context)`; it stays outside
  * so the primary object of a Tool execution is always explicit. Built-in
  * tools never see this; they only receive validated arguments plus a timeout
@@ -31,7 +31,7 @@ export interface ToolExecutionContext {
   readonly sessionId: string;
   readonly runId: string;
   readonly cwd: string;
-  readonly events: Events;
+  readonly hooks: HarnessHooks;
   readonly signal?: AbortSignal;
 }
 

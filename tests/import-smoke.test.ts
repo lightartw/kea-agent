@@ -12,8 +12,6 @@ import {
   SessionRepository,
 } from "../src/core/harness/index.js";
 
-import { Events } from "../src/core/events/index.js";
-
 import {
   openOrCreateProject,
   ProjectError,
@@ -27,6 +25,8 @@ import type {
   AgentToolResult,
   HarnessConfig,
   HarnessEvent,
+  HarnessEventBus,
+  HarnessHooks,
   SessionMetadata,
   SessionNode,
 } from "../src/core/harness/index.js";
@@ -45,10 +45,7 @@ import type {
   StreamChunk,
 } from "../src/core/ai/index.js";
 
-import type { EventMap } from "../src/core/events/index.js";
-
 void [
-  Events,
   runAgentLoop,
   AgentTool,
   AgentToolRegistry,
@@ -81,7 +78,7 @@ type PublicCodingAgentTypes = [
   InteractionOptions,
 ];
 
-type PublicEventTypes = [EventMap];
+type PublicEventTypes = [HarnessEventBus, HarnessEvent, HarnessHooks];
 type PublicAiTypes = [ModelRuntime, ProtocolId, RuntimeProviderConfig, StreamChunk];
 
 void (null as PublicAgentTypes | null);
