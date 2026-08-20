@@ -93,6 +93,7 @@ test("the full composition renders tool calls and the run summary", async () => 
       projectDirectory: projectDir,
       runtime: runtimeFromStream(stream),
       modelConfig: MODEL,
+      models: [MODEL],
       interaction: interactions,
       maxTurns: 5,
       toolTimeoutSeconds: 30,
@@ -107,7 +108,6 @@ test("the full composition renders tool calls and the run summary", async () => 
     } as unknown as Interface;
 
     const ui = new CliUi({
-      models: [MODEL],
       thinking: "hidden",
       toolDetails: "compact",
       color: false,

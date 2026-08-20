@@ -1,8 +1,8 @@
 # Project：领域组装
 
-`coding-agent` 的领域层。它把 `core` 的可复用概念（`SessionRepository`、`Events`、
-`AgentToolRegistry`、`AgentHarness`、`ModelRuntime`）封装、管理，并新增 Coding Agent 能力：
-Project 持久化、内置工具、权限策略、coding system prompt、Interactions 端口。
+`coding-agent` 的领域层。它把 `core` 的可复用概念（`SessionRepository`、`AgentToolRegistry`、
+`AgentHarness`、`ModelRuntime`、`HarnessEventBus`、`HarnessHooks`）封装、管理，并新增 Coding
+Agent 能力：Project 持久化、内置工具、权限策略、coding system prompt、`UserInteraction` 端口。
 
 启动层（参数、配置、目录发现）见 [startup.md](./startup.md)。
 
@@ -17,7 +17,7 @@ Project 持久化、内置工具、权限策略、coding system prompt、Interac
 1. 校验 `projectDirectory`：绝对路径、`resolve()` 后不变、`realpath()` 后不变、且是现存目录；
 2. 在 `ProjectStorage` 中查找拥有该规范目录的 Project 记录；
 3. 找不到记录时生成 UUID、目录名和 UTC 时间，创建新的 Project 记录；
-4. 为该 Project 创建 `SessionRepository`、内存权限记录和共享 `Events`；
+4. 为该 Project 创建 `SessionRepository`、内存权限状态（`approved`）并持有 `UserInteraction`；
 5. 返回组合完成的 `Project`。
 
 ```ts
@@ -26,7 +26,7 @@ function openOrCreateProject(options: {
   readonly projectDirectory: string;
   readonly runtime: ModelRuntime;
   readonly modelConfig: ModelConfig;
-  readonly interactions: Interactions;
+  readonly interaction: UserInteraction;
   readonly maxTurns: number;
   readonly toolTimeoutSeconds: number;
 }): Promise<Project>;
@@ -53,7 +53,7 @@ Project 记录位于：
 ## Project、Session 与 Harness
 
 `Project` 是一个 Project 的运行时聚合对象。它持有不可变的 `ProjectInfo`、Session Repository、
-模型运行时、初始模型和私有 Events，并提供三项行为：
+模型运行时、初始模型、内存权限状态和 `UserInteraction`，并提供三项行为：
 
 ```ts
 interface Project {
@@ -71,12 +71,18 @@ interface Project {
 `createHarnessFromSession()` 打开已有 Session，重新验证 metadata 中保存的 `cwd`，再为它创建
 Harness。目录已被删除或不再是目录时恢复失败，不会悄悄回退到 Project 目录。
 
-每次构造 Harness 都会：
+每次构造 Harness（`buildHarness`）都会：
 
 1. 从 `session.metadata.cwd` 取得唯一的工作目录；
-2. 创建一份新的内置 Tool Registry，所有路径型 Tool 都绑定该目录；
-3. 用 Project 目录和 Session cwd 填充 system prompt；
-4. 把 Project 的同一个私有 `Events` 实例交给 Harness。
+2. 用 `createBuiltinToolRegistry(cwd, toolTimeoutSeconds)` 创建一份新的内置 Tool Registry；
+3. 用 `createHooks({ approved, interaction, trustedDirectories })` 创建一份已注册内置钩子
+   （权限的 `beforeTool`）的 `HarnessHooks`；
+4. 创建 `new HarnessEventBus()` 观察总线；
+5. 用 Project 目录和 Session cwd 填充 system prompt；
+6. 把上述事件总线、钩子、Tool Registry 与 system prompt 一起注入 `AgentHarness`。
+
+Project 不对外暴露注册 Tool / 钩子的接口（本项目不提供插件系统）；工具与内置钩子由 Project 在
+`buildHarness` 内用工厂函数逐 Harness 装配。
 
 ### 生命周期
 
@@ -85,15 +91,14 @@ Harness。目录已被删除或不再是目录时恢复失败，不会悄悄回�
 | Project 记录 | 持久化 | 由 `ProjectStorage` 保存，通过规范目录查找 |
 | Session | 持久化 | 由 `SessionRepository` 创建和恢复 |
 | `Project` 实例 | 一次 `openOrCreateProject()` | 组合运行时依赖，不提供保存、更新或删除 Project 的操作 |
-| `Events` | Project 实例 | 同一 Project 实例创建的全部 Harness 共享，不对外公开 |
+| `HarnessEventBus` / `HarnessHooks` | 一个 Harness | 由 `buildHarness` 每 Harness 创建，随 Harness 一起废弃 |
 | `approved` 权限记录 | Project 实例 | 只存在于内存，重新打开 Project 后清空 |
 | `AgentHarness` | 一次创建或恢复 | 绑定一份 Session |
 | Tool Registry | Harness | 每个 Harness 都有独立的内置 Tool 实例 |
 | system prompt | Harness | 构造 Harness 时根据 Project 目录和 Session cwd 生成 |
 
-`Project.events` 是私有的；调用方通过 `harness.subscribe(listener)` 观察每个 Harness 的事件，
-按 `sessionId` 过滤、幂等取消订阅。Tool Registry 不共享，因此每个 Harness 的工具始终绑定自己的
-Session cwd。
+UI 通过 `harness.subscribe(listener)` 观察每个 Harness 的观察事件（自带事件总线，无需按
+`sessionId` 过滤）。Tool Registry 不共享，因此每个 Harness 的工具始终绑定自己的 Session cwd。
 
 ## 一次完整的 Tool 调用
 
@@ -101,13 +106,14 @@ Session cwd。
 
 1. `AgentHarness` 从 Session 取得 cwd、历史和模型状态，进入 `core/harness` 的 Agent Loop；
 2. Agent Loop 把 Tool Call 交给该 Harness 的 `AgentToolRegistry`；
-3. Registry 完成 Tool lookup 和参数校验，然后通过共享 Events 触发 `tools/pre-execute`；
-4. Coding Agent 注册的 Permission listener 根据 Tool、目标路径、Session cwd 和内存授权作出决定；
-5. 需要用户决定时，listener 调用外部 `Interactions.permission()`；
+3. Registry 完成 Tool lookup 和参数校验，然后调用该 Harness 的 `HarnessHooks.beforeTool`；
+4. coding-agent 用 `createHooks` 注册的权限 handler 根据 Tool、目标路径、Session cwd 和内存授权
+   作出决定；
+5. 需要用户决定时，权限 handler 调用外部 `UserInteraction.select()`；
 6. 允许后 Registry 执行 Tool，Tool Result 写回 Session，并由 Agent Loop 交给下一轮模型请求。
 
 因此权限不在具体 Tool 内实现。Tool 只负责把已验证的参数转换成文件系统或 shell 操作；Project
-边界、已批准目录和用户交互集中在 Permission listener 中。
+边界、已批准目录和用户交互集中在权限 `beforeTool` 钩子中。
 
 ## Session cwd 与 system prompt
 
@@ -125,7 +131,7 @@ Session cwd 是一份 Session 执行文件操作和命令的基准目录。它�
 
 ## 内置 Tools
 
-`createBuiltinToolRegistry(cwd)` 每次创建一个新的 `AgentToolRegistry`，并注册以下 Tools：
+`createBuiltinToolRegistry(cwd, timeout)` 每次创建一个新的 `AgentToolRegistry`，并注册以下 Tools：
 
 | Tool | 行为 |
 |---|---|
@@ -145,26 +151,27 @@ Session cwd 是一份 Session 执行文件操作和命令的基准目录。它�
 中，模型可见的说明放在 `content` 中。
 
 路径解析函数只执行 `resolve(cwd, input)`，不检查目标是否位于 Project 内。这项分离使 Tool 不需要
-知道 Project 或交互层；外部目录访问由执行前的 Permission listener 判断。
+知道 Project 或交互层；外部目录访问由执行前的权限 `beforeTool` 钩子判断。
 
 ## Permission
 
-`createBuiltinEvents()` 创建一个 `Events`，并在 `tools/pre-execute` 上注册默认 Permission
-listener。它使用 Project 目录作为初始 trusted directory，并共享 `openOrCreateProject()` 创建的
-`approved` 数组。`emit()` listener 错误由它内建的 `console.error` handler 输出，不被静默吞掉。
+`createHooks()`（`hooks/factory.ts`）创建一个 `HarnessHooks`，并把权限的 `beforeTool` 决策注册
+到它上面（这是内置钩子之一）。它使用 Project 目录作为初始 trusted directory，并共享
+`openOrCreateProject()` 创建的 `approved` 数组。权限 handler 调用 `UserInteraction` 端口做
+用户决策。
 
 ### 文件类 Tool
 
 `read_file`、`write_file`、`edit_file` 和 `glob` 的目标位于 trusted directory 中时直接允许。
-目标在 Project 外时，Permission 发送 `external-directory` 请求。用户选择 `always` 后，该目录在
-当前 Project 实例的后续调用中被视为已批准目录。
+目标在 Project 外时，权限发送外部目录选择请求。用户选择 `always` 后，该目录在当前 Project 实例
+的后续调用中被视为已批准目录。
 
 `glob` 在第一个通配符之前截取静态路径前缀，用它判断访问目录。其他文件 Tool 使用目标文件的
 父目录组织权限请求。
 
 ### Bash
 
-Permission 先确认 Bash 的执行 cwd 是否受信任，再对 command 分类：
+权限先确认 Bash 的执行 cwd 是否受信任，再对 command 分类：
 
 - hard deny：始终拒绝，例如 `sudo`、关机、格式化文件系统、原始 `dd` 输入、`/dev`
   重定向和强制递归删除根目录；
@@ -174,43 +181,39 @@ Permission 先确认 Bash 的执行 cwd 是否受信任，再对 command 分类�
 `always` 对 Bash 记录的是完整 command 与 cwd 的组合。同一 command 换到另一个 cwd 后需要重新
 判断。Hard deny 不会被已记住的授权覆盖。
 
-### 回复和失败
+### 回答方式
+
+权限把选项呈现给用户：
 
 ```ts
-type PermissionReply =
-  | { readonly kind: "once" }
-  | { readonly kind: "always" }
-  | { readonly kind: "deny"; readonly reason?: string };
+// UserInteraction.select(title, options) → 选项索引 | undefined
+["Allow once", "Always allow", "Deny"]
 ```
 
-- `once`：仅允许当前 Tool Call；
-- `always`：先写入 Project 实例的内存授权，再允许当前 Tool Call；
-- `deny`：返回错误 Tool Result，不执行 Tool。
+- 选择 `Allow once`：仅允许当前 Tool Call；
+- 选择 `Always allow`：先写入 Project 实例的内存授权，再允许当前 Tool Call；
+- 选择 `Deny` 或返回 `undefined`：返回错误 Tool Result，不执行 Tool。
 
-`Interactions.permission()` 抛错时，Permission 默认拒绝并把错误信息作为原因。Run 已被取消时，
-取消错误继续传播，不会被转换成普通拒绝。
+`UserInteraction.select()` 抛错时，权限默认拒绝并把错误信息作为原因。Run 已被取消时，取消错误
+继续传播，不会被转换成普通拒绝。
 
-## Interactions：外部交互端口
+## UserInteraction：外部交互端口
 
-`Interactions` 是 Coding Agent 到外部决策者的最小端口：
+`UserInteraction` 是 Coding Agent 到外部决策者的最小端口，UI 无关：
 
 ```ts
-interface Interactions {
-  permission(
-    request: PermissionRequest,
-    signal?: AbortSignal,
-  ): Promise<PermissionReply>;
+interface UserInteraction {
+  select(title: string, options: readonly string[], opts?: { signal?: AbortSignal })
+    : Promise<number | undefined>;
+  confirm(title: string, message: string, opts?: { signal?: AbortSignal })
+    : Promise<boolean>;
+  input(title: string, placeholder?: string, opts?: { signal?: AbortSignal })
+    : Promise<string | undefined>;
 }
 ```
 
-`PermissionRequest` 有两种：
-
-- `dangerous-command`：包含 Session/Run 身份、原始 Tool Call、command、cwd 和原因；
-- `external-directory`：包含 Session/Run 身份、原始 Tool Call、目标路径、申请目录和原因。
-
-终端、桌面 UI 或其他调用方负责把 request 呈现给用户并返回 reply。请求 ID、窗口状态、队列或
-传输协议属于 adapter 自己，不进入 `coding-agent`。本包没有默认 `Interactions`，避免在没有用户
-确认渠道时静默放行。
+终端、桌面 UI 或其他调用方负责实现该端口。传输协议、请求 ID、窗口状态属于 adapter 自己，不进入
+`coding-agent`。本包没有默认实现，避免在没有用户确认渠道时静默放行。
 
 ## 错误边界
 
@@ -218,6 +221,6 @@ Project 发现、记录校验、Session cwd 校验中的失败使用 `ProjectErr
 保留，消息说明失败发生在哪个目录或记录。
 
 内置 Tool 的普通执行失败通常转换成 `isError: true` 的 Tool Result，让模型能够读取失败原因并决定
-下一步。参数 lookup、超时、Tool listener 和 Agent Run 的通用规则由 `core/harness` 负责。
+下一步。参数 lookup、超时、Tool 钩子和 Agent Run 的通用规则由 `core/harness` 负责。
 
-Permission 使用的 `intercept()` 错误遵循 core Events 的传播规则。
+权限 `beforeTool` 钩子的错误遵循 `core/harness` 的钩子传播规则。

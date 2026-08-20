@@ -53,6 +53,7 @@ export async function openOrCreateProject(options: {
   readonly projectDirectory: string;
   readonly runtime: ModelRuntime;
   readonly modelConfig: ModelConfig;
+  readonly models: readonly ModelConfig[];
   readonly interaction: UserInteraction;
   readonly maxTurns: number;
   readonly toolTimeoutSeconds: number;
@@ -82,6 +83,7 @@ export async function openOrCreateProject(options: {
     sessions,
     runtime: options.runtime,
     modelConfig: options.modelConfig,
+    models: options.models,
     maxTurns: options.maxTurns,
     toolTimeoutSeconds: options.toolTimeoutSeconds,
     approved,

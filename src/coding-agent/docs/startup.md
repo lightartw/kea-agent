@@ -4,7 +4,7 @@
 启动、怎么配置"，唯一消费者是 `main.ts`。它向下只依赖 `core/ai` 与 `core/harness`，不 import UI，
 也不 import 本包的领域组件（`project/`、`tools/`、`events/`、`interaction/`）。
 
-本包领域组装（Project、内置工具、权限、Interactions）见 [project.md](./project.md)。
+本包领域组装（Project、内置工具、权限、UserInteraction）见 [project.md](./project.md)。
 
 ## 源码位置
 

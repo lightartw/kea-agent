@@ -74,10 +74,16 @@ function makeHarness(
 }
 
 function makeProject(options: {
+  readonly models?: readonly ModelConfig[];
   readonly listSessions?: () => Promise<readonly SessionMetadata[]>;
   readonly createHarness?: () => Promise<AgentHarness>;
   readonly createHarnessFromSession?: (sessionId: string) => Promise<AgentHarness>;
 } = {}): Project {
+  const models = options.models ?? [MODEL];
+  const configured = (model: { readonly provider: string; readonly model: string }): boolean =>
+    models.some(
+      (candidate) => candidate.provider === model.provider && candidate.model === model.model,
+    );
   return {
     listSessions: options.listSessions ?? (async () => []),
     createHarness: options.createHarness ?? (async () => {
@@ -86,6 +92,20 @@ function makeProject(options: {
     createHarnessFromSession: options.createHarnessFromSession ?? (async () => {
       throw new Error("no session");
     }),
+    modelOptions: () => models.map((model) => ({ provider: model.provider, model: model.model })),
+    isConfiguredModel: configured,
+    switchModel: async (
+      harness: AgentHarness,
+      selection: { readonly provider: string; readonly model: string },
+    ) => {
+      if (!configured(selection)) {
+        throw new Error(`model ${selection.provider}/${selection.model} is not configured`);
+      }
+      if (harness.model.provider === selection.provider && harness.model.model === selection.model) {
+        return;
+      }
+      await harness.switchModel(selection);
+    },
   } as unknown as Project;
 }
 
@@ -105,13 +125,11 @@ function makeReadline(
 }
 
 function makeUi(options: {
-  readonly models?: readonly ModelConfig[];
   readonly readline: Interface;
   readonly calls: string[];
   readonly write?: (text: string) => void;
 }): CliUi {
   return new CliUi({
-    models: options.models ?? [MODEL],
     thinking: "hidden",
     toolDetails: "compact",
     color: false,
@@ -241,10 +259,10 @@ test("/model groups by provider and switches to the chosen model", async () => {
     { provider: "anthropic", model: "claude-4" },
   ];
   const { readline, calls } = makeReadline(["/model", "2", "1", "/exit"]);
-  const ui = makeUi({ models, readline, calls });
+  const ui = makeUi({ readline, calls });
 
   const harness = makeHarness("1");
-  const project = makeProject({ createHarness: async () => asHarness(harness) });
+  const project = makeProject({ models, createHarness: async () => asHarness(harness) });
 
   await ui.run(project, asHarness(harness));
   ui.close();
@@ -262,10 +280,10 @@ test("/model selecting the current model is a no-op", async () => {
     { provider: "openai", model: "gpt-5-mini" },
   ];
   const { readline, calls } = makeReadline(["/model", "1", "1", "/exit"]);
-  const ui = makeUi({ models, readline, calls });
+  const ui = makeUi({ readline, calls });
 
   const harness = makeHarness("1");
-  const project = makeProject({ createHarness: async () => asHarness(harness) });
+  const project = makeProject({ models, createHarness: async () => asHarness(harness) });
 
   await ui.run(project, asHarness(harness));
   ui.close();
@@ -279,10 +297,10 @@ test("/model cancels at either step without changing the model", async () => {
     { provider: "anthropic", model: "claude-4" },
   ];
   const { readline, calls } = makeReadline(["/model", "", "/model", "1", "", "/exit"]);
-  const ui = makeUi({ models, readline, calls });
+  const ui = makeUi({ readline, calls });
 
   const harness = makeHarness("1");
-  const project = makeProject({ createHarness: async () => asHarness(harness) });
+  const project = makeProject({ models, createHarness: async () => asHarness(harness) });
 
   await ui.run(project, asHarness(harness));
   ui.close();
@@ -293,12 +311,12 @@ test("/model cancels at either step without changing the model", async () => {
 test("a restored unavailable model asks for a configured model before activation", async () => {
   const models: readonly ModelConfig[] = [{ provider: "anthropic", model: "claude-4" }];
   const { readline, calls } = makeReadline(["1", "/exit"]);
-  const ui = makeUi({ models, readline, calls });
+  const ui = makeUi({ readline, calls });
 
   const restored = makeHarness("restored", {
     model: { provider: "openai", model: "gone" },
   });
-  const project = makeProject({ createHarness: async () => asHarness(restored) });
+  const project = makeProject({ models, createHarness: async () => asHarness(restored) });
 
   await ui.run(project, asHarness(restored));
   ui.close();
@@ -323,12 +341,12 @@ test("blank input at the prompt is skipped without prompting the Harness", async
 test("cancelling the initial model repair exits without the prompt loop", async () => {
   const models: readonly ModelConfig[] = [{ provider: "anthropic", model: "claude-4" }];
   const { readline, calls } = makeReadline([""]);
-  const ui = makeUi({ models, readline, calls });
+  const ui = makeUi({ readline, calls });
 
   const restored = makeHarness("restored", {
     model: { provider: "openai", model: "gone" },
   });
-  const project = makeProject({ createHarness: async () => asHarness(restored) });
+  const project = makeProject({ models, createHarness: async () => asHarness(restored) });
 
   await ui.run(project, asHarness(restored));
   ui.close();

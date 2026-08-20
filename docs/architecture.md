@@ -1,12 +1,14 @@
 # Kea Agent 架构
 
-**更新：** 2026-08-19
+**更新：** 2026-08-20
 
-本文描述当前代码的所有权与边界。`ai`、`events`、`harness` 共同组成
-`src/core/` 下的 Harness 核心。依赖方向是
-`main -> ui -> coding-agent -> core/harness -> core/ai`；`core/events` 由核心运行时共享，
-`coding-agent/cli` 与 `coding-agent/config` 提供配置、参数、模板和目录发现等无长期状态的启动
-能力，`main.ts` 是连接具体 UI、Coding Agent 和 AI provider 的唯一组合根。
+本文描述当前代码的所有权与边界。`ai`、`harness` 共同组成 `src/core/` 下的 Harness 核心。依赖
+方向是 `main -> ui -> coding-agent -> core/harness -> core/ai`；`coding-agent/cli` 与
+`coding-agent/config` 提供配置、参数、模板和目录发现等无长期状态的启动能力，`main.ts` 是连接
+具体 UI、Coding Agent 和 AI provider 的唯一组合根。
+
+观察事件与控制钩子都由 `harness` 拥有（`HarnessEventBus` + `HarnessHooks`），不存在独立的
+`events` 包。
 
 ## 1. AI：LLM 流式协议与显式 Provider
 
@@ -42,65 +44,51 @@ context)` 的请求路由到 `modelConfig.provider` 对应的 adapter，请求�
 `ToolResultMessage.content` 是模型可见文本；`details` 是 Session、Agent 和 UI 使用的结构化数据，
 不会被 provider adapter 发到模型服务。
 
-`StreamChunk` 是一次 provider 响应中的一个片段，由 Agent 直接消费；它是数据传输，不是运行事件，
-不会注册、发布或通过 `Events` 观察。每一轮 Stream 必须以 `done` 或 `error` 终止块结束；Agent
-在缺少终止块时让 Run 失败，不发布没有完整消息的 `agent/turn-end`。
+`StreamChunk` 是一次 provider 响应中的一个片段，由 Agent 直接消费；它不是运行事件（不注册、
+发布或观察），只是从 provider 到 agent 的数据传输。每一轮 Stream 必须以 `done` 或 `error`
+终止块结束；Agent 在缺少终止块时让 Run 失败，不发布没有完整消息的 `turn-end`。
 
-## 2. Events：统一分发器
+## 2. 观察事件与控制钩子
 
-`src/core/events/` 提供一次 `runAgentLoop()` 或 `prompt()` 期间唯一的运行时事件通道。`EventMap`
-是编译期契约：各包通过模块扩充把 event 名、输入和结果加入 `EventMap`；`Events` 是运行时
-dispatcher。
+`harness` 把“观察”与“控制”明确分开，且都由调用方创建后注入 `AgentHarness`。
+
+### 观察事件：`HarnessEventBus`（`src/core/harness/events.ts`）
+
+`HarnessEventBus` 是纯观察总线：`on(type, listener)` 注册，`emit(event)` 发布；listener 返回
+`void`，逐个按注册顺序 await，异常经错误处理器隔离，不改变 harness 执行。
+
+事件类型是 `HarnessEvent` 的判别联合，携带 `runId`（无 `sessionId`，因为每个 Harness 已绑定
+一份 Session）：
+
+- Run 边界：`run-start`、`run-end`；
+- Turn 边界：`turn-start`、`turn-end`；
+- 流式：`text-start`/`text-end`、`thinking-start`/`thinking-end`、`text-delta`、
+  `thinking-delta`；
+- Tool：`tool-call-start`、`tool-call-delta`、`tool-call`、`tool-result`。
+
+### 控制钩子：`HarnessHooks`（`src/core/harness/hooks.ts`）
+
+`HarnessHooks` 是一组**固定命名**的控制点，handler 通过返回值影响流程：
 
 ```ts
-class Events {
-  constructor(
-    onListenerError?: (
-      error: unknown,
-      name: string,
-      input: unknown,
-    ) => void,
-  );
-  on<TName extends EventName>(
-    name: TName,
-    listener: ListenerOf<TName>,
-  ): () => void;
-  emit<TName extends EmitEventName>(name: TName, input: EventInput<TName>): Promise<void>;
-  intercept<TName extends InterceptEventName>(
-    name: TName,
-    input: EventInput<TName>,
-    handler: (input: EventInput<TName>) => EventResult<TName> | Promise<EventResult<TName>>,
-    signal?: AbortSignal,
-  ): Promise<EventResult<TName>>;
-}
+type HookName = "beforePrompt" | "transformContext" | "beforeTool";
+
+// beforePrompt(prompt, ctx) → string | undefined   （改写 prompt；undefined 停止 Run）
+// transformContext(messages, ctx) → messages        （整理每次 LLM 请求快照）
+// beforeTool(call, ctx) → PreToolDecision           （{allow} | {deny, reason?}，权限用）
 ```
 
-- `emit` 按注册顺序调用全部 listener，逐个隔离异常并交给错误处理器；错误处理器自身失败不会
-  改变 event 分发；
-- `intercept` 让 listener 按顺序包裹一个最终 `handler`；listener 调用
-  `proceed(changedInput)` 把值传给下一个 listener，不调用 `proceed()` 就返回时终止链，每个
-  listener 最多调用一次 `proceed()`；
-- `intercept` 在分发前、进入每一层前和每个 awaited listener 返回后检查 `AbortSignal`；
-  listener 错误原样穿透给行为拥有者；
-- 同一函数注册两次是两次独立注册；移除函数幂等；每次分发使用当时的 listener 快照。
-
-emit listener 只有一个输入参数并返回 `void`；intercept listener 有 `(input, proceed, signal?)`
-签名。条件辅助类型（`EmitEventName`、`InterceptEventName`、listener、输入和结果推导）只供
-`src/core/events/events.ts` 内部实现使用。
-
-每个 event 都携带 `AgentRunIdentity`（`sessionId`、`runId`）。Project 身份来自
-`Events` 实例本身，不进入每个 event。
-
-`src/core/events/index.ts` 导出 `Events`、`EventMap`、`EmitEvent` 与 `InterceptEvent`。
+多 handler 通过统一原语组合：变换钩子链式传递，`beforeTool` 首个 `deny` 短路。
 
 ## 3. Agent Harness：通用 agent 运行时
 
 `src/core/harness/` 是通用 agent 的实现，包含三大能力与一个组合根：
 
 - **agent-loop**：`runAgentLoop()` 无状态执行一次多 Turn Agent Run；
-- **tools**：`AgentTool`/`AgentToolRegistry` 提供工具定义、校验、执行与三阶段拦截；
+- **tools**：`AgentTool`/`AgentToolRegistry` 提供工具定义、校验与执行，权限经 `beforeTool`
+  钩子完成；
 - **session**：`Session`/`SessionRepository` 提供会话数据与持久化；
-- **AgentHarness**：session-bound 的组合根，把三者在共享 `Events` 上绑成一份 Session 的运行器。
+- **AgentHarness**：session-bound 的组合根，把三者绑成一份 Session 的运行器。
 
 ### agent-loop
 
@@ -116,46 +104,28 @@ function runAgentLoop(
 ): Promise<void>;
 ```
 
-`AgentLoopConfig` 携带本轮模型选择（`model`）、可选 `maxTurns` 上限和 `convertToLlm`
-消息转换。`AgentContext` 提供 Run 身份、system prompt、消息、Tool Registry、共享 `Events`
-和取消信号；`appendMessage()` 由 Harness 提供，负责把完整消息持久化后再发布事实事件。
+`AgentLoopConfig` 携带本轮模型选择（`model`）、可选 `maxTurns` 上限和 `convertToLlm` 消息
+转换。`AgentContext` 提供 Run 身份、system prompt、消息、Tool Registry、观察总线 `events`、
+控制钩子 `hooks` 和取消信号；`appendMessage()` 由 Harness 提供，负责把完整消息持久化后再发布
+事实事件。
 
-#### 控制事件
+一个 Turn 的顺序：`turn-start` → `hooks.transformContext`（整理消息快照）→ 流式
+`text-delta`/`thinking-delta`/`tool-call-*` → `done` 终止块后完整 assistant 消息写入 →
+逐个执行 Tool → `turn-end`。用户 prompt 先经 `hooks.beforePrompt` 处理。Turn 后是否继续由
+Agent Loop 内建决定：本轮有 Tool Result 就继续，让模型消费结果；没有则结束。
 
-`src/core/harness/events.ts` 声明两个控制拦截器（通过 `EventMap` 扩充）：
+### Tool
 
-| 事件 | 作用 |
-| ---- | ---- |
-| `agent/user-prompt` | user message 写入前，返回 `undefined` 阻止 Run |
-| `agent/context` | 每次 LLM 请求前整理消息快照，不改写 Session 历史 |
-
-控制事件在状态或动作提交前执行，可以改变尚未提交的行为；它不是被动 listener。
-Turn 后是否继续由 Agent Loop 内建决定：本轮有 Tool Result 就继续，让模型消费结果；没有则结束。
-
-#### 事实事件
-
-Agent 同时声明 `emit` 事实事件：`agent/turn-start`、`agent/turn-end`、
-`agent/text-delta`、`agent/thinking-delta`、`agent/tool-call-start`、
-`agent/tool-call-delta`、`agent/tool-call`、`agent/tool-result`。完整消息先经
-`context.appendMessage()` 提交，再发布对应完成事实。
-
-#### Tool 边界
-
-每个 Tool Call 在 `AgentToolRegistry.execute()` 内先做 lookup 和 TypeBox 校验，再经过三个拦截
-阶段，由 `src/core/harness/tools/events.ts` 声明：`tools/pre-execute`、`tools/execute`、
-`tools/post-execute`。pre-execute 接收 `ToolCallEvent` 并返回 `allow` 或可选原因的 `deny`；它是
-只读决策点，listener 不能替换实际执行的 Tool Call。Registry 把拒绝统一转换成错误结果。execute
-接收 `ToolCallEvent` 并运行 Tool 本体；post-execute 接收 `ToolResultEvent`，在结果写入 Session
-前修改它。未知、无效、被阻止、已中止或失败的调用都会以恰好一个 `agent/tool-result` 结束。
-
-`AgentTool` 定义 schema 和执行，`AgentToolRegistry.execute()` 负责 lookup、验证、三阶段拦截、
-timeout 与异常归一化。Agent Tool 不依赖 Coding Agent 或 UI，也不携带展示逻辑。
+每个 Tool Call 在 `AgentToolRegistry.execute()` 内先做 lookup 和 TypeBox 校验，再调用
+`hooks.beforeTool` 做权限决策；拒绝时统一转换成错误结果。允许后经 timeout helper 调用 Tool
+本体。未知、无效、被阻止、已中止或失败的调用都以恰好一个 `tool-result` 结束。不存在
+`tools/pre-execute`/`execute`/`post-execute` 三阶段拦截——控制只通过 `beforeTool` 钩子。
 
 ### session
 
 `Session` 保存消息、模型变更和 Session ID。持久化格式是
 `<storageDir>/sessions/<sessionId>.jsonl` 的树形 entry；`buildContext()` 沿当前叶节点的父链恢复
-消息和最后选择的模型。
+消息和最后选择的模型。标题是 header 字段（`setTitle` 原地重写 header），不是追加记录。
 
 ```ts
 interface SessionMetadata {
@@ -175,14 +145,10 @@ class SessionRepository {
 }
 ```
 
-`SessionRepository` 是 Harness 层唯一管理多份 Session 的实体。它在一个 `storageDir` 中创建、
-打开和列举 Session；`list()` 按存储的 `updatedAt` 从新到旧返回 `SessionMetadata[]`。
-Repository 不创建 Harness，也不保存“当前 Session”。
-
 ### AgentHarness
 
 一个 `AgentHarness` 在构造时绑定恰好一份 Session，之后不切换。它公开 `sessionId`、`model`、
-`messages` 和 `isRunning`，但不暴露可写 Session 或 Repository。
+`messages`、`isRunning`、`hooks` 和 `subscribe`，但不暴露可写 Session 或 Repository。
 
 ```ts
 interface HarnessConfig {
@@ -192,7 +158,8 @@ interface HarnessConfig {
   readonly maxTurns?: number;
   readonly toolRegistry: AgentToolRegistry;
   readonly systemPrompt: string;
-  readonly events: Events;
+  readonly events: HarnessEventBus;   // 观察事件总线，调用方创建
+  readonly hooks: HarnessHooks;       // 控制钩子，调用方创建并预注册
 }
 
 class AgentHarness {
@@ -201,6 +168,7 @@ class AgentHarness {
   abort(): void;
   switchModel(model: ModelConfig): Promise<void>;
   subscribe(listener: (event: HarnessEvent) => void): () => void;
+  get hooks(): HarnessHooks;
   get sessionId(): string;
   get model(): ModelConfig;
   get messages(): readonly AgentMessage[];
@@ -209,22 +177,14 @@ class AgentHarness {
 ```
 
 Harness 为这份 Session 持有消息视图、当前模型、Tool Registry、AbortController 和 run 状态。
-它构造时接收 Project 提供的共享 `Events`，在 `prompt()` 中创建 Run 身份（`sessionId`、
-`runId`），发布 `harness/run-start`，调用一次 `runAgentLoop()`，并发布 `harness/run-end`。
-同一个 Harness 同时只运行一个 `prompt()`；运行时切换模型或修改 Tool 会抛错。构造时 Session
-已保存的模型优先于 `modelConfig`；`switchModel()` 先持久化 `model_selection` 再更新当前模型，
-因此模型切换失败不会改变旧状态。
+`prompt()` 创建 Run 身份（`sessionId`、`runId`），在自持总线上发布 `run-start`，调用一次
+`runAgentLoop()`，并发布 `run-end`。同一个 Harness 同时只运行一个 `prompt()`；运行时切换模型或
+修改 Tool 会抛错。构造时 Session 已保存的模型优先于 `modelConfig`；`switchModel()` 先持久化
+`model_selection` 再更新当前模型。
 
-`subscribe(listener)` 是 UI 唯一的事件入口：Harness 把共享 `Events` 中属于本 Session 的
-`emit` 事实投影成 `HarnessEvent`（去掉 Session 身份和所有 intercept 控制点）转发给 listener，
-返回幂等取消函数。Project 的原始 `Events` 不公开。
-
-#### Harness Event 边界
-
-`src/core/harness/events.ts` 同时声明 `HarnessEvent` 投影与全部运行时事件契约。投影：
-`run-start`、`run-end` 加上 `turn-start`、`turn-end`、`text-delta`、`thinking-delta`、
-`tool-call-*`、`tool-call`、`tool-result`。Listener 观察已经发生的事实，返回值不会改变运行；
-`emit` 的 listener 错误被隔离，并交给 `Events` 的错误处理器。
+`subscribe(listener)` 把 Harness 发布到自持总线上的 `HarnessEvent` 直接转交给 listener（每个
+Harness 绑定一份 Session，无需按 `sessionId` 过滤），返回幂等取消函数。`hooks` 暴露控制钩子
+注册面，供调用方在创建 `HarnessHooks` 时预注册。
 
 ## 4. Coding Agent：Project 级所有者
 
@@ -251,40 +211,31 @@ function openOrCreateProject(options: {
   readonly projectDirectory: string;
   readonly runtime: ModelRuntime;
   readonly modelConfig: ModelConfig;
-  readonly interactions: Interactions;
+  readonly interaction: UserInteraction;
   readonly maxTurns: number;
   readonly toolTimeoutSeconds: number;
-  readonly onListenerError?: (error: unknown, name: string, input: unknown) => void;
 }): Promise<Project>;
 ```
 
-`openOrCreateProject()` 是本包唯一的组合根。目录发现属于 application 层：应用把启动目录
-解析为 Git worktree 根（或原目录）并规范化，再把规范结果作为 `projectDirectory` 传入；
-Coding Agent 只校验该目录（绝对、`resolve()` 后不变、`realpath()` 后不变、且是现存目录），
-不运行 Git。
+`openOrCreateProject()` 是本包唯一的组合根。目录发现属于 application 层：应用把启动目录解析为
+Git worktree 根（或原目录）并规范化，再把规范结果作为 `projectDirectory` 传入；Coding Agent 只
+校验该目录（绝对、`resolve()` 后不变、`realpath()` 后不变、且是现存目录），不运行 Git。
 
-Project 记录持久化在 `<keaHome>/projects/<projectId>/project.json`，通过规范目录查找复用。
-找不到记录时生成 UUID、目录名和 UTC 时间创建新记录。每次组合同时创建
-`SessionRepository`、内存权限记录（`approved`，只存在于进程内）和**一个**共享 `Events`
-实例，并注册默认 Permission listener。`maxTurns` 和 `toolTimeoutSeconds` 是扁平的运行策略，
-直接传给每个 Harness。
+Project 记录持久化在 `<keaHome>/projects/<projectId>/project.json`，通过规范目录查找复用。找不到
+记录时生成 UUID、目录名和 UTC 时间创建新记录。Project 持有内存权限状态（`approved`）和注入的
+`UserInteraction`。
 
-`Project.events` 是私有的；UI 通过 `harness.subscribe()` 观察。`createHarness()` 创建新
-Session，`createHarnessFromSession()` 恢复已有 Session 并重新验证其 cwd；目录已被删除或不再
-是目录时恢复失败，不会悄悄回退到 Project 目录。`-c` 时应用选择 `listSessions()[0]`，空列表
-回退为新 Session。
+`Project.createHarness()` / `createHarnessFromSession()` 逐 Harness 装配：用
+`createBuiltinToolRegistry(cwd, timeout)` 建工具、用 `createHooks(state)` 建已注册内置钩子的
+`HarnessHooks`、用 `new HarnessEventBus()` 建观察总线，连同 system prompt 一起注入
+`AgentHarness`。Project 不对外暴露注册 Tool / 钩子的接口（无插件系统）。
 
-### Session 与 cwd
+### 权限：内置 `beforeTool` 钩子
 
-一份 Session 存储绝对 `cwd`。Coding Agent 给每份 Session 的 Harness 以解析后的 cwd，
-工具路径统一从这个 cwd 解析。相对 `cwd` 从 Project 目录解析；最终路径必须存在且是目录。
-
-### 默认 Coding 能力
-
-Coding Agent 提供 coding system prompt，以及 Bash、read、write、edit、Glob 和无状态 Todo。
-Bash permission 策略分为 allow、ask、deny；ask 通过 `Interactions.permission()` 端口请求外部
-回答（once / always / deny），deny 由 Permission listener 在 `tools/pre-execute` 上直接拒绝。
-`Interactions` 必须由调用方显式提供，本包没有默认实现，避免在没有用户确认渠道时静默放行。
+`createHooks()`（`coding-agent/hooks/factory.ts`）创建一个 `HarnessHooks` 并把权限的
+`beforeTool` 决策注册到它上面（这是内置钩子之一）。Bash permission 策略分为 allow、ask、deny：
+ask 通过 `UserInteraction.select(["Allow once", "Always allow", "Deny"])` 请求外部回答；hard deny
+在钩子内直接拒绝。`UserInteraction` 必须由调用方显式提供，本包没有默认实现。
 
 ## 5. UI：命令语言与命令行实现
 
@@ -301,16 +252,15 @@ class CliUi {
 }
 ```
 
-`CliUi` 是线性 Session 循环：一次只读一个 Prompt，`await harness.prompt(text)` 期间不再
-读第二个普通 Prompt；Permission 提问发生在 `prompt()` 内部，通过同一 question 函数。命令只在
-字符 0 位置匹配精确 slash token（`/new`、`/session`、`/model`、`/help`、`/exit`）；其他输入
-原样作为 Prompt。`/session` 与 `/model` 使用一基编号选择器，空输入取消。
+`CliUi` 是线性 Session 循环：一次只读一个 Prompt，`await harness.prompt(text)` 期间不再读第二个
+普通 Prompt；Permission 提问发生在 `prompt()` 内部，通过同一 question 函数。命令只在字符 0 位置
+匹配精确 slash token（`/new`、`/session`、`/model`、`/help`、`/exit`）；其他输入原样作为 Prompt。
 
 `Renderer` 把 `HarnessEvent` 与用户输入投影到终端（thinking 默认可见、tool 事实默认 compact）；
-`CliInteractions` 实现 `Interactions` 端口，把 `o`/`a`/其它回答映射为 once/always/deny。
-Run 取消中止 Permission 提问并传播，普通取消返回 deny。SIGINT 在 `current.isRunning` 时调用
-`current.abort()`（包括 Permission 持有提问时）；没有 Run 时留给 readline 自身的输入取消。
-Session 或模型切换失败时保留旧 Harness、订阅和模型。
+`CliInteractions` 实现 `UserInteraction` 端口，把 `select`/`confirm`/`input` 映射到 readline
+question 函数。Run 取消中止交互提问并传播，普通取消返回中性值。SIGINT 在 `current.isRunning` 时
+调用 `current.abort()`；没有 Run 时留给 readline 自身的输入取消。Session 或模型切换失败时保留旧
+Harness、订阅和模型。
 
 `CliUi` 通过注入的 `reportError` 回调报告捕获的错误，不接触 Config 或凭据。
 
@@ -326,10 +276,10 @@ Session 或模型切换失败时保留旧 Harness、订阅和模型。
 
 `Config` 是唯一的应用设置实体，按优先级分层加载：内建默认值 < `~/.kea/config.json` <
 `<project>/.kea/config.json` < `--config` 文件 < CLI 直接覆盖（`--verbose`）。每个普通配置源
-独立验证后才合并；普通源拒绝 credential 字段（`apiKey`/`token`/`secret`/`password`）。
-凭据只来自 `~/.kea/auth.json`，在所有普通源之后加载。跨字段验证顺序：至少一个 provider →
-每个 provider 的 `protocol` 为三者之一、`models` 非空 → `defaultModel` 必填且必须引用已配置
-provider 并列出其 `models` 中的模型 → 启用 provider 的 auth key 非空。
+独立验证后才合并；普通源拒绝 credential 字段（`apiKey`/`token`/`secret`/`password`）。凭据只来自
+`~/.kea/auth.json`，在所有普通源之后加载。跨字段验证顺序：至少一个 provider → 每个 provider 的
+`protocol` 为三者之一、`models` 非空 → `defaultModel` 必填且必须引用已配置 provider 并列出其
+`models` 中的模型 → 启用 provider 的 auth key 非空。
 
 `Config.load` 是纯加载：显式 `keaHome`、不建模板。应用引导入口 `loadConfig` 计算 `keaHome`
 （默认 `~/.kea`）、补建缺失模板、对 created 文件打印 `<path>: created`，再转调 `Config.load`，
@@ -356,30 +306,30 @@ provider 并列出其 `models` 中的模型 → 启用 provider 的 auth key 非
 
 ## 7. 公共入口
 
-- `src/core/events/index.ts`：`Events`、`EventMap`；
 - `src/core/ai/index.ts`：AI 消息、模型、流和显式 Provider 工厂；
 - `src/core/harness/index.ts`：`runAgentLoop`、`AgentTool`/`AgentToolRegistry`、`AgentHarness`、
-  `HarnessEvent`、`Session`、`SessionRepository`、Session 元数据和错误、`AgentRunIdentity` 与事件契约；
-- `src/coding-agent/index.ts`：`openOrCreateProject`、`Project`、`ProjectInfo`、`Interactions`
-  端口和权限类型；
+  `HarnessEvent`/`HarnessEventBus`、`HarnessHooks`/`HookName`/`HookContext`/`PreToolDecision`、
+  `Session`、`SessionRepository`、Session 元数据和错误、`AgentRunIdentity` 与事件/钩子契约；
+- `src/coding-agent/index.ts`：`openOrCreateProject`、`Project`、`ProjectInfo`、
+  `UserInteraction`/`InteractionOptions`；
 - `src/ui/index.ts`：`parseInput`、`UiAction`（无终端依赖的命令语言）；
 - `src/ui/cli/index.ts`：`CliUi`、`CliInteractions`、`Renderer`（命令行实现）；
 - `src/index.ts`：汇总以上入口和通用 workspace helpers。
 
 `coding-agent/cli` 与 `coding-agent/config` 保持应用内部：args、Config、模板创建和目录发现只由
-`main.ts` 与测试导入。具体内置 Tool/事件工厂、Bash policy 和各 Tool 的 details 类型都是内部实现。
+`main.ts` 与测试导入。具体内置 Tool/hook factory、Bash policy 和各 Tool 的 details 类型都是内部
+实现。
 
 ## 8. 边界约束
 
 - `ai` 不依赖 `harness`；
-- `harness` 不依赖 `coding-agent` 或 `ui`；agent-loop、Tool 与事件契约同属本包，只声明自己的
-  `EventMap` 契约；
+- `harness` 不依赖 `coding-agent` 或 `ui`；agent-loop、Tool、观察事件与控制钩子同属本包；
 - `harness` 不依赖具体 coding Tool 或 UI；
-- `coding-agent` 的领域内部组件（project/tools/events/interaction）不依赖 `src/ui` 或
-  `coding-agent/cli`、`coding-agent/config`，只定义 `Interactions` 端口；
+- `coding-agent` 的领域内部组件（project/tools/hooks/interaction）不依赖 `src/ui` 或
+  `coding-agent/cli`、`coding-agent/config`，只定义 `UserInteraction` 端口；
 - `coding-agent/cli` 与 `coding-agent/config` 不依赖 UI，也不依赖 Coding Agent 的领域内部组件；
   main 从 Config 取出 UI 需要的值传给 UI；
 - `SessionRepository` 管理 Session 集合，`AgentHarness` 只绑定一份 Session；
-- `Project` 的原始 `Events` 私有；UI 只能通过 `harness.subscribe()` 观察；
-- 控制事件负责提交前控制，`emit` 事实负责事实通知；
+- UI 只能通过 `harness.subscribe()` 观察；控制钩子通过 `harness.hooks.on()` 注册；
+- 观察事件只通知已发生的事实，控制钩子负责提交前控制；
 - `main.ts` 是唯一连接 provider、Project 和具体 CLI 的应用入口；Config 是唯一应用设置实体。

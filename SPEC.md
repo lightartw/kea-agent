@@ -342,7 +342,8 @@ auth storage and Node/Git Bash requirements for source use.
   (331/333, 2 skipped).
 - Dangerous Bash commands are denied below the UI confirmation layer.
 - Project config containing a secret is rejected, and errors do not echo keys.
-- File tools reject targets outside the Project root.
+- File tools and Bash execution outside the Project root prompt the user with
+  Allow once / Always allow / Deny before proceeding.
 - Sessions reopen with messages, model, cwd, title, and structured tool details.
 - The title is generated from the first user message with a deterministic
   fallback when model generation fails.

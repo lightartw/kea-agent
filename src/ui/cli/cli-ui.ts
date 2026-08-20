@@ -1,6 +1,5 @@
 import { createInterface, type Interface } from "node:readline/promises";
 
-import type { ModelConfig } from "../../core/ai/index.js";
 import type { AgentHarness } from "../../core/harness/index.js";
 import type { Project } from "../../coding-agent/index.js";
 import { parseInput } from "../commands.js";
@@ -8,7 +7,6 @@ import { CliInteractions } from "./cli-interactions.js";
 import { Renderer } from "./renderer.js";
 
 export interface CliUiOptions {
-  readonly models: readonly ModelConfig[];
   readonly thinking: "hidden" | "visible";
   readonly toolDetails: "compact" | "full";
   readonly color?: boolean;
@@ -31,7 +29,6 @@ const PROMPT = "kea> ";
 export class CliUi {
   readonly interactions: CliInteractions;
 
-  private readonly models: readonly ModelConfig[];
   private readonly readline: Interface;
   private readonly renderer: Renderer;
   private readonly reportErrorFn: (error: unknown) => void;
@@ -46,7 +43,6 @@ export class CliUi {
   };
 
   constructor(options: CliUiOptions) {
-    this.models = options.models;
     this.readline = options.readline ?? createInterface({
       input: options.input ?? process.stdin,
       output: process.stdout,
@@ -163,12 +159,13 @@ export class CliUi {
   }
 
   private async chooseAndSwitchModel(): Promise<void> {
-    const providerNames = [...new Set(this.models.map((model) => model.provider))];
+    const options = await this.project!.modelOptions();
+    const providerNames = [...new Set(options.map((model) => model.provider))];
     this.renderer.renderSelection("Providers:", providerNames);
     const providerIndex = await this.chooseIndex("Provider number? ", providerNames.length);
     if (providerIndex === undefined) return;
     const provider = providerNames[providerIndex - 1]!;
-    const providerModels = this.models.filter((model) => model.provider === provider);
+    const providerModels = options.filter((model) => model.provider === provider);
     this.renderer.renderSelection(
       `Models for ${provider}:`,
       providerModels.map((model) => model.model),
@@ -176,26 +173,26 @@ export class CliUi {
     const modelIndex = await this.chooseIndex("Model number? ", providerModels.length);
     if (modelIndex === undefined) return;
     const selected = providerModels[modelIndex - 1]!;
-    if (this.isSameModel(selected, this.current!.model)) return;
-    await this.current!.switchModel(selected);
+    await this.project!.switchModel(this.current!, selected);
   }
 
   private async ensureConfiguredModel(candidate: AgentHarness): Promise<boolean> {
-    if (this.models.some((model) => this.isSameModel(model, candidate.model))) {
+    if (await this.project!.isConfiguredModel(candidate.model)) {
       return true;
     }
+    const options = await this.project!.modelOptions();
     this.renderer.renderError(
       `model ${candidate.model.provider}/${candidate.model.model} is not configured`,
     );
     this.renderer.renderSelection(
       "Choose a configured model:",
-      this.models.map((model) => `${model.provider}/${model.model}`),
+      options.map((model) => `${model.provider}/${model.model}`),
     );
-    const index = await this.chooseIndex("Model number? ", this.models.length);
+    const index = await this.chooseIndex("Model number? ", options.length);
     if (index === undefined) return false;
-    const selected = this.models[index - 1]!;
+    const selected = options[index - 1]!;
     try {
-      await candidate.switchModel(selected);
+      await this.project!.switchModel(candidate, selected);
       return true;
     } catch (error) {
       this.reportErrorFn(error);
@@ -221,9 +218,5 @@ export class CliUi {
     if (!/^\d+$/u.test(trimmed)) return undefined;
     const index = Number.parseInt(trimmed, 10);
     return index >= 1 && index <= count ? index : undefined;
-  }
-
-  private isSameModel(a: ModelConfig, b: ModelConfig): boolean {
-    return a.provider === b.provider && a.model === b.model;
   }
 }

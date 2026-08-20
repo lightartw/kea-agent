@@ -126,17 +126,6 @@ API Key 只从 `~/.kea/auth.json` 读取。项目配置可以覆盖模型、工�
 
 会话与项目记录保存在 `~/.kea/projects/<projectId>/`。
 
-## 内置工具
-
-| 工具 | 用途 |
-| --- | --- |
-| `bash` | 在当前会话的工作目录运行 Bash 命令 |
-| `read_file` | 读取项目内文件 |
-| `write_file` | 新建或覆盖项目内文件 |
-| `edit_file` | 精确修改项目内文件 |
-| `glob` | 按模式查找项目内文件 |
-| `todo_write` | 维护任务清单与进度 |
-
 ## 权限与安全
 
 Bash 命令会被分类处理：
@@ -170,20 +159,6 @@ npm test
 
 主要依赖方向为 `ui -> coding-agent -> harness -> ai`，事件系统由各层共享。
 
-## 常见问题
-
-### 找不到 `kea` 命令
-
-确认已执行 `npm install -g .` 并重新打开终端；或改用方式一从源码运行 `npm start`。
-
-### 提示模型或凭据缺失
-
-检查 `~/.kea/config.json` 中 `defaultModel` 对应的 provider 与 model，以及 `~/.kea/auth.json` 中同名 provider 的 `apiKey`。不要把真实密钥提交到仓库。
-
-### Windows 上 Bash 工具无法启动
-
-安装 Git for Windows，并确认 Git Bash 的 `bash.exe` 可用。标准安装位置通常是 `C:\Program Files\Git\bin\bash.exe`；自定义安装时应把其 `bin` 目录加入 `PATH`。
-
 ## 课程作业提交
 
 课程交付文档：
@@ -193,5 +168,3 @@ npm test
 - [SPEC_PROCESS.md](SPEC_PROCESS.md)
 - [AGENT_LOG.md](AGENT_LOG.md)
 - [REFLECTION.md](REFLECTION.md)
-
-源码压缩包不应包含 `.git`、`.env`、`.kea`、`.superpowers`、`node_modules`、`dist` 或本机日志。

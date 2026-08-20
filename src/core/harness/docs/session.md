@@ -128,7 +128,7 @@ Repository 持久创建成功后才构造 Session,因此不会返回一份尚未
 const fork = await sessions.fork(session.id, session.headId);
 ```
 
-节点保留原来的 ID 和 `parentId`,但源 Session 的标题记录和路径外的兄弟节点不会复制。
+节点保留原来的 ID 和 `parentId`,但源 Session 的标题（header 字段）和路径外的兄弟节点不会复制。
 `nodeId` 为 `null` 时创建空 Session。删除源 Session 不影响已经创建的 fork。
 
 ### 内部边界

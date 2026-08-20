@@ -225,13 +225,17 @@ messages.push({ role: "user", content: [
 
 ### Stream chunk
 
-一个 `StreamChunk` 是一次 provider 响应中的一个片段，由 Agent 直接消费；它不是通过
-`Events` 注册、发布或观察的运行事实，只是从 provider 到 agent 的数据传输。
+一个 `StreamChunk` 是一次 provider 响应中的一个片段，由 Agent 直接消费；它不是运行事件（不注册、
+发布或观察），只是从 provider 到 agent 的数据传输。
 
 ```ts
 type StreamChunk =
+  | { type: "text_start" }
   | { type: "text_delta"; text: string }
+  | { type: "text_end" }
+  | { type: "thinking_start" }
   | { type: "thinking_delta"; thinking: string }
+  | { type: "thinking_end" }
   | { type: "toolcall_start"; id: string; name: string }
   | { type: "toolcall_delta"; id: string; argumentsDelta: string }
   | { type: "toolcall_end"; toolCall: ToolCall }
@@ -239,10 +243,10 @@ type StreamChunk =
   | { type: "error"; message: AssistantMessage };
 ```
 
-前五种是增量片段；`done` 和 `error` 是终止块，提供完整 assistant message。每一轮 Stream
-必须以 `done` 或 `error` 结束；`error` 块的 message 带 `stopReason: "error"` 和
-`errorMessage`。agent loop 直接消费该流，在缺少终止块时让 Run 失败，不会发布没有完整消息的
-`agent/turn-end`。
+`text_*`/`thinking_*`/`toolcall_*` 是增量片段；`done` 和 `error` 是终止块，提供完整 assistant
+message。每一轮 Stream 必须以 `done` 或 `error` 结束；`error` 块的 message 带
+`stopReason: "error"` 和 `errorMessage`。agent loop 直接消费该流，在缺少终止块时让 Run 失败，
+不会发布没有完整消息的 `turn-end`。
 
 ## 使用范围与包边界
 

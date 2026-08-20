@@ -75,6 +75,7 @@ export class Project {
   private readonly sessions: SessionRepository;
   private readonly runtime: ModelRuntime;
   private readonly modelConfig: ModelConfig;
+  private readonly models: readonly ModelConfig[];
   private readonly maxTurns: number;
   private readonly toolTimeoutSeconds: number;
   private readonly approved: PermissionRule[];
@@ -85,6 +86,7 @@ export class Project {
     readonly sessions: SessionRepository;
     readonly runtime: ModelRuntime;
     readonly modelConfig: ModelConfig;
+    readonly models: readonly ModelConfig[];
     readonly maxTurns: number;
     readonly toolTimeoutSeconds: number;
     readonly approved: PermissionRule[];
@@ -102,6 +104,7 @@ export class Project {
     this.sessions = options.sessions;
     this.runtime = options.runtime;
     this.modelConfig = options.modelConfig;
+    this.models = options.models;
     this.maxTurns = options.maxTurns;
     this.toolTimeoutSeconds = options.toolTimeoutSeconds;
     this.approved = options.approved;
@@ -114,6 +117,38 @@ export class Project {
 
   listSessions(): Promise<readonly SessionMetadata[]> {
     return this.sessions.list();
+  }
+
+  // ── Model management ──
+
+  /** The configured model choices, presentation-neutral (no domain types). */
+  modelOptions(): readonly { readonly provider: string; readonly model: string }[] {
+    return this.models.map((model) => ({ provider: model.provider, model: model.model }));
+  }
+
+  /** True when the given model is among the configured choices. */
+  isConfiguredModel(model: { readonly provider: string; readonly model: string }): boolean {
+    return this.models.some(
+      (candidate) => candidate.provider === model.provider && candidate.model === model.model,
+    );
+  }
+
+  /**
+   * Switch the active Harness to a configured model. Rejects models outside the
+   * configured set, no-ops when the Harness already uses the model, then
+   * delegates the actual switch to the Harness.
+   */
+  async switchModel(
+    harness: AgentHarness,
+    selection: { readonly provider: string; readonly model: string },
+  ): Promise<void> {
+    if (!this.isConfiguredModel(selection)) {
+      throw new ProjectError(`model ${selection.provider}/${selection.model} is not configured`);
+    }
+    if (harness.model.provider === selection.provider && harness.model.model === selection.model) {
+      return;
+    }
+    await harness.switchModel(selection);
   }
 
   async createHarness(options?: { readonly cwd?: string }): Promise<AgentHarness> {

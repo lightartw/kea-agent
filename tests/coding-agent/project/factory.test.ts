@@ -92,6 +92,7 @@ async function openProject(
     projectDirectory,
     runtime: runtimeFromStream(simpleStream),
     modelConfig,
+    models: [modelConfig],
     interaction: testInteractions,
     maxTurns: 20,
     toolTimeoutSeconds: 120,

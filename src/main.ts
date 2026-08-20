@@ -66,7 +66,6 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 
   const runtime = createModelRuntime({ providers: config.runtimeProviders() });
   const ui = new CliUi({
-    models: config.models,
     thinking: config.thinking,
     toolDetails: config.toolDetails,
     reportError,
@@ -76,6 +75,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     projectDirectory,
     runtime,
     modelConfig: config.defaultModel,
+    models: config.models,
     interaction: ui.interactions,
     maxTurns: config.maxTurns,
     toolTimeoutSeconds: config.toolTimeoutSeconds,
