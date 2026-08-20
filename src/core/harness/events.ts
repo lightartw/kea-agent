@@ -9,11 +9,6 @@ export interface ToolCallEvent {
   readonly call: AgentToolCall;
 }
 
-/** ToolCallEvent plus the execution result. */
-export interface ToolResultEvent extends ToolCallEvent {
-  readonly result: AgentToolResult;
-}
-
 export type HarnessRunEnd = {
   readonly type: "run-end";
   readonly runId: string;
