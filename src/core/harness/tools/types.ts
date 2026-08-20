@@ -2,7 +2,7 @@ import type { Static, TObject } from "typebox";
 import { Compile, type Validator } from "typebox/compile";
 
 import type { Tool } from "../../ai/types.js";
-import type { HarnessHooks } from "../events.js";
+import type { HarnessHooks } from "../hooks.js";
 
 /** The result returned by AgentTool.execute(), before being wrapped into a ToolResultMessage. */
 export interface AgentToolResult<TDetails = unknown> {

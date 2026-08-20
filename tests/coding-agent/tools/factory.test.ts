@@ -4,7 +4,7 @@ import test from "node:test";
 import { Type } from "typebox";
 
 import { AgentTool } from "../../../src/core/harness/tools/types.js";
-import { HarnessHooks } from "../../../src/core/harness/events.js";
+import { HarnessHooks } from "../../../src/core/harness/hooks.js";
 import { createBuiltinToolRegistry } from "../../../src/coding-agent/tools/factory.js";
 
 test("createBuiltinToolRegistry registers the six built-ins in order", () => {

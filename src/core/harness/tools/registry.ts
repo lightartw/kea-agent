@@ -6,7 +6,7 @@ import {
   type ToolExecutionContext,
 } from "./types.js";
 import type { Tool } from "../../ai/types.js";
-import type { HookContext } from "../events.js";
+import type { HookContext } from "../hooks.js";
 
 const ERROR_PREFIX = "Error: ";
 

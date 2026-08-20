@@ -6,7 +6,8 @@ import type {
   StreamChunk,
   StreamOptions,
 } from "../ai/types.js";
-import type { HarnessEventBus, HarnessEventType, HarnessHooks } from "./events.js";
+import type { HarnessEventBus, HarnessEventType } from "./events.js";
+import type { HarnessHooks } from "./hooks.js";
 import type { AgentToolRegistry } from "./tools/registry.js";
 import type { Session } from "./session/session.js";
 

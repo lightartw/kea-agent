@@ -1,6 +1,7 @@
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
-import type { PreToolDecision, ToolCallEvent } from "../../../core/harness/events.js";
+import type { ToolCallEvent } from "../../../core/harness/events.js";
+import type { PreToolDecision } from "../../../core/harness/hooks.js";
 import type { UserInteraction } from "../../interaction/interactions.js";
 import { classifyBashCommand } from "./bash-policy.js";
 

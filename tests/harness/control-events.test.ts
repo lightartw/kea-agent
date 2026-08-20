@@ -9,7 +9,8 @@ import type {
   AgentLoopConfig,
   AgentMessage,
 } from "../../src/core/harness/types.js";
-import { HarnessEventBus, HarnessHooks } from "../../src/core/harness/events.js";
+import { HarnessEventBus } from "../../src/core/harness/events.js";
+import { HarnessHooks } from "../../src/core/harness/hooks.js";
 import { AgentTool, type AgentToolResult } from "../../src/core/harness/tools/types.js";
 import type { AgentToolCall } from "../../src/core/harness/tools/types.js";
 import { AgentToolRegistry } from "../../src/core/harness/tools/registry.js";

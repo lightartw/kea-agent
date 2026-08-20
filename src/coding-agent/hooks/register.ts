@@ -1,10 +1,7 @@
 import type { AgentHarness } from "../../core/harness/agent-harness.js";
 import type { AgentToolCall } from "../../core/harness/tools/types.js";
-import type {
-  HookContext,
-  PreToolDecision,
-  ToolCallEvent,
-} from "../../core/harness/events.js";
+import type { ToolCallEvent } from "../../core/harness/events.js";
+import type { HookContext, PreToolDecision } from "../../core/harness/hooks.js";
 import type { UserInteraction } from "../interaction/interactions.js";
 import { decidePermission, type PermissionRule } from "./permission/permission.js";
 

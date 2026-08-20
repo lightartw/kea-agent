@@ -5,6 +5,7 @@ export { SessionError } from "./session/types.js";
 export { SessionRepository } from "./session/repository.js";
 export * from "./tools/index.js";
 export * from "./events.js";
+export * from "./hooks.js";
 
 export type {
   AgentContext,

@@ -10,7 +10,7 @@ import type {
   StreamFn,
 } from "./types.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
-import type { HookContext } from "./events.js";
+import type { HookContext } from "./hooks.js";
 
 // ── Helpers ──
 

@@ -9,7 +9,8 @@ import type {
 } from "./types.js";
 import type { AgentTool } from "./tools/types.js";
 import type { AgentToolRegistry } from "./tools/registry.js";
-import { HarnessEventBus, HarnessHooks, type HarnessEvent, type HarnessEventType } from "./events.js";
+import { HarnessEventBus, type HarnessEvent, type HarnessEventType } from "./events.js";
+import { HarnessHooks } from "./hooks.js";
 import type { ModelConfig, ModelRuntime } from "../ai/types.js";
 import { errorMessage } from "../util/index.js";
 import { Session } from "./session/session.js";

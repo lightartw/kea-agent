@@ -10,7 +10,7 @@ import {
   type ToolExecutionContext,
 } from "../../../src/core/harness/tools/types.js";
 import { AgentToolRegistry } from "../../../src/core/harness/tools/registry.js";
-import { HarnessHooks } from "../../../src/core/harness/events.js";
+import { HarnessHooks } from "../../../src/core/harness/hooks.js";
 
 const parameters = Type.Object({ value: Type.String() });
 
