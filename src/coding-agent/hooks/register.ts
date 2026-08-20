@@ -1,6 +1,5 @@
 import type { AgentHarness } from "../../core/harness/agent-harness.js";
 import type { AgentToolCall } from "../../core/harness/tools/types.js";
-import type { ToolCallEvent } from "../../core/harness/events.js";
 import type { HookContext, PreToolDecision } from "../../core/harness/hooks.js";
 import type { UserInteraction } from "../interaction/interactions.js";
 import { decidePermission, type PermissionRule } from "./permission/permission.js";
@@ -26,14 +25,8 @@ export function registerBuiltinHooks(
       { call }: { readonly call: AgentToolCall },
       ctx: HookContext,
     ): Promise<PreToolDecision | void> => {
-      const event: ToolCallEvent = {
-        sessionId: ctx.sessionId,
-        runId: ctx.runId,
-        cwd: ctx.cwd,
-        call,
-      };
       const decision = await decidePermission(
-        event,
+        call,
         {
           cwd: ctx.cwd,
           trustedDirectories: options.trustedDirectories,

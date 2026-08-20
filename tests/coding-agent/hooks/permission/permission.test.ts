@@ -5,7 +5,6 @@ import { dirname, join, resolve } from "node:path";
 import type {
   AgentToolCall,
 } from "../../../../src/core/harness/tools/types.js";
-import type { ToolCallEvent } from "../../../../src/core/harness/events.js";
 import type {
   InteractionOptions,
   UserInteraction,
@@ -28,25 +27,15 @@ function bashCall(command: string): AgentToolCall {
   };
 }
 
-function bashEvent(command: string, sessionId = "session-1"): ToolCallEvent {
-  return {
-    sessionId,
-    runId: "run-1",
-    cwd: CWD,
-    call: bashCall(command),
-  };
+function bashEvent(command: string): AgentToolCall {
+  return bashCall(command);
 }
 
 function fileEvent(
   name: string,
   args: Record<string, unknown>,
-): ToolCallEvent {
-  return {
-    sessionId: "session-1",
-    runId: "run-1",
-    cwd: CWD,
-    call: { type: "toolCall", id: "c1", name, arguments: args },
-  };
+): AgentToolCall {
+  return { type: "toolCall", id: "c1", name, arguments: args };
 }
 
 type SelectRecord = { readonly title: string; readonly options: readonly string[] };
@@ -77,7 +66,7 @@ class RecordingInteractions implements UserInteraction {
 }
 
 function decide(
-  input: ToolCallEvent,
+  input: AgentToolCall,
   interaction: UserInteraction,
   approved: PermissionRule[] = [],
   cwd = CWD,
@@ -165,8 +154,8 @@ test("approved rules are reusable by another session in one project", async () =
   const approved: PermissionRule[] = [];
   const interaction = new RecordingInteractions([1]);
 
-  await decide(bashEvent("rm file.txt", "session-a"), interaction, approved);
-  await decide(bashEvent("rm file.txt", "session-b"), interaction, approved);
+  await decide(bashEvent("rm file.txt"), interaction, approved);
+  await decide(bashEvent("rm file.txt"), interaction, approved);
 
   assert.equal(interaction.selects.length, 1);
 });

@@ -1,14 +1,6 @@
 import type { AgentMessage } from "./types.js";
 import type { AgentToolCall, AgentToolResult } from "./tools/types.js";
 
-/** A Tool Call in one Run: Run identity, execution cwd, and the call itself. */
-export interface ToolCallEvent {
-  readonly sessionId: string;
-  readonly runId: string;
-  readonly cwd: string;
-  readonly call: AgentToolCall;
-}
-
 export type HarnessRunEnd = {
   readonly type: "run-end";
   readonly runId: string;

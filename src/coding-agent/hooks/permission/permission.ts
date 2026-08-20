@@ -1,6 +1,6 @@
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
-import type { ToolCallEvent } from "../../../core/harness/events.js";
+import type { AgentToolCall } from "../../../core/harness/tools/types.js";
 import type { PreToolDecision } from "../../../core/harness/hooks.js";
 import type { UserInteraction } from "../../interaction/interactions.js";
 import { classifyBashCommand } from "./bash-policy.js";
@@ -138,7 +138,6 @@ function applyReply(
 }
 
 async function authorizeDirectory(
-  input: ToolCallEvent,
   targetPath: string,
   directory: string,
   options: {
@@ -167,7 +166,6 @@ async function authorizeDirectory(
 }
 
 async function authorizeCommand(
-  input: ToolCallEvent,
   command: string,
   options: {
     readonly cwd: string;
@@ -199,7 +197,7 @@ async function authorizeCommand(
  * trusted and approved directories. Tools unrelated to Permission pass.
  */
 export async function decidePermission(
-  input: ToolCallEvent,
+  call: AgentToolCall,
   options: {
     readonly cwd: string;
     readonly trustedDirectories: readonly string[];
@@ -208,7 +206,6 @@ export async function decidePermission(
   },
   signal?: AbortSignal,
 ): Promise<PreToolDecision> {
-  const { call } = input;
   if (call.name === "bash") {
     const command = call.arguments.command;
     if (typeof command !== "string") {
@@ -218,14 +215,13 @@ export async function decidePermission(
       };
     }
     const cwdDecision = await authorizeDirectory(
-      input,
       options.cwd,
       options.cwd,
       options,
       signal,
     );
     if (cwdDecision.kind !== "allow") return cwdDecision;
-    return authorizeCommand(input, command, options, signal);
+    return authorizeCommand(command, options, signal);
   }
 
   const operation = FILE_TOOL_OPERATIONS[call.name];
@@ -238,5 +234,5 @@ export async function decidePermission(
     };
   }
   const directory = operation === "glob" ? targetPath : dirname(targetPath);
-  return authorizeDirectory(input, targetPath, directory, options, signal);
+  return authorizeDirectory(targetPath, directory, options, signal);
 }
