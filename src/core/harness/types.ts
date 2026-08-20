@@ -85,10 +85,8 @@ export interface HarnessConfig {
   readonly maxTurns?: number;
   readonly toolRegistry: AgentToolRegistry;
   readonly systemPrompt: string;
-  /** Reporter for observation-listener errors (default: console.error). */
-  readonly onListenerError?: (
-    error: unknown,
-    type: HarnessEventType,
-    event: unknown,
-  ) => void;
+  /** Observation bus owned by the caller; the Harness emits facts through it. */
+  readonly events: HarnessEventBus;
+  /** Fixed control hooks; the caller creates and pre-registers them. */
+  readonly hooks: HarnessHooks;
 }

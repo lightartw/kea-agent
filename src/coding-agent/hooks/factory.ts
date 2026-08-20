@@ -1,25 +1,23 @@
-import type { AgentHarness } from "../../core/harness/agent-harness.js";
 import type { AgentToolCall } from "../../core/harness/tools/types.js";
 import type { HookContext, PreToolDecision } from "../../core/harness/hooks.js";
+import { HarnessHooks } from "../../core/harness/hooks.js";
 import type { UserInteraction } from "../interaction/interactions.js";
 import { decidePermission, type PermissionRule } from "./permission/permission.js";
 
 /**
- * Register the built-in control hooks on a freshly created Harness.
+ * Create a `HarnessHooks` with the built-in control hooks registered.
  * Permission's `beforeTool` decision is one of them. This function is
- * stateless: all state is passed in, and the Project calls it once per
- * Harness. A future extension/plugin loader would register additional hooks
- * through the same `harness.hooks.on(...)` surface.
+ * stateless (all state is passed in) and is called once per Harness by the
+ * Project. A future extension/plugin loader would create additional hooks or
+ * register against the returned surface.
  */
-export function registerBuiltinHooks(
-  harness: AgentHarness,
-  options: {
-    readonly approved: PermissionRule[];
-    readonly trustedDirectories: readonly string[];
-    readonly interaction: UserInteraction;
-  },
-): void {
-  harness.hooks.on(
+export function createHooks(options: {
+  readonly approved: PermissionRule[];
+  readonly trustedDirectories: readonly string[];
+  readonly interaction: UserInteraction;
+}): HarnessHooks {
+  const hooks = new HarnessHooks();
+  hooks.on(
     "beforeTool",
     async (
       { call }: { readonly call: AgentToolCall },
@@ -42,4 +40,5 @@ export function registerBuiltinHooks(
         : undefined;
     },
   );
+  return hooks;
 }

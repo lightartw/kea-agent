@@ -9,9 +9,10 @@ import type { Session } from "../../core/harness/session/session.js";
 import type { SessionMetadata } from "../../core/harness/session/types.js";
 import { createSystemPrompt } from "../system-prompt.js";
 import { createBuiltinToolRegistry } from "../tools/factory.js";
-import { registerBuiltinHooks } from "../hooks/register.js";
+import { createHooks } from "../hooks/factory.js";
 import type { PermissionRule } from "../hooks/permission/permission.js";
 import type { UserInteraction } from "../interaction/interactions.js";
+import { HarnessEventBus } from "../../core/harness/events.js";
 
 /** One durable Project record: identity plus the normalized Project directory. */
 export interface ProjectInfo {
@@ -146,19 +147,19 @@ export class Project {
 
   private buildHarness(session: Session): AgentHarness {
     const cwd = session.metadata.cwd;
-    const harness = new AgentHarness({
+    return new AgentHarness({
       session,
       runtime: this.runtime,
       modelConfig: this.modelConfig,
       maxTurns: this.maxTurns,
       toolRegistry: createBuiltinToolRegistry(cwd, this.toolTimeoutSeconds),
       systemPrompt: createSystemPrompt(this.projectDirectory, cwd),
+      events: new HarnessEventBus(),
+      hooks: createHooks({
+        approved: this.approved,
+        interaction: this.interaction,
+        trustedDirectories: [this.projectDirectory],
+      }),
     });
-    registerBuiltinHooks(harness, {
-      approved: this.approved,
-      interaction: this.interaction,
-      trustedDirectories: [this.projectDirectory],
-    });
-    return harness;
   }
 }

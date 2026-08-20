@@ -5,6 +5,8 @@ import { AgentHarness } from "../../src/core/harness/agent-harness.js";
 import { Session } from "../../src/core/harness/session/session.js";
 import { AgentToolRegistry } from "../../src/core/harness/tools/registry.js";
 import { AgentTool } from "../../src/core/harness/tools/types.js";
+import { HarnessEventBus } from "../../src/core/harness/events.js";
+import { HarnessHooks } from "../../src/core/harness/hooks.js";
 import type {
   AssistantMessage,
   ModelConfig,
@@ -52,9 +54,12 @@ function makeHarness(options: {
     modelConfig: modelA,
     toolRegistry: new AgentToolRegistry(),
     systemPrompt: options.systemPrompt ?? "system",
-    ...(options.onListenerError === undefined
-      ? {}
-      : { onListenerError: options.onListenerError as never }),
+    events: new HarnessEventBus(
+      options.onListenerError === undefined
+        ? undefined
+        : (error, type, event) => options.onListenerError!(error, String(type), event),
+    ),
+    hooks: new HarnessHooks(),
   });
 }
 
@@ -97,6 +102,8 @@ test("the first persisted user prompt generates one title before the main model 
     modelConfig: modelA,
     toolRegistry: new AgentToolRegistry(),
     systemPrompt: "system",
+    events: new HarnessEventBus(),
+    hooks: new HarnessHooks(),
   });
   h.hooks.on("beforePrompt", ({ prompt }) => ({ prompt: "effective prompt" }));
   h.subscribe((event) => {
@@ -355,6 +362,8 @@ test("system prompt and tool changes reach the Agent run", async () => {
     modelConfig: modelA,
     toolRegistry: registry,
     systemPrompt: "system",
+    events: new HarnessEventBus(),
+    hooks: new HarnessHooks(),
   });
 
   harness.registerTool(tool);
@@ -530,6 +539,8 @@ test("tool-result subscriber sees the persisted result message", async () => {
     modelConfig: modelA,
     toolRegistry: registry,
     systemPrompt: "system",
+    events: new HarnessEventBus(),
+    hooks: new HarnessHooks(),
   });
 
   const observed: Array<{ type: string; matches: boolean }> = [];
@@ -576,6 +587,8 @@ test("tool-result subscriber sees the persisted synthetic message for an unknown
     modelConfig: modelA,
     toolRegistry: registry,
     systemPrompt: "system",
+    events: new HarnessEventBus(),
+    hooks: new HarnessHooks(),
   });
 
   const observed: Array<{ type: string; matches: boolean }> = [];
@@ -669,6 +682,8 @@ test("maxTurns limits the Agent loop to one turn", async () => {
     modelConfig: modelA,
     toolRegistry: registry,
     systemPrompt: "system",
+    events: new HarnessEventBus(),
+    hooks: new HarnessHooks(),
     maxTurns: 1,
   });
   let turnEnds = 0;

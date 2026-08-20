@@ -71,12 +71,8 @@ export class AgentHarness {
     this.runtime = config.runtime;
     this.maxTurns = config.maxTurns;
     this.currentModel = config.session.modelSelection() ?? config.modelConfig;
-    this.events = new HarnessEventBus(
-      config.onListenerError === undefined
-        ? undefined
-        : (error, type, event) => config.onListenerError!(error, type, event),
-    );
-    this.hooksState = new HarnessHooks();
+    this.events = config.events;
+    this.hooksState = config.hooks;
   }
 
   // ── Private helpers ──
